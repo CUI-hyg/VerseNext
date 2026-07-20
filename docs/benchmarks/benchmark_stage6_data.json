@@ -1,0 +1,231 @@
+{
+  "env": {
+    "python_version": "3.14.4",
+    "numpy_version": "2.5.1",
+    "platform": "Linux-6.18.5-x86_64-with-glibc2.39",
+    "processor": "x86_64",
+    "cpu_count": 3,
+    "numba_version": null,
+    "numpy_blas": "unknown",
+    "verse_torch_version": "0.1.0",
+    "verse_nex_version": "0.1.0"
+  },
+  "quant": [
+    {
+      "shape": "512x512",
+      "name": "FP32",
+      "size_bytes": 1050624,
+      "time_ms": 3.519652000250062,
+      "tokens_per_sec": 290937.854062631,
+      "speedup": 1.0,
+      "max_diff": 0.0
+    },
+    {
+      "shape": "512x512",
+      "name": "INT8",
+      "size_bytes": 266240,
+      "time_ms": 1.527620000160823,
+      "tokens_per_sec": 670323.7715480266,
+      "speedup": 2.3040101595157982,
+      "max_diff": 0.011584237217903137
+    },
+    {
+      "shape": "512x512",
+      "name": "INT4_fp32",
+      "size_bytes": 135168,
+      "time_ms": 1.5276119993359316,
+      "tokens_per_sec": 670327.2823499312,
+      "speedup": 2.3040222267042223,
+      "max_diff": 0.19968187808990479
+    },
+    {
+      "shape": "512x512",
+      "name": "INT4_nocache",
+      "size_bytes": 135168,
+      "time_ms": 1.7398249992766068,
+      "tokens_per_sec": 588564.9421210546,
+      "speedup": 2.022991968567805,
+      "max_diff": 0.19968152046203613
+    },
+    {
+      "shape": "512x512",
+      "name": "Ternary_fp32",
+      "size_bytes": 69632,
+      "time_ms": 1.6722430000299937,
+      "tokens_per_sec": 612351.195359546,
+      "speedup": 2.1047491304714283,
+      "max_diff": 1.5516204833984375
+    },
+    {
+      "shape": "512x512",
+      "name": "Ternary_nocache",
+      "size_bytes": 69632,
+      "time_ms": 1.757419000568916,
+      "tokens_per_sec": 582672.6578399962,
+      "speedup": 2.0027392438062135,
+      "max_diff": 1.5516204833984375
+    },
+    {
+      "shape": "1024x1024",
+      "name": "FP32",
+      "size_bytes": 4198400,
+      "time_ms": 10.009978999732994,
+      "tokens_per_sec": 102297.91691144549,
+      "speedup": 1.0,
+      "max_diff": 0.0
+    },
+    {
+      "shape": "1024x1024",
+      "name": "INT8",
+      "size_bytes": 1056768,
+      "time_ms": 5.559477000133484,
+      "tokens_per_sec": 184189.98765089118,
+      "speedup": 1.8005253011196292,
+      "max_diff": 0.01142585277557373
+    },
+    {
+      "shape": "1024x1024",
+      "name": "INT4_fp32",
+      "size_bytes": 532480,
+      "time_ms": 5.525092000425502,
+      "tokens_per_sec": 185336.28035897666,
+      "speedup": 1.811730736603499,
+      "max_diff": 0.20042753219604492
+    },
+    {
+      "shape": "1024x1024",
+      "name": "INT4_nocache",
+      "size_bytes": 532480,
+      "time_ms": 6.181804000334523,
+      "tokens_per_sec": 165647.43882927817,
+      "speedup": 1.619265023477178,
+      "max_diff": 0.20042723417282104
+    },
+    {
+      "shape": "1024x1024",
+      "name": "Ternary_fp32",
+      "size_bytes": 270336,
+      "time_ms": 5.477536000398686,
+      "tokens_per_sec": 186945.37104374438,
+      "speedup": 1.8274601935988024,
+      "max_diff": 1.440194010734558
+    },
+    {
+      "shape": "1024x1024",
+      "name": "Ternary_nocache",
+      "size_bytes": 270336,
+      "time_ms": 6.186965999404492,
+      "tokens_per_sec": 165509.23345926937,
+      "speedup": 1.617914014833195,
+      "max_diff": 1.440193772315979
+    },
+    {
+      "shape": "2048x2048",
+      "name": "FP32",
+      "size_bytes": 16785408,
+      "time_ms": 65.64698700003646,
+      "tokens_per_sec": 15598.58337442709,
+      "speedup": 1.0,
+      "max_diff": 0.0
+    },
+    {
+      "shape": "2048x2048",
+      "name": "INT8",
+      "size_bytes": 4210688,
+      "time_ms": 20.02469800027029,
+      "tokens_per_sec": 51136.85110188319,
+      "speedup": 3.2783009760821544,
+      "max_diff": 0.010882645845413208
+    },
+    {
+      "shape": "2048x2048",
+      "name": "INT4_fp32",
+      "size_bytes": 2113536,
+      "time_ms": 20.27084899964393,
+      "tokens_per_sec": 50515.89107185334,
+      "speedup": 3.238492230946498,
+      "max_diff": 0.22591277956962585
+    },
+    {
+      "shape": "2048x2048",
+      "name": "INT4_nocache",
+      "size_bytes": 2113536,
+      "time_ms": 21.712855999794556,
+      "tokens_per_sec": 47160.999916809145,
+      "speedup": 3.0234155746557523,
+      "max_diff": 0.2259126603603363
+    },
+    {
+      "shape": "2048x2048",
+      "name": "Ternary_fp32",
+      "size_bytes": 1064960,
+      "time_ms": 19.91004600040469,
+      "tokens_per_sec": 51431.32265888216,
+      "speedup": 3.2971790722483574,
+      "max_diff": 1.53493332862854
+    },
+    {
+      "shape": "2048x2048",
+      "name": "Ternary_nocache",
+      "size_bytes": 1064960,
+      "time_ms": 21.457971999552683,
+      "tokens_per_sec": 47721.19191978378,
+      "speedup": 3.059328579672159,
+      "max_diff": 1.5349332094192505
+    }
+  ],
+  "memory": [
+    {
+      "arch": "mamba2",
+      "seq_len": 1024,
+      "rss_kb": 440952
+    },
+    {
+      "arch": "mamba2",
+      "seq_len": 4096,
+      "rss_kb": 440952
+    },
+    {
+      "arch": "mamba2",
+      "seq_len": 16384,
+      "rss_kb": 440952
+    },
+    {
+      "arch": "mamba2",
+      "seq_len": 65536,
+      "rss_kb": 440952
+    },
+    {
+      "arch": "rwkv7",
+      "seq_len": 1024,
+      "rss_kb": 440952
+    },
+    {
+      "arch": "rwkv7",
+      "seq_len": 4096,
+      "rss_kb": 440952
+    },
+    {
+      "arch": "rwkv7",
+      "seq_len": 16384,
+      "rss_kb": 440952
+    },
+    {
+      "arch": "rwkv7",
+      "seq_len": 65536,
+      "rss_kb": 440952
+    }
+  ],
+  "train": {
+    "dim": 64,
+    "layers": 2,
+    "batch": 4,
+    "seq": 128,
+    "steps": 10,
+    "wall_clock_s": 8.356055109999943,
+    "samples_per_sec": 4.786947844818639,
+    "tokens_per_sec": 612.7293241367857,
+    "final_loss": 5.1360321044921875
+  },
+  "timestamp": "2026-07-20 12:38:22"
+}

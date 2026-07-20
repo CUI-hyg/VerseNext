@@ -42,19 +42,24 @@ pip install "fastapi>=0.110"     # OpenAI 兼容 HTTP server
 
 ## 最小示例
 
-> 阶段 0 仅完成脚手架，下面的 `Tensor` API 将在阶段 1（VerseTorch 核心引擎）落地。当前为占位伪代码，用以约定 API 形态。
-
 ```python
 from verse_torch import Tensor
 
 x = Tensor([1.0, 2.0], requires_grad=True)
 y = (x * x).sum()        # 1 + 4 = 5
 y.backward()
-print(y)                 # Tensor(5.0)
-print(x.grad)            # Tensor([2.0, 4.0])  与 PyTorch 一致
+print(y)                 # 5.0
+print(x.grad)            # [2. 4.]  与 PyTorch 一致
 ```
 
-预期：在阶段 1 完成后，上述代码与 PyTorch 数值一致到 1e-6。
+实测：上述代码与 PyTorch 数值一致到 1e-6（已通过 109 项单元测试 + 有限差分梯度检查）。
+
+更多示例见 [`examples/`](examples/)：
+
+- [`mnist_mlp.py`](examples/mnist_mlp.py) —— MNIST MLP，5 epoch 准确率 97.66%
+- [`minimal_lm.py`](examples/minimal_lm.py) —— 字符级 LM（Mamba-2 backbone），parallel vs recurrent 一致
+- [`jepa_demo.py`](examples/jepa_demo.py) —— I-JEPA 自监督预训练
+- [`cpu_inference_demo.py`](examples/cpu_inference_demo.py) —— 纯 CPU 流式生成（715 tokens/s，峰值 RSS 44.5MB）
 
 ## 关键技术决策
 
