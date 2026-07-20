@@ -1,0 +1,20 @@
+[project]
+name = "verse-framework"
+version = "0.1.0"
+description = "Verse: Pure-Python/CPU deep learning & LM framework (VerseTorch + VerseNex + VerseAWM)"
+requires-python = ">=3.10"
+
+[tool.uv.workspace]
+members = [
+  "packages/verse_torch",
+  "packages/verse_nex",
+  "packages/verse_awm",
+  "packages/verse_tokenizer",
+  "packages/verse_inference",
+  "packages/verse_compat",
+]
+
+# 每个 package 都是独立的可编辑安装单元，支持：
+#   pip install -e packages/verse_torch packages/verse_nex packages/verse_awm
+# 也可用 uv sync 在 workspace 内统一安装：
+#   uv sync
