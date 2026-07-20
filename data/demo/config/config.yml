@@ -1,0 +1,47 @@
+# CometSpark-v0.1 默认配置（PoC 阶段）
+# 字段类型：int / float / bool / str / null
+# 注意：本环境无 PyYAML，使用 model/config.py 中的极简解析器
+
+# 注：arch="hybrid" 在当前 verse_nex Mamba2 实现下，seq_len >= 64 时会
+# 出现 np.exp(log_decay) 数值溢出（NaN）。PoC 阶段先用 transformer
+# 跑通端到端流程；hybrid 代码路径已保留，待 verse_nex 修复后可切换。
+#
+# 模型规模针对 3 核 CPU / 5GB 内存沙箱调优：
+# - n_layer=2, n_embd=64, seq_len=64, batch_size=8
+# - 200 步约 30-60 秒可完成，内存占用 < 1GB
+model:
+  arch: transformer
+  vocab_size: 256
+  n_layer: 2
+  n_head: 4
+  n_embd: 64
+  seq_len: 64
+  dropout: 0.1
+  n_kv_head: 2
+  ssm_kind: mamba2
+  sparse_ratio: 0.5
+  tie_weights: true
+
+training:
+  batch_size: 8
+  micro_batch: 4
+  lr: 0.003
+  weight_decay: 0.01
+  max_steps: 200
+  warmup: 20
+  eval_interval: 20
+  patience: 5
+  grad_accum: 1
+  log_interval: 20
+  seed: 42
+
+tokenizer:
+  kind: byte
+  vocab_size: 259
+
+data:
+  train_path: data/train.jsonl
+  val_path: data/val.jsonl
+
+checkpoint:
+  save_dir: checkpoints

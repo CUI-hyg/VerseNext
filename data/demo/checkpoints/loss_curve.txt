@@ -1,0 +1,25 @@
+Loss Curve (ASCII)  range=[2.0301, 5.6060]
+T=train  V=val  (width=80, height=20)
++--------------------------------------------------------------------------------+
+|VT                                                                              |
+| T                                                                              |
+|  T                                                                             |
+|  TT                                                                            |
+|   T                                                                            |
+|    T                                                                           |
+|     T                                                                          |
+|      T                                                                         |
+|       TT                                                                       |
+|V        TT                                                                     |
+|         TT                                                                     |
+|           TTT                                                                  |
+|             TTT T                                                              |
+|V               TTTT T                                                          |
+|                T TTTTTT TT T                                                   |
+| V                  T TTTTTTTTT T TT T T                                        |
+| V                       T TTTTTTTTTTTTT T TT T T    T                          |
+| VV                            T  T T T T T TTTTTTTTTTTTTT T TT  TTT TTT  TT  T |
+|   V                                       T  TT T TT TT  TTTT TT TTTTTTTTTTTTTT|
+|                                                        T    T T T T   TT  T T  |
++--------------------------------------------------------------------------------+
+train_steps=200  val_steps=10  eval_interval=20

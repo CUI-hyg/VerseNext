@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "verse-nex"
+version = "0.1.0"
+description = "VerseNex: Transformer-alternative architectures (Mamba-2, RWKV-7, Linear Attention, Hybrid)."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.26", "verse-torch>=0.1.0"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["verse_nex*"]

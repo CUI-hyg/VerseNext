@@ -1,0 +1,65 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# 构建产物
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+
+# 测试与覆盖率
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# 虚拟环境
+.venv/
+venv/
+env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 类型检查
+.mypy_cache/
+.pyre/
+.pytype/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# 模型检查点与产物（训练生成的二进制文件）
+*.pt
+*.bin
+*.safetensors
+*.gguf
+
+# 数据集（大文件，按需手动取消注释）
+# datasets/raw/mnist/*.gz
+
+# 日志与临时文件
+*.log
+/tmp/
+*.tmp
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# uv / poetry
+uv.lock
+poetry.lock
