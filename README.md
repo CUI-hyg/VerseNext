@@ -75,6 +75,38 @@ print(x.grad)            # [2. 4.]  与 PyTorch 一致
 
 详细架构决策记录见 [`docs/architecture/`](docs/architecture/)。
 
+## 详细文档
+
+### 训练指南
+
+[Verse 训练指南](docs/training_guide.md) —— 从零训练 LM 的完整流程：数据准备 → tokenizer → 模型 → 训练 → 评估 → 压缩 → 推理。
+
+### 各包文档
+
+| 包 | 文档 | 定位 |
+|---|---|---|
+| VerseTorch | [README](packages/verse_torch/README.md) | 张量 / autograd / nn / optim / losses / training / quantize / parallel / compress |
+| VerseNex | [README](packages/verse_nex/README.md) | Mamba-2 / RWKV-7 / RetNet / Sparse Attention / Hybrid / 位置编码 |
+| VerseAWM | [README](packages/verse_awm/README.md) | I-JEPA / V-JEPA / H-JEPA / RSSM 世界模型 |
+| VerseTokenizer | [README](packages/verse_tokenizer/README.md) | BPE / Byte / Char 分词器 |
+| VerseInference | [README](packages/verse_inference/README.md) | 模型加载 / 状态缓存 / 流式生成 / HTTP server |
+| VerseCompat | [README](packages/verse_compat/README.md) | HuggingFace / PyTorch 兼容层 |
+
+### 设计文档
+
+- [压缩管线设计（trillion → billion 路线图）](verse_data/designs/compression_pipeline_design.md)
+- [Autograd 设计](verse_data/designs/autograd_design.md)
+- [SSM scan 设计](verse_data/designs/ssm_scan_design.md)
+- [JEPA EMA 设计](verse_data/designs/jepa_ema_design.md)
+- [PyTorch 迁移笔记](verse_data/migration_notes/pytorch_to_versetorch.md)
+
+### 基准测试
+
+- [CPU 并行基准](docs/benchmarks/parallel_benchmark.md)
+- [模型压缩 PoC](docs/benchmarks/compression_poc.md)
+- [量化基准](docs/benchmarks/quantize_benchmark.md)
+- [v0.1 整体基准](docs/benchmarks/benchmark-v0.1.md)
+
 ## CometSpark 端到端训练仓库
 
 [`data/demo/`](data/demo/) —— **CometSpark-v0.1** 是基于 VerseNext 的端到端 LM 训练仓库，纯 Python / 纯 CPU 一键训练，运行时无 PyTorch / TensorFlow / JAX / transformers 依赖。
