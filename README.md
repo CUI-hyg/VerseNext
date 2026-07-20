@@ -1,2 +1,3 @@
 # VerseNext
-A next generation of World Model&amp;LM basic framework by CometFuture.(Canary-test)
+下一代LM框架，注重低算力、高能力
+By CometFuture.
