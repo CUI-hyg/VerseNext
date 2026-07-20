@@ -75,6 +75,28 @@ class CometSparkLM(Module):
                 tie_weights=config.tie_weights,
             )
 
+        # Task 9.2: 初始化末尾打印参数量
+        n_params = self.count_parameters()
+        print(f"[model] arch={config.arch} parameters: {n_params}", flush=True)
+
+    # ------------------------------------------------------------------
+    # 参数量统计
+    # ------------------------------------------------------------------
+
+    def count_parameters(self) -> int:
+        """统计模型可训练参数量。
+
+        遍历 ``self.parameters()`` 累加每个参数张量的元素数
+        （``np.prod(p.data.shape)``）。
+
+        Returns:
+            参数总量（int）
+        """
+        total = 0
+        for p in self.parameters():
+            total += int(np.prod(p.data.shape))
+        return total
+
     # ------------------------------------------------------------------
     # forward
     # ------------------------------------------------------------------
@@ -105,8 +127,11 @@ class CometSparkLM(Module):
         使 ``CometSparkLM`` 可直接传给 ``verse_inference.StreamingGenerator``。
 
         - ``arch="hybrid"``: 委托给内部 ``HybridLM.forward_recurrent``，维护 SSM 状态；
-        - ``arch="transformer"``: TransformerLM 无递归状态，直接调用 ``forward``，
-          ``new_states`` 始终为 ``None``（每步独立计算，无 KV cache 复用）。
+        - ``arch="transformer"``: TransformerLM 无递归状态，直接调用 ``self.net``
+          做前向计算，``new_states`` 始终为 ``None``（每步独立计算，无 KV cache 复用）。
+
+        注意：transformer 分支 **直接调用 ``self.net(idx)``**，而非 ``self.forward``，
+        以避免 ``self.forward`` 任何潜在回调 ``forward_recurrent`` 形成循环。
 
         Args:
             input_ids: ``(B, 1)`` 整数索引，Tensor / ndarray
@@ -119,8 +144,15 @@ class CometSparkLM(Module):
         # hybrid arch: 内部 net 是 HybridLM，原生支持 forward_recurrent
         if hasattr(self.net, "forward_recurrent"):
             return self.net.forward_recurrent(input_ids, states)
-        # transformer arch: 无递归状态，直接 forward
-        logits = self.forward(input_ids)  # (B, 1, vocab_size)
+        # transformer arch: 无递归状态，直接走 self.net（不经 self.forward，
+        # 防御性打断 forward → forward_recurrent 的潜在循环）
+        if not isinstance(input_ids, Tensor):
+            idx = Tensor(np.asarray(input_ids, dtype=np.int64))
+        elif input_ids.data.dtype != np.int64:
+            idx = Tensor(input_ids.data.astype(np.int64))
+        else:
+            idx = input_ids
+        logits = self.net(idx)  # (B, 1, vocab_size)
         return logits, None
 
     # ------------------------------------------------------------------
@@ -133,12 +165,19 @@ class CometSparkLM(Module):
         max_new_tokens: int = 32,
         temperature: float = 1.0,
         top_k: Optional[int] = None,
+        eos_id: Optional[int] = None,
     ) -> np.ndarray:
-        """自回归生成。
+        """自回归生成（**完全迭代式 for 循环**，无任何隐式递归）。
 
-        默认走 ``self.net.generate``（HybridLM 内置 greedy 实现，使用 recurrent 状态）。
-        若 net 没有 generate 方法或希望支持 temperature / top_k，则使用本类的
-        ``_generate_with_logits`` 实现。
+        两条路径均为显式 for 循环逐步生成：
+        - greedy 路径（``temperature==1.0`` 且 ``top_k is None`` 且 net 提供
+          ``generate``）：委托给 ``self.net.generate(mode="recurrent")``，
+          其内部用 for 循环逐步推进 SSM 状态。
+        - 采样路径（含 temperature / top_k）：走本类的 ``_generate_with_logits``，
+          逐步调用 ``self.net`` 并按温度/top-k 采样。
+
+        两条路径都不会形成 ``forward ↔ forward_recurrent`` 的回调循环，
+        也不依赖 ``Tensor.backward`` 的递归 DFS（backward 已改为迭代式）。
 
         Args:
             idx: prompt 序列，shape (B, T_prompt) 或 (T_prompt,)
@@ -146,8 +185,12 @@ class CometSparkLM(Module):
             temperature: 采样温度；1.0 表示 greedy 等价（与 argmax 一致），
                         > 1 增加随机性，< 1 收敛
             top_k: 仅在 top-k 中采样；None 表示无限制
+            eos_id: 可选的 EOS token id；若指定且生成末尾不是 eos，
+                    则在返回前追加 eos_id，确保 decode 时能正确截断到完整
+                    UTF-8 字符边界（Task 5.3 乱码修复）
         Returns:
-            generated: ndarray, shape (B, T_prompt + max_new_tokens)
+            generated: ndarray, shape (B, T_prompt + max_new_tokens)，
+                       若追加 eos 则列数 +1
         """
         # 统一 idx 为 2D ndarray
         if isinstance(idx, Tensor):
@@ -171,13 +214,23 @@ class CometSparkLM(Module):
                     Tensor(idx_np), max_new_tokens=max_new_tokens, mode="recurrent"
                 )
             if isinstance(out, Tensor):
-                return out.data
-            return np.asarray(out)
+                out = out.data
+            else:
+                out = np.asarray(out)
+        else:
+            # 否则用 forward 循环 + 采样
+            out = self._generate_with_logits(
+                idx_np, max_new_tokens, temperature, top_k
+            )
 
-        # 否则用 forward 循环 + 采样
-        return self._generate_with_logits(
-            idx_np, max_new_tokens, temperature, top_k
-        )
+        # Task 5.3: 在返回前强制追加 eos_id（如果指定且末尾不是 eos）
+        # 确保后续 decode 时能正确截断到完整 UTF-8 字符边界，避免乱码
+        if eos_id is not None and out.shape[1] > 0:
+            last_col = out[:, -1]
+            if not np.all(last_col == eos_id):
+                eos_col = np.full((out.shape[0], 1), eos_id, dtype=out.dtype)
+                out = np.concatenate([out, eos_col], axis=1)
+        return out
 
     def _generate_with_logits(
         self,

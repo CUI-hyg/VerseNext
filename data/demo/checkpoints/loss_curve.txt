@@ -1,25 +1,30 @@
-Loss Curve (ASCII)  range=[2.0301, 5.6060]
-T=train  V=val  (width=80, height=20)
+Loss Curve (ASCII)  range=[3.0510, 5.6054]
+T=train  V=val  *=overlap  (width=80, height=20)
 +--------------------------------------------------------------------------------+
-|VT                                                                              |
-| T                                                                              |
+|*T                                                                              |
 |  T                                                                             |
-|  TT                                                                            |
-|   T                                                                            |
 |    T                                                                           |
 |     T                                                                          |
-|      T                                                                         |
-|       TT                                                                       |
-|V        TT                                                                     |
-|         TT                                                                     |
-|           TTT                                                                  |
-|             TTT T                                                              |
-|V               TTTT T                                                          |
-|                T TTTTTT TT T                                                   |
-| V                  T TTTTTTTTT T TT T T                                        |
-| V                       T TTTTTTTTTTTTT T TT T T    T                          |
-| VV                            T  T T T T T TTTTTTTTTTTTTT T TT  TTT TTT  TT  T |
-|   V                                       T  TT T TT TT  TTTT TT TTTTTTTTTTTTTT|
-|                                                        T    T T T T   TT  T T  |
+|                                                                                |
+|      T T                                                                       |
+|             T                                                                  |
+|         T                                                                      |
+|          T   T                                                                 |
+|            T                                                                   |
+|                TT                                                              |
+|                  T T   T                                                       |
+|                     TT  TT  T                                                  |
+| V                          T T T                                               |
+|                                  T TTT     T                                   |
+|                                 T      T           T    T                      |
+|                                         T   T  TT   TT T T  T    T T    T      |
+|  V                                       T       T         T   TT   T         T|
+|                                              T               T       T   T  T  |
+|                                                                        T   T   |
 +--------------------------------------------------------------------------------+
-train_steps=200  val_steps=10  eval_interval=20
+train_steps=60  val_steps=3  eval_interval=20
+
+val_losses detail:
+  [step      0] val_loss=5.573213
+  [step     20] val_loss=3.887881
+  [step     40] val_loss=3.342034

@@ -10,6 +10,12 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["numpy>=1.26", "verse-torch>=0.1.0"]
 
+# 可选依赖：speed 提供 numba JIT 加速 selective scan 等热点函数
+# 安装方式：pip install "verse-nex[speed]"
+# 不安装 numba 时框架仍可正常工作，仅 njit 装饰器退化为 no-op
+[project.optional-dependencies]
+speed = ["numba>=0.60"]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["verse_nex*"]

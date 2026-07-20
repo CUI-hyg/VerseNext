@@ -44,6 +44,29 @@ from verse_torch.nn import Linear, Module
 
 
 # ---------------------------------------------------------------------------
+# numba 可选 JIT 加速（无 numba 时自动降级为 no-op 装饰器）
+# 安装方式：pip install "verse-nex[speed]"
+# 设计要点：
+#   - numba 是可选依赖，不安装时框架仍可正常工作
+#   - @njit 装饰器在无 numba 时退化为 no-op，函数按普通 Python/numpy 执行
+#   - 加速热点：selective scan 递推循环、conv1d 单步、softplus 标量计算
+# ---------------------------------------------------------------------------
+try:
+    from numba import njit
+    _HAS_NUMBA = True
+except ImportError:
+    _HAS_NUMBA = False
+
+    def njit(f=None, **kwargs):
+        """无 numba 时的 no-op 装饰器，保持 @njit / @njit(cache=True) 两种用法兼容。"""
+        # 支持 @njit(cache=True) 带参形式：返回一个等待函数对象的装饰器
+        if f is None:
+            return lambda x: x
+        # 支持 @njit 无参形式：直接返回原函数
+        return f
+
+
+# ---------------------------------------------------------------------------
 # 工具：causal depthwise conv1d（可微，用于训练）
 # ---------------------------------------------------------------------------
 
@@ -113,8 +136,9 @@ def _conv1d_causal(x: Tensor, weight: Tensor, bias: Tensor) -> Tensor:
     return out
 
 
+@njit(cache=True)
 def _conv1d_step(x_branch: np.ndarray, conv_state: np.ndarray,
-                 weight: np.ndarray, bias: np.ndarray) -> np.ndarray:
+                 weight: np.ndarray, bias: np.ndarray):
     """单步 causal depthwise conv1d（推理用，常数内存）。
 
     Args:
@@ -124,7 +148,7 @@ def _conv1d_step(x_branch: np.ndarray, conv_state: np.ndarray,
         weight: (d_conv, d_inner)
         bias: (d_inner,)
     Returns:
-        out: (B, 1, d_inner)
+        out: (B, 1, d_inner) - dtype 与 x_branch 一致
         new_conv_state: (B, d_conv - 1, d_inner)
 
     实现：
@@ -133,20 +157,32 @@ def _conv1d_step(x_branch: np.ndarray, conv_state: np.ndarray,
             = bias + weight[0]*x[t] + weight[1]*x[t-1] + ... + weight[K-1]*x[t-K+1]
         new_conv_state = window[:, :K-1] = [x[t], x[t-1], ..., x[t-K+2]]
             （丢掉最老的 x[t-K+1]，把 x[t] 加到最前面）
+
+    numba 兼容说明：
+        - @njit 装饰器在无 numba 时为 no-op，函数按普通 numpy 执行
+        - 内部仅用 NumPy 操作（concatenate / reshape / sum / 切片），
+          满足 numba nopython mode 要求
+        - 用 tuple 传给 np.concatenate（numba 更稳）
+        - 用 reshape 替代 [None, :] 索引（numba 对 None 索引支持因版本而异）
     """
     B = x_branch.shape[0]
     K = weight.shape[0]
+    d_inner = weight.shape[1]
     # window: (B, K, d_inner) = concat([x_branch, conv_state], axis=1)
     # x_branch: (B, 1, d_inner) - 最新 token 在前
     # conv_state: (B, K-1, d_inner) - 次新到最老
-    window = np.concatenate([x_branch, conv_state], axis=1)  # (B, K, d_inner)
+    window = np.concatenate((x_branch, conv_state), axis=1)  # (B, K, d_inner)
     # out = bias + sum_k weight[k] * window[:, k]
-    # weight[0] * x[t] + weight[1] * x[t-1] + ... + weight[K-1] * x[t-K+1]
-    out = bias[None, None, :] + (window * weight[None, :, :]).sum(axis=1, keepdims=True)
+    # weight[0] * x[t] + weight[1] * x[t-1] + ... + weight[K-1]*x[t-K+1]
+    # 用 reshape 替代 [None, :] 索引以兼容 numba
+    bias_b = bias.reshape(1, 1, d_inner)
+    weight_b = weight.reshape(1, K, d_inner)
+    out = bias_b + (window * weight_b).sum(axis=1).reshape(B, 1, d_inner)
     # new_conv_state = window[:, :K-1]  (B, K-1, d_inner)
     # 保留前 K-1 个：[x[t], x[t-1], ..., x[t-K+2]]，丢掉最老的 x[t-K+1]
     new_conv_state = window[:, :-1, :].copy()
-    return out.astype(x_branch.dtype), new_conv_state
+    # 不需要 astype：输入 dtype 一致时输出自然一致（原 astype 是冗余的）
+    return out, new_conv_state
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +208,77 @@ def _softplus(x: Tensor) -> Tensor:
                 x._accumulate_grad(out.grad * sx)
         out._backward = _backward
     return out
+
+
+@njit(cache=True)
+def _softplus_np(x: np.ndarray) -> np.ndarray:
+    """numpy 版数值稳定 softplus（不可微，用于 numpy 路径）。
+
+    softplus(x) = log(1 + exp(x))
+    数值稳定实现：log1p(exp(-|x|)) + max(x, 0)
+    - 当 x 很大正：log1p(exp(-x)) → 0，max(x,0) = x，结果 ≈ x
+    - 当 x 很大负：log1p(exp(x)) → exp(x) ≈ 0，max(x,0) = 0，结果 ≈ 0
+    用于约束 A_log 参数空间，保证 A = -softplus(A_log) - eps 严格为负且有限。
+
+    numba 兼容说明：仅用 np.log1p / np.exp / np.abs / np.maximum，
+    全部为 numba nopython mode 原生支持；@njit 在无 numba 时为 no-op。
+    """
+    return np.log1p(np.exp(-np.abs(x))) + np.maximum(x, 0.0)
+
+
+@njit(cache=True)
+def _ssm_recurrent_step_kernel(ssm_state, Xd, dt_d, Bd, Cd, A, D_data):
+    """单步 SSM 递推核心计算（numba njit 加速）。
+
+    将 forward_recurrent 中按 head 维度的 Python 循环编译为机器码，
+    消除每个 head 的 numpy 调用开销。所有输入输出均为 float64 ndarray
+    （调用方负责 astype，保持与 parallel 路径一致的数值精度）。
+
+    Args:
+        ssm_state: (B, H, N, d) float64 - 上一步状态
+        Xd: (B, H, d) float64 - 当前 token 的 X
+        dt_d: (B, H) float64 - softplus + clamp 后的步长
+        Bd: (B, N) float64 - 跨 head 共享的 B 矩阵
+        Cd: (B, N) float64 - 跨 head 共享的 C 矩阵
+        A: (H,) float64 - 严格为负的衰减系数
+        D_data: (H,) float64 - skip connection 参数
+    Returns:
+        new_ssm: (B, H, N, d) float64 - 更新后的状态
+        Y: (B, H, d) float64 - SSM 输出
+
+    numba 兼容说明：
+        - 用 np.expand_dims 替代 [:, None] 索引（numba 对 None 索引支持因版本而异）
+        - 用 broadcasting + sum(axis=1) 替代 np.einsum('bn,bnd->bd', ...)
+          （numba 对 einsum 字符串语法的支持不稳定）
+        - 数学等价：sum_n Cd[b,n] * new_ssm[b,h,n,d] = (Cd[:,:,None] * new_ssm[:,h]).sum(1)
+    """
+    B, H, N, d = ssm_state.shape
+    new_ssm = ssm_state.copy()
+    Y = np.zeros((B, H, d), dtype=np.float64)
+
+    for h in range(H):
+        A_h = A[h]
+        dt_h = dt_d[:, h]  # (B,)
+        # 数值稳定性修复：clip dt_h * A_h 到 [-50, 0]
+        # 理论上 dt_h >= 0 且 A_h < 0，乘积 <= 0；clip 仅作防御性兜底
+        # 防止极端情况下 exp(正大数) 溢出为 inf，再与 0 相乘变 NaN
+        A_bar = np.exp(np.clip(dt_h * A_h, -50.0, 0.0))  # (B,)
+        # B_bar = dt_h[:, None] * Bd -> (B, N)
+        B_bar = np.expand_dims(dt_h, 1) * Bd  # (B, N)
+        x_h = Xd[:, h, :]  # (B, d)
+        # outer = B_bar[:, :, None] * x_h[:, None, :] -> (B, N, d)
+        outer = np.expand_dims(B_bar, 2) * np.expand_dims(x_h, 1)  # (B, N, d)
+        # new_ssm[:, h] = A_bar[:, None, None] * ssm_state[:, h] + outer
+        A_bar_b = np.expand_dims(np.expand_dims(A_bar, 1), 1)  # (B, 1, 1)
+        new_ssm[:, h] = A_bar_b * ssm_state[:, h] + outer
+        # y_h = einsum('bn,bnd->bd', Cd, new_ssm[:, h]) -> (B, d)
+        # 等价于 sum_n Cd[:, :, None] * new_ssm[:, h] (沿 axis=1 求和)
+        y_h = (np.expand_dims(Cd, 2) * new_ssm[:, h]).sum(axis=1)  # (B, d)
+        # skip: D * x_h
+        y_h = y_h + D_data[h] * x_h
+        Y[:, h, :] = y_h
+
+    return new_ssm, Y
 
 
 # ---------------------------------------------------------------------------
@@ -270,9 +377,14 @@ class Mamba2Block(Module):
         C_mat = BC[:, :, self.d_state:]
 
         dt_raw = self.dt_proj(dt_branch)
-        dt = _softplus(dt_raw)
+        # dt 加上界约束：softplus 保证 dt >= 0，clamp(0, 10) 防止 dt 过大
+        # 避免累积 cumsum(dt * A) 出现极值导致 exp 溢出
+        dt = _softplus(dt_raw).clamp(0, 10)
 
-        A = -np.exp(self.A_log.data)
+        # A_log 参数化约束：A = -softplus(A_log) - 1e-4
+        # softplus 保证 A_log 任意实数下 softplus(A_log) > 0，从而 A 严格为负且有限
+        # 避免 A_log 学到异常大的正值使 exp(A_log) 溢出为 inf
+        A = -_softplus_np(self.A_log.data) - 1e-4
 
         X = x_act.reshape(B, T, H, d)
 
@@ -335,8 +447,11 @@ class Mamba2Block(Module):
             dt_raw = dt_raw + self.dt_proj.bias.data
         safe = np.minimum(dt_raw, 20.0)
         dt_d = np.where(dt_raw > 20, dt_raw, np.log1p(np.exp(safe))).astype(x_conv.dtype)
+        # dt 加上界约束（与 parallel 路径一致），防止 dt 过大导致 A_bar 溢出
+        dt_d = np.minimum(dt_d, 10.0)
 
-        A = -np.exp(self.A_log.data)
+        # A_log 参数化约束：A = -softplus(A_log) - 1e-4，保证 A 严格为负且有限
+        A = -_softplus_np(self.A_log.data) - 1e-4
 
         # X: (B, H, d)
         Xd = x_act.reshape(B, H, d)
@@ -376,6 +491,11 @@ class Mamba2Block(Module):
         cs_i = cs[:, 1:, :]
         cs_j = cs[:, 1:, :]
         log_decay = cs_i[:, :, None, :] - cs_j[:, None, :, :]  # (B, T_i, T_j, H)
+        # 数值稳定性修复：clip log_decay 到 [-50, 0]
+        # 理论上 log_decay <= 0（i >= j 时 cumsum 不减），但训练中 A_log 异常可能
+        # 导致 cumsum 出现极正值，使 log_decay > 0 触发 exp 溢出为 inf
+        # exp(-50) ≈ 1.9e-22 足够小但不 NaN；exp(0) = 1 上界安全
+        log_decay = np.clip(log_decay, -50.0, 0.0)
         idx = np.arange(T)
         mask = (idx[:, None] >= idx[None, :]).astype(np.float64)
         L_data = np.exp(log_decay) * mask[None, :, :, None]  # (B, T, T, H) float64
@@ -468,20 +588,18 @@ class Mamba2Block(Module):
 
             # 用 float64 累积 SSM 状态以匹配 parallel 路径的数值精度
             # (parallel 路径在 float64 下用 cumsum 计算 decay 矩阵)
-            ssm_state_f64 = ssm_state.astype(np.float64)
-            new_ssm_f64 = ssm_state_f64.copy()
-            Y = np.zeros((B, H, d), dtype=np.float64)
-            for h in range(H):
-                A_h = float(A[h])
-                dt_h = dt_d[:, h].astype(np.float64)  # (B,)
-                A_bar = np.exp(dt_h * A_h)             # (B,) float64
-                B_bar = dt_h[:, None] * Bd.astype(np.float64)  # (B, N) float64
-                x_h = Xd[:, h, :].astype(np.float64)   # (B, d) float64
-                outer = B_bar[:, :, None] * x_h[:, None, :]  # (B, N, d) float64
-                new_ssm_f64[:, h] = A_bar[:, None, None] * ssm_state_f64[:, h] + outer
-                y_h = np.einsum('bn,bnd->bd', Cd.astype(np.float64), new_ssm_f64[:, h])
-                y_h = y_h + float(self.D.data[h]) * x_h
-                Y[:, h, :] = y_h
+            # 调用 numba @njit 加速的核心循环（无 numba 时退化为普通 numpy 循环）
+            # 数值稳定性修复（clip dt_h * A_h 到 [-50, 0]）封装在 kernel 内部，
+            # 与 parallel 路径的 log_decay clip 策略一致
+            new_ssm_f64, Y = _ssm_recurrent_step_kernel(
+                ssm_state.astype(np.float64),
+                Xd.astype(np.float64),
+                dt_d.astype(np.float64),
+                Bd.astype(np.float64),
+                Cd.astype(np.float64),
+                A.astype(np.float64),
+                self.D.data.astype(np.float64),
+            )
 
             # 将 float64 状态转回 float32 存储（节省内存，与 parallel 输出 dtype 对齐）
             new_ssm = new_ssm_f64.astype(np.float32)

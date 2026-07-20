@@ -1,0 +1,43 @@
+# CometSpark-v0.1 large 配置（~3M 参数）
+# 用途：在更大内存 / GPU 环境下验证模型容量上限
+# - n_layer=6, n_embd=192, seq_len=128, batch_size=4
+# - 内存占用约 3-4GB，CPU 训练时间约 8-12 分钟
+# - **CPU 5GB 沙箱下可能 OOM**，建议配合 INT8 量化（verse_compat）
+#   或减小 batch_size / seq_len 后再使用
+
+model:
+  arch: transformer
+  vocab_size: 256
+  n_layer: 6
+  n_head: 8
+  n_embd: 192
+  seq_len: 128
+  dropout: 0.1
+  n_kv_head: 4
+  ssm_kind: mamba2
+  sparse_ratio: 0.5
+  tie_weights: true
+
+training:
+  batch_size: 4
+  micro_batch: 2
+  lr: 0.0015
+  weight_decay: 0.01
+  max_steps: 200
+  warmup: 20
+  eval_interval: 20
+  patience: 5
+  grad_accum: 2
+  log_interval: 20
+  seed: 42
+
+tokenizer:
+  kind: byte
+  vocab_size: 259
+
+data:
+  train_path: data/train.jsonl
+  val_path: data/val.jsonl
+
+checkpoint:
+  save_dir: checkpoints

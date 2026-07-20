@@ -320,7 +320,14 @@ def _plot_ascii(
     width: int = 80,
     height: int = 20,
 ) -> None:
-    """ASCII fallback：在终端宽度 80 字符内绘制两条曲线。"""
+    """ASCII fallback：在终端宽度 80 字符内绘制两条曲线。
+
+    增强点（Task 8.2）：
+    - val 点用独立符号 ``V`` 绘制，**后于** train 写入画布，因此即使位置重叠也会覆盖 ``T``，
+      确保 val 点在密集 train 曲线中仍然可见。
+    - 重叠位置（既有 T 又有 V）改用 ``*`` 标记，让用户一眼看出 val 与 train 在何处交汇。
+    - 画布下方附加 val 数值表，列出每个 eval step 对应的 val loss，避免 val 点在网格中被忽略。
+    """
     # 收集所有非空 loss 用于确定 y 轴范围
     all_vals = list(train_losses) + list(val_losses)
     if not all_vals:
@@ -354,22 +361,63 @@ def _plot_ascii(
             yf = max(0.0, min(1.0, yf))
             y = height - 1 - int(round(yf * (height - 1)))
             if 0 <= y < height and 0 <= x < width:
-                canvas[y][x] = char
+                # 若该位置已有 T，则用 * 表示 val 与 train 重叠
+                if char == "V" and canvas[y][x] == "T":
+                    canvas[y][x] = "*"
+                else:
+                    # val 后绘制，自然覆盖 T（确保 V 可见）
+                    canvas[y][x] = char
 
+    # 先绘制 train（T），再绘制 val（V）——val 后绘制保证 V 在重叠处可见
     put_curve(train_losses, n_train, "T")
     put_curve(val_losses, max(n_train, n_val), "V")
 
     # 写入文件
     lines = []
     lines.append(f"Loss Curve (ASCII)  range=[{y_min:.4f}, {y_max:.4f}]")
-    lines.append(f"T=train  V=val  (width={width}, height={height})")
+    lines.append(f"T=train  V=val  *=overlap  (width={width}, height={height})")
     lines.append("+" + "-" * width + "+")
     for row in canvas:
         lines.append("|" + "".join(row) + "|")
     lines.append("+" + "-" * width + "+")
     lines.append(f"train_steps={n_train}  val_steps={n_val}  eval_interval={eval_interval}")
+
+    # 附加 val 数值表（让 val 数据即使在密集 train 中也能被精确读出）
+    if n_val > 0:
+        lines.append("")
+        lines.append("val_losses detail:")
+        for i, v in enumerate(val_losses):
+            # val 的 step 与 plot_loss_curve 中 val_x 保持一致
+            step = i * eval_interval if eval_interval > 0 else i
+            lines.append(f"  [step {step:>6d}] val_loss={float(v):.6f}")
+
     with open(save_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
+
+
+def _print_val_info(val_losses, val_x=None) -> None:
+    """打印 val_losses 摘要信息，明确告知用户数据存在。
+
+    格式：``[info] val_losses: N points, best=X.XXXX at step M``
+
+    Args:
+        val_losses: 验证 loss 列表
+        val_x: 与 val_losses 对应的 step 坐标列表；若为 None 则用索引 * 1
+    """
+    n = len(val_losses)
+    if n == 0:
+        print("[info] val_losses: 0 points", flush=True)
+        return
+    best_idx = int(min(range(n), key=lambda i: val_losses[i]))
+    best_val = float(val_losses[best_idx])
+    if val_x is not None and 0 <= best_idx < len(val_x):
+        best_step = int(val_x[best_idx])
+    else:
+        best_step = best_idx
+    print(
+        f"[info] val_losses: {n} points, best={best_val:.4f} at step {best_step}",
+        flush=True,
+    )
 
 
 def plot_loss_curve(
@@ -380,8 +428,9 @@ def plot_loss_curve(
 ) -> str:
     """绘制 loss 曲线并保存到 save_path。
 
-    优先使用 matplotlib 绘制 PNG（蓝色实线 train + 红色虚线 val + legend + grid + title）。
-    matplotlib 不可用时降级为 ASCII 文本图（保存到 save_path 改后缀 .txt）。
+    优先使用 matplotlib 绘制 PNG（蓝色实线 train + 橙色加粗带 marker 虚线 val + legend + grid + title）。
+    matplotlib 不可用时降级为 ASCII 文本图（保存到 save_path 改后缀 .txt），
+    ASCII 模式下 val 点用独立符号 ``V`` 绘制且优先级高于 ``T``，避免被 train 覆盖。
 
     Args:
         train_losses: 训练 loss 列表
@@ -408,6 +457,13 @@ def plot_loss_curve(
         else:
             txt_path = save_path + ".txt"
         _plot_ascii(train_losses, val_losses, txt_path, eval_interval=eval_interval)
+        # ASCII 模式也打印 val 信息（best step 与 matplotlib 分支一致）
+        if eval_interval < 1:
+            eval_interval = 1
+        val_x_ascii = [i * eval_interval for i in range(len(val_losses))]
+        if val_x_ascii and val_x_ascii[-1] >= len(train_losses):
+            val_x_ascii = [min(x, len(train_losses) - 1) for x in val_x_ascii]
+        _print_val_info(val_losses, val_x_ascii)
         return txt_path
 
     # matplotlib 可用分支
@@ -421,9 +477,23 @@ def plot_loss_curve(
         # 防止超出，按比例缩放到 train 范围内
         val_x = [min(x, len(train_losses) - 1) for x in val_x]
 
-    ax.plot(train_x, train_losses, color="blue", linestyle="-", label="train")
+    ax.plot(train_x, train_losses, color="blue", linestyle="-", linewidth=1.0, label="train")
     if val_losses:
-        ax.plot(val_x, val_losses, color="red", linestyle="--", label="val")
+        # matplotlib 模式增强：val 点用显著 marker + 加粗线条 + 醒目橙色
+        # 图例标注 "val (every N steps)"，让用户明确知道数据存在
+        ax.plot(
+            val_x,
+            val_losses,
+            color="orange",
+            linestyle="--",
+            linewidth=2.5,
+            marker="o",
+            markersize=8,
+            markerfacecolor="orange",
+            markeredgecolor="black",
+            markeredgewidth=0.8,
+            label=f"val (every {eval_interval} steps)",
+        )
     ax.set_xlabel("step")
     ax.set_ylabel("loss")
     ax.set_title("Loss Curve")
@@ -432,6 +502,7 @@ def plot_loss_curve(
     fig.tight_layout()
     fig.savefig(save_path, dpi=100)
     plt.close(fig)
+    _print_val_info(val_losses, val_x)
     return save_path
 
 
@@ -629,7 +700,11 @@ class Trainer:
         return self.train_losses, self.val_losses
 
     def _save_history(self) -> None:
-        """保存 loss 历史与曲线图。"""
+        """保存 loss 历史与曲线图。
+
+        额外输出 ``val_losses.txt`` / ``train_losses.txt`` 纯文本列表（每行一个值），
+        方便用户用 grep / awk 等命令行工具直接读取，避免依赖 JSON 解析。
+        """
         os.makedirs(self.save_dir, exist_ok=True)
         history = {
             "train_losses": list(self.train_losses),
@@ -640,6 +715,14 @@ class Trainer:
         }
         with open(os.path.join(self.save_dir, "loss_history.json"), "w", encoding="utf-8") as f:
             json.dump(history, f, ensure_ascii=False, indent=2)
+
+        # Task 8.3: 额外生成 val_losses.txt 与 train_losses.txt 纯文本列表
+        with open(os.path.join(self.save_dir, "val_losses.txt"), "w", encoding="utf-8") as f:
+            for v in self.val_losses:
+                f.write(f"{float(v):.6f}\n")
+        with open(os.path.join(self.save_dir, "train_losses.txt"), "w", encoding="utf-8") as f:
+            for v in self.train_losses:
+                f.write(f"{float(v):.6f}\n")
 
         # 画曲线图
         curve_path = os.path.join(self.save_dir, "loss_curve.png")

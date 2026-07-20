@@ -40,9 +40,11 @@ import json
 import os
 import re
 import tempfile
+import unicodedata
 import urllib.request
+from abc import ABC, abstractmethod
 from collections import Counter
-from typing import Optional
+from typing import Optional, List
 
 
 # ---------------------------------------------------------------------------
@@ -164,11 +166,138 @@ def _bpe(token_chars: list[str], merge_ranks: dict[tuple[str, str], int]) -> lis
 
 
 # ---------------------------------------------------------------------------
+# Task 5.1: UTF-8 字节对齐工具——丢弃末尾不完整的多字节序列
+# ---------------------------------------------------------------------------
+
+
+def _trim_to_utf8_boundary(byte_ids: List[int]) -> List[int]:
+    """从末尾向前检查，丢弃不完整的 UTF-8 多字节序列。
+
+    参考 UTF-8 编码规则：
+        - 首字节 ``0xxxxxxx``：1 字节字符
+        - 首字节 ``110xxxxx``：2 字节字符，需后续 1 字节
+        - 首字节 ``1110xxxx``：3 字节字符，需后续 2 字节
+        - 首字节 ``11110xxx``：4 字节字符，需后续 3 字节
+        - 后续字节形如 ``10xxxxxx``
+
+    若末尾字符的字节数不足，则丢弃该字符的所有字节，保证剩余字节解码时
+    不会产生 U+FFFD（乱码）。
+
+    Args:
+        byte_ids: 字节 id 列表（每个元素 0-255）
+
+    Returns:
+        对齐到完整 UTF-8 字符边界的字节 id 列表
+    """
+    n = len(byte_ids)
+    if n == 0:
+        return byte_ids
+    last = byte_ids[-1]
+    # ASCII 范围（< 0x80）必然是完整的 1 字节字符
+    if last < 0x80:
+        return byte_ids
+    # 从末尾向前找到当前字符的首字节（跳过 continuation bytes 10xxxxxx）
+    i = n - 1
+    while i >= 0 and (byte_ids[i] & 0xC0) == 0x80:
+        i -= 1
+    if i < 0:
+        # 全是 continuation bytes，无法解码，全部丢弃
+        return []
+    first = byte_ids[i]
+    if first < 0x80:
+        expected = 1
+    elif first < 0xE0:
+        expected = 2
+    elif first < 0xF0:
+        expected = 3
+    else:
+        expected = 4
+    actual = n - i
+    if actual < expected:
+        # 末尾字符字节不完整，丢弃该字符的所有字节
+        return byte_ids[:i]
+    return byte_ids
+
+
+# ---------------------------------------------------------------------------
+# Task 4.1 / 4.2 / 4.3: BaseTokenizer 抽象基类 + NFKC preprocess 钩子
+# ---------------------------------------------------------------------------
+
+
+class BaseTokenizer(ABC):
+    """分词器抽象基类，向 GPT-4 / Llama tokenizer 设计看齐。
+
+    子类必须实现以下抽象方法：
+        - ``encode(text) -> List[int]``：文本 → token id 列表
+        - ``decode(ids) -> str``：token id 列表 → 文本
+        - ``save(path) -> None``：序列化到文件
+        - ``load(path) -> BaseTokenizer``（classmethod）：从文件加载
+        - ``__len__() -> int``：词表大小
+
+    预处理钩子：
+        - ``preprocess(text) -> str``：默认做 NFKC 正规化 + 去除控制字符
+          （保留 ``\\n`` / ``\\r`` / ``\\t`` 等基本空白），子类可覆盖。
+
+    设计目标：
+        - 统一三种 tokenizer（BPE / Byte / Char）的接口契约；
+        - 在 encode 前置 NFKC 正规化，确保全角字符与组合形式统一；
+        - 保持向后兼容（不破坏现有 API）。
+    """
+
+    def preprocess(self, text: str) -> str:
+        """文本预处理钩子：默认做 NFKC 正规化 + 去除控制字符。
+
+        - NFKC：全角字母数字 → 半角，组合字符 → 规范形式，兼容字符分解；
+        - 去除控制字符（Cc 类），但保留 ``\\n`` / ``\\r`` / ``\\t`` 等基本空白。
+
+        子类可覆盖此方法以实现自定义预处理（如 GPT-4 / Llama 风格的
+        whitespace 规范化、特定字符映射等）。
+        """
+        if not isinstance(text, str):
+            text = str(text)
+        # NFKC 正规化：全角→半角、组合→规范、兼容字符分解
+        text = unicodedata.normalize("NFKC", text)
+        # 去除控制字符（Cc 类），但保留 \n \r \t
+        text = "".join(
+            ch for ch in text
+            if ch in ("\n", "\r", "\t")
+            or unicodedata.category(ch) != "Cc"
+        )
+        return text
+
+    @abstractmethod
+    def encode(self, text: str) -> List[int]:
+        """文本 → token id 列表（抽象方法，子类必须实现）。"""
+        raise NotImplementedError
+
+    @abstractmethod
+    def decode(self, ids: List[int]) -> str:
+        """token id 列表 → 文本（抽象方法，子类必须实现）。"""
+        raise NotImplementedError
+
+    @abstractmethod
+    def save(self, path: str) -> None:
+        """序列化到文件（抽象方法，子类必须实现）。"""
+        raise NotImplementedError
+
+    @classmethod
+    @abstractmethod
+    def load(cls, path: str) -> "BaseTokenizer":
+        """从文件加载（抽象方法，子类必须实现）。"""
+        raise NotImplementedError
+
+    @abstractmethod
+    def __len__(self) -> int:
+        """返回词表大小（抽象方法，子类必须实现）。"""
+        raise NotImplementedError
+
+
+# ---------------------------------------------------------------------------
 # BPETokenizer
 # ---------------------------------------------------------------------------
 
 
-class BPETokenizer:
+class BPETokenizer(BaseTokenizer):
     """最小 BPE 分词器，可加载 HuggingFace tokenizer.json。
 
     Args:
@@ -299,6 +428,8 @@ class BPETokenizer:
             text: 输入文本
             add_special_tokens: 是否在末尾追加 ``<|endoftext|>``（如果存在）
         """
+        # Task 4.2: 前置 NFKC 正规化（全角字符与组合形式统一）
+        text = self.preprocess(text)
         ids: list[int] = []
 
         # 先按 special tokens 切分（special token 直接作为单 token）
@@ -373,13 +504,16 @@ class BPETokenizer:
                 # 用 byte decoder 还原：注意 buffer 中的元素可能是多字符 token
                 # （如 BPE 合并后的 "ll"、"Wo"），需要展开为单字符再查 _BYTE_DECODER
                 try:
-                    byte_arr = bytes(
+                    byte_list = [
                         _BYTE_DECODER[ch]
                         for tok in normal_buffer
                         for ch in tok
                         if ch in _BYTE_DECODER
-                    )
-                    pieces.append(byte_arr.decode("utf-8", errors="replace"))
+                    ]
+                    # Task 5.1: 字节对齐检查，丢弃末尾不完整的多字节序列
+                    byte_list = _trim_to_utf8_boundary(byte_list)
+                    # Task 5.5: 用 errors="ignore" 丢弃中间非法字节，避免 U+FFFD
+                    pieces.append(bytes(byte_list).decode("utf-8", errors="ignore"))
                 except Exception:
                     pieces.append("".join(normal_buffer))
             else:
@@ -469,6 +603,8 @@ class BPETokenizer:
         target_merges = max(0, vocab_size - 256 - 4)
 
         # 5. 重复合并直到达到目标或无 pair 可合并
+        # 已跳过的 pair 集合：避免同一不合法 pair 反复尝试
+        skipped_pairs: set = set()
         while len(merges) < target_merges:
             # 统计相邻 pair 频率
             pair_counts: Counter = Counter()
@@ -476,6 +612,9 @@ class BPETokenizer:
                 for i in range(len(word) - 1):
                     pair_counts[(word[i], word[i + 1])] += 1
 
+            # 移除已跳过的不合法 pair
+            for sp in skipped_pairs:
+                pair_counts.pop(sp, None)
             if not pair_counts:
                 break
 
@@ -483,6 +622,23 @@ class BPETokenizer:
             best_pair = max(pair_counts.items(), key=lambda x: (x[1], x[0]))[0]
             if pair_counts[best_pair] < 1:
                 break
+
+            # Task 5.2: 字节边界检查——只接受合并后字节序列为合法 UTF-8
+            # 字符序列的 merge，保证每个 BPE token 对应的字节序列都能独立
+            # decode 为完整字符（向 GPT-4 / Llama tokenizer 设计看齐）。
+            # 对于不合法的 merge（如跨多字节字符中间断开），跳过该 pair，
+            # 避免后续 decode 时产生乱码（U+FFFD）。
+            combined_bytes = [
+                _BYTE_DECODER[ch]
+                for ch in (best_pair[0] + best_pair[1])
+                if ch in _BYTE_DECODER
+            ]
+            try:
+                bytes(combined_bytes).decode("utf-8", errors="strict")
+            except UnicodeDecodeError:
+                # 合并后字节序列不在 UTF-8 字符边界，跳过该 pair
+                skipped_pairs.add(best_pair)
+                continue
 
             # 合并 best_pair 产生新 token
             new_token = best_pair[0] + best_pair[1]
@@ -582,7 +738,7 @@ class BPETokenizer:
 # ---------------------------------------------------------------------------
 
 
-class CharTokenizer:
+class CharTokenizer(BaseTokenizer):
     """字符级 fallback 分词器。
 
     当 ``BPETokenizer.from_file`` / ``from_hf`` 失败时使用。
@@ -621,6 +777,8 @@ class CharTokenizer:
         return self.vocab[ch]
 
     def encode(self, text: str, add_special_tokens: bool = True) -> list[int]:
+        # Task 4.2: 前置 NFKC 正规化（全角字符与组合形式统一）
+        text = self.preprocess(text)
         ids = [self._ensure_char(ch) for ch in text]
         if add_special_tokens:
             eos = self.vocab.get(self.EOS_TOKEN)
@@ -642,6 +800,30 @@ class CharTokenizer:
             out.append(tok)
         return "".join(out)
 
+    def save(self, path: str) -> None:
+        """序列化为 JSON 文件（与 BaseTokenizer 接口对齐）。"""
+        data = {
+            "type": "char",
+            "vocab": self.vocab,
+            "special_tokens": list(self.special_tokens),
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    @classmethod
+    def load(cls, path: str) -> "CharTokenizer":
+        """从 JSON 文件加载。"""
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("type") != "char":
+            raise ValueError(
+                f"Not a CharTokenizer JSON file (type={data.get('type')!r})"
+            )
+        vocab_raw = data.get("vocab", {})
+        vocab = {k: int(v) for k, v in vocab_raw.items()}
+        special_tokens = data.get("special_tokens")
+        return cls(vocab=vocab, special_tokens=special_tokens)
+
     def __len__(self) -> int:
         return len(self.vocab)
 
@@ -651,7 +833,7 @@ class CharTokenizer:
 # ---------------------------------------------------------------------------
 
 
-class ByteTokenizer:
+class ByteTokenizer(BaseTokenizer):
     """字节级 tokenizer。
 
     - ``vocab_size = 259``（256 字节 + bos + eos + pad + unk）；
@@ -702,6 +884,8 @@ class ByteTokenizer:
             add_bos: 是否在开头加 ``bos_id``
             add_eos: 是否在末尾加 ``eos_id``
         """
+        # Task 4.2: 前置 NFKC 正规化（全角字符与组合形式统一）
+        text = self.preprocess(text)
         ids = list(text.encode("utf-8"))
         if add_bos:
             ids = [self.bos_id] + ids
@@ -715,10 +899,17 @@ class ByteTokenizer:
         Args:
             ids: token id 列表
             strip_special: ``True`` 时丢弃 special token；``False`` 时还原为对应字符串
+
+        Task 5.1: 解码前做字节对齐检查，丢弃末尾不完整的多字节 UTF-8 序列，
+        避免 ``errors="replace"`` 把不完整字节替换为 U+FFFD（乱码）。
         """
         if strip_special:
             byte_ids = [int(i) for i in ids if int(i) < 256]
-            return bytes(byte_ids).decode("utf-8", errors="replace")
+            # Task 5.1: 字节对齐检查，丢弃末尾不完整的多字节序列
+            byte_ids = _trim_to_utf8_boundary(byte_ids)
+            # Task 5.5: 用 errors="ignore" 丢弃中间非法字节（如模型生成
+            # 的 continuation byte 0x80-0xBF 作为首字节），避免产生 U+FFFD
+            return bytes(byte_ids).decode("utf-8", errors="ignore")
 
         # 保留 special token 字符串：在 special token 处切段
         out_parts: list[str] = []
@@ -729,12 +920,18 @@ class ByteTokenizer:
                 byte_buf.append(i)
             else:
                 if byte_buf:
-                    out_parts.append(bytes(byte_buf).decode("utf-8", errors="replace"))
+                    # Task 5.1: 每段字节序列都做对齐检查
+                    byte_buf = _trim_to_utf8_boundary(byte_buf)
+                    # Task 5.5: 中间非法字节用 ignore 丢弃
+                    out_parts.append(bytes(byte_buf).decode("utf-8", errors="ignore"))
                     byte_buf = []
                 tok = self.id_to_token.get(i)
                 out_parts.append(tok if tok else "")
         if byte_buf:
-            out_parts.append(bytes(byte_buf).decode("utf-8", errors="replace"))
+            # Task 5.1: 末尾段也做对齐检查
+            byte_buf = _trim_to_utf8_boundary(byte_buf)
+            # Task 5.5: 中间非法字节用 ignore 丢弃
+            out_parts.append(bytes(byte_buf).decode("utf-8", errors="ignore"))
         return "".join(out_parts)
 
     def save(self, path: str) -> None:
@@ -841,4 +1038,10 @@ def load_tokenizer(kind: str = "byte", path: Optional[str] = None):
     )
 
 
-__all__ = ["BPETokenizer", "CharTokenizer", "ByteTokenizer", "load_tokenizer"]
+__all__ = [
+    "BaseTokenizer",
+    "BPETokenizer",
+    "CharTokenizer",
+    "ByteTokenizer",
+    "load_tokenizer",
+]
