@@ -17,10 +17,21 @@ from .tensor import (
     is_grad_enabled,
     unbroadcast,
 )
+
+# Parameter 别名（与 PyTorch 习惯一致：Parameter = Tensor，通过 requires_grad=True 标识）
+Parameter = Tensor
 from . import nn
 from . import optim
 from . import losses
+from . import training
 from . import quantize
+from . import parallel
+from . import compress
+from .parallel import (
+    parallel_matmul,
+    ParallelLinear,
+    parallel_map,
+)
 from .quantize import (
     quantize_int8,
     dequantize_int8,
@@ -41,6 +52,11 @@ from .nn import (
     Dropout,
     Sequential,
     ModuleList,
+    SwiGLUMLP,
+    GQASelfAttention,
+    TransformerBlock,
+    TransformerLM,
+    repeat_kv,
     kaiming_uniform_,
     xavier_uniform_,
     normal_,
@@ -57,6 +73,8 @@ from .optim import (
     StepLR,
     ExponentialLR,
     CosineAnnealingLR,
+    LambdaLR,
+    warmup_cosine_lr,
 )
 from .losses import (
     cross_entropy,
@@ -67,12 +85,37 @@ from .losses import (
     l1_loss,
     kl_div_loss,
 )
+from .training import (
+    cross_entropy_loss,
+    EarlyStopping,
+    GradientAccumulator,
+    CheckpointManager,
+    compute_loss_rate,
+    plot_loss_curve,
+    Trainer,
+)
+from .compress import (
+    OutlierSafePruner,
+    LoRALinear,
+    KnowledgeDistiller,
+    QLinear,
+    compress_pipeline,
+    prune_only,
+    quantize_only,
+    lora_only,
+    ternary_only,
+    distill_only,
+    count_parameters as compress_count_parameters,
+    count_nonzero_params,
+    compute_compressed_bits,
+)
 
 __version__ = "0.1.0"
 
 __all__ = [
     # Tensor 核心
     "Tensor",
+    "Parameter",
     "no_grad",
     "enable_grad",
     "set_grad_enabled",
@@ -82,7 +125,9 @@ __all__ = [
     "nn",
     "optim",
     "losses",
+    "training",
     "quantize",
+    "parallel",
     # nn 类
     "Module",
     "Linear",
@@ -92,6 +137,11 @@ __all__ = [
     "Dropout",
     "Sequential",
     "ModuleList",
+    "SwiGLUMLP",
+    "GQASelfAttention",
+    "TransformerBlock",
+    "TransformerLM",
+    "repeat_kv",
     "kaiming_uniform_",
     "xavier_uniform_",
     "normal_",
@@ -107,6 +157,8 @@ __all__ = [
     "StepLR",
     "ExponentialLR",
     "CosineAnnealingLR",
+    "LambdaLR",
+    "warmup_cosine_lr",
     # losses 函数
     "cross_entropy",
     "nll_loss",
@@ -115,6 +167,14 @@ __all__ = [
     "mse_loss",
     "l1_loss",
     "kl_div_loss",
+    # training 模块
+    "cross_entropy_loss",
+    "EarlyStopping",
+    "GradientAccumulator",
+    "CheckpointManager",
+    "compute_loss_rate",
+    "plot_loss_curve",
+    "Trainer",
     # quantize 函数
     "quantize_int8",
     "dequantize_int8",
@@ -125,4 +185,23 @@ __all__ = [
     "dequantize_ternary",
     "matmul_ternary",
     "QuantizedLinear",
+    # parallel 函数/类
+    "parallel_matmul",
+    "ParallelLinear",
+    "parallel_map",
+    # compress 函数/类
+    "compress",
+    "OutlierSafePruner",
+    "LoRALinear",
+    "KnowledgeDistiller",
+    "QLinear",
+    "compress_pipeline",
+    "prune_only",
+    "quantize_only",
+    "lora_only",
+    "ternary_only",
+    "distill_only",
+    "compress_count_parameters",
+    "count_nonzero_params",
+    "compute_compressed_bits",
 ]

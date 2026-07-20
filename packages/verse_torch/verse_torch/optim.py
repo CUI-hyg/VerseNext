@@ -287,3 +287,65 @@ class CosineAnnealingLR(LRScheduler):
         return self.eta_min + 0.5 * (self.base_lr - self.eta_min) * (
             1.0 + math.cos(math.pi * self.last_epoch / self.T_max)
         )
+
+
+class LambdaLR(LRScheduler):
+    """Lambda 学习率调度器。
+
+    通过自定义函数 `lr_lambda(step)` 返回学习率的乘法因子：
+
+        lr = base_lr * lr_lambda(last_epoch)
+
+    常用于 warmup + cosine decay 等自定义调度。
+
+    Args:
+        optimizer: 已构造的 Optimizer（持有 base_lr）
+        lr_lambda: 接受 step（int）返回 float 的函数
+        last_epoch: 起始 epoch（-1 表示初始化前）
+
+    示例:
+        >>> opt = Adam(model.parameters(), lr=1e-3)
+        >>> sched = LambdaLR(opt, warmup_cosine_lr(warmup_steps=50, total_steps=1000))
+    """
+
+    def __init__(self, optimizer: Optimizer, lr_lambda, last_epoch: int = -1):
+        # 注意：必须在调用 super().__init__() 之前设置 lr_lambda，
+        # 因为基类 __init__ 末尾会调用 self.step()，进而调用 get_lr()。
+        self.lr_lambda = lr_lambda
+        super().__init__(optimizer, last_epoch)
+
+    def get_lr(self):
+        if self.last_epoch < 0:
+            return self.base_lr
+        factor = float(self.lr_lambda(self.last_epoch))
+        return self.base_lr * factor
+
+
+def warmup_cosine_lr(warmup_steps: int, total_steps: int):
+    """Warmup + Cosine Decay 的 lr_lambda 工厂函数。
+
+    - step < warmup_steps: 线性 warmup，lr 从 0 升至 base_lr
+    - warmup_steps <= step <= total_steps: 余弦衰减，从 base_lr 降至 0
+
+    返回一个闭包，可传给 `LambdaLR`：
+
+        >>> opt = Adam(model.parameters(), lr=1e-3)
+        >>> sched = LambdaLR(opt, warmup_cosine_lr(warmup_steps=50, total_steps=1000))
+
+    Args:
+        warmup_steps: 预热步数（达到 base_lr 时的 step）
+        total_steps: 总训练步数（衰减到 0 时的 step）
+
+    Returns:
+        lr_lambda: (step: int) -> float
+    """
+    def lr_lambda(step: int) -> float:
+        if step < warmup_steps:
+            # 线性 warmup：step=0 -> 0，step=warmup_steps -> 1.0
+            return step / max(1, warmup_steps)
+        # 余弦衰减阶段
+        progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+        # 限制 progress 到 [0, 1]，避免 step 超过 total_steps 时出现反弹
+        progress = max(0.0, min(1.0, progress))
+        return 0.5 * (1.0 + math.cos(math.pi * progress))
+    return lr_lambda

@@ -75,6 +75,27 @@ print(x.grad)            # [2. 4.]  与 PyTorch 一致
 
 详细架构决策记录见 [`docs/architecture/`](docs/architecture/)。
 
+## CometSpark 端到端训练仓库
+
+[`data/demo/`](data/demo/) —— **CometSpark-v0.1** 是基于 VerseNext 的端到端 LM 训练仓库，纯 Python / 纯 CPU 一键训练，运行时无 PyTorch / TensorFlow / JAX / transformers 依赖。
+
+```bash
+cd data/demo && python run.py
+```
+
+详见 [`data/demo/README.md`](data/demo/README.md)。
+
+### 第二次进化摘要
+
+CometSpark-v0.1 是 Verse 框架"第二次进化"的产物，覆盖以下能力：
+
+- **多步训练 + cross_entropy + loss 曲线**：`verse_torch.training` 提供 `Trainer` / `EarlyStopping` / `GradientAccumulator` / `CheckpointManager` / `LambdaLR`（warmup + cosine）/ `compute_loss_rate` / `plot_loss_curve`，自动保存 `best.pt` / `last.pt` / `loss_history.json` / `loss_curve.txt`。
+- **BPE / ByteTokenizer**：`verse_tokenizer` 完善 `BPETokenizer.train` / `save` / `load` / `add_special_tokens`，新增 `ByteTokenizer`（vocab=259）与 `load_tokenizer(kind, path)` 工厂。
+- **TransformerLM**：`verse_torch.nn` 补齐 `SwiGLUMLP` / `GQASelfAttention`（含 KV cache）/ `TransformerBlock` / `TransformerLM`（含 weight tying），支持 GQA 与 RoPE。
+- **CPU 并行**：`verse_torch.parallel` 提供 `parallel_matmul` / `ParallelLinear` / `parallel_map`，对 batch >= 阈值启用 multiprocessing。
+- **模型压缩 PoC**：`verse_torch.compress` 提供 `OutlierSafePruner` / `LoRALinear` / `KnowledgeDistiller` / `QLinear` / `compress_pipeline`，在 1M 参数 TransformerLM 上验证压缩比 ≥ 10×、loss 差异 ≤ 5%。
+- **推理兼容**：`verse_inference` 新增 `cometspark` arch 分支，`StreamingGenerator` 兼容 CometSparkLM（100 tokens ≤ 5s）。
+
 ## 仓库结构
 
 ```
@@ -86,6 +107,8 @@ print(x.grad)            # [2. 4.]  与 PyTorch 一致
 │   ├── verse_tokenizer/    # 轻量分词器
 │   ├── verse_inference/    # 推理引擎
 │   └── verse_compat/       # HF/PyTorch 兼容层
+├── data/                   # CometSpark-v0.1 端到端 LM 训练仓库（demo 入口）
+│   └── demo/               # run.py / model / train / config / checkpoints
 ├── datasets/               # raw / cleaned / tokenizer
 ├── docs/                   # papers / architecture / benchmarks
 ├── verse_data/             # designs / experiments / migration_notes（内部材料）

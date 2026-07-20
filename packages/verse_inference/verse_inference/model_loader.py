@@ -11,10 +11,12 @@
    则用 ``verse_compat.load_hf_state_dict`` 加载权重并尝试匹配覆盖；
 3. **严格模式 / 宽松模式**：默认宽松模式，仅覆盖能匹配上的键，未匹配键保持初始化值；
    严格模式（``strict=True``）会要求所有键匹配。
+4. **CometSpark arch**（Stage 7 新增）：``arch="cometspark"`` 时从 pickle 文件
+   加载 ``CometSparkLM``（含 config + state_dict），动态导入类避免硬依赖。
 
 构建的 LM 接口
 --------------
-返回的 ``LanguageModel``（即 ``verse_nex.HybridLM``）暴露：
+返回的 ``LanguageModel``（即 ``verse_nex.HybridLM`` 或 ``CometSparkLM``）暴露：
 
 - ``forward(input_ids, states=None, mode="parallel"|"recurrent") -> Tensor``
   - parallel 模式：返回 (B, T, vocab_size) logits
@@ -28,8 +30,11 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
+import pickle
+import sys
 from typing import Optional
 
 import numpy as np
@@ -80,6 +85,87 @@ def _merge_config(arch: str, user_kwargs: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# CometSparkLM 动态加载（Stage 7）
+# ---------------------------------------------------------------------------
+# CometSparkLM 定义在 data/demo/model/model.py，不在 verse_inference 的依赖路径中。
+# 为了避免硬依赖，采用「动态导入 + sys.path 注入」的策略：
+# 1. 优先尝试标准 import（需要 /workspace 在 sys.path 且 data/demo 是包）；
+# 2. 其次尝试 ``from model.model import CometSparkLM``（需要 demo 路径在 sys.path）；
+# 3. 最后从默认路径 ``/workspace/data/demo`` 加载（可用环境变量覆盖）。
+# 用户也可通过 ``register_cometspark_path()`` 主动注册路径。
+
+# 缓存已加载的 CometSparkLM 类，避免重复 import
+_COMETSPARK_LM_CLASS = None
+# 默认 demo 路径（可通过环境变量 COMETSPARK_DEMO_PATH 覆盖）
+_DEFAULT_COMETSPARK_DEMO_PATH = "/workspace/data/demo"
+
+
+def register_cometspark_path(demo_path: str) -> None:
+    """注册 CometSpark demo 目录路径，便于动态加载 CometSparkLM 类。
+
+    Args:
+        demo_path: 指向 ``data/demo`` 目录的绝对路径
+    """
+    global _COMETSPARK_LM_CLASS
+    if demo_path and demo_path not in sys.path:
+        sys.path.insert(0, demo_path)
+    # 清除缓存，下次加载时用新路径重试
+    _COMETSPARK_LM_CLASS = None
+
+
+def _import_cometspark_lm():
+    """动态加载并返回 CometSparkLM 类。
+
+    查找顺序：
+        1. 已缓存（``_COMETSPARK_LM_CLASS``）
+        2. ``from data.demo.model.model import CometSparkLM``
+           （需要 /workspace 在 sys.path 且 data/demo 是包）
+        3. ``from model.model import CometSparkLM``
+           （需要 demo 路径在 sys.path，可由 register_cometspark_path 注入）
+        4. 从默认路径 ``/workspace/data/demo`` 加载（可用环境变量覆盖）
+
+    Returns:
+        CometSparkLM 类（不是实例）
+    """
+    global _COMETSPARK_LM_CLASS
+    if _COMETSPARK_LM_CLASS is not None:
+        return _COMETSPARK_LM_CLASS
+
+    # 2. 尝试标准 import（data.demo.model.model）
+    try:
+        mod = importlib.import_module("data.demo.model.model")
+        _COMETSPARK_LM_CLASS = getattr(mod, "CometSparkLM")
+        return _COMETSPARK_LM_CLASS
+    except ImportError:
+        pass
+
+    # 3. 尝试 from model.model import CometSparkLM（demo 路径已在 sys.path）
+    try:
+        mod = importlib.import_module("model.model")
+        _COMETSPARK_LM_CLASS = getattr(mod, "CometSparkLM")
+        return _COMETSPARK_LM_CLASS
+    except ImportError:
+        pass
+
+    # 4. 从默认路径加载（注入 sys.path 后重试）
+    demo_path = os.environ.get(
+        "COMETSPARK_DEMO_PATH", _DEFAULT_COMETSPARK_DEMO_PATH
+    )
+    if demo_path and demo_path not in sys.path:
+        sys.path.insert(0, demo_path)
+    try:
+        mod = importlib.import_module("model.model")
+        _COMETSPARK_LM_CLASS = getattr(mod, "CometSparkLM")
+        return _COMETSPARK_LM_CLASS
+    except ImportError as e:
+        raise ImportError(
+            f"无法加载 CometSparkLM。请确保 data/demo 目录存在，"
+            f"或调用 register_cometspark_path(demo_path) 注册路径。"
+            f"当前 demo_path={demo_path!r}，错误：{e}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # ModelLoader
 # ---------------------------------------------------------------------------
 
@@ -88,7 +174,8 @@ class ModelLoader:
     """从 HF repo 或本地路径加载预训练 LM 到 VerseNex + VerseTorch。
 
     Args:
-        arch: "mamba2" / "rwkv7" / "hybrid"
+        arch: "mamba2" / "rwkv7" / "hybrid" / "cometspark"
+            （"cometspark" 时从 pickle 文件加载完整 CometSparkLM）
         vocab_size: 词表大小（默认 256，适合 demo）
         dim: 模型维度（默认 128）
         n_layers: 层数（默认 4）
@@ -100,12 +187,18 @@ class ModelLoader:
         model = loader.load("/path/to/weights")     # 自构建 + 加载权重覆盖
         model = loader.load("owner/repo")           # 从 HF 下载并覆盖（需网络）
 
+        # CometSpark 加载（Stage 7）：
+        loader = ModelLoader(arch="cometspark")
+        model = loader.load("/workspace/data/demo/checkpoints/cometspark.pt")
+
     简化版策略
     ----------
     不要求真正加载 HF 上的大模型，而是：
     1. 用 ``verse_nex.HybridLM`` 构建一个轻量 LM；
     2. 若提供了 ``repo_or_path``，则用 ``verse_compat.load_hf_state_dict``
        加载权重并尝试匹配覆盖（宽松模式：只覆盖能匹配的键）。
+    3. ``arch="cometspark"`` 时走专用路径：从 pickle 文件加载完整 CometSparkLM
+       （含 config + state_dict），动态导入 ``CometSparkLM`` 类避免硬依赖。
     """
 
     def __init__(
@@ -116,9 +209,9 @@ class ModelLoader:
         n_layers: int = 4,
         **arch_kwargs,
     ):
-        if arch not in ("mamba2", "rwkv7", "hybrid"):
+        if arch not in ("mamba2", "rwkv7", "hybrid", "cometspark"):
             raise ValueError(
-                f"arch must be one of 'mamba2' / 'rwkv7' / 'hybrid', got {arch!r}"
+                f"arch must be one of 'mamba2' / 'rwkv7' / 'hybrid' / 'cometspark', got {arch!r}"
             )
         self.arch = arch
         self.vocab_size = vocab_size
@@ -169,12 +262,18 @@ class ModelLoader:
         Args:
             repo_or_path: 可选。本地目录 / 文件 / HF repo id。
                 若为 None，仅返回自构建的随机初始化 LM。
+                ``arch="cometspark"`` 时必须提供，指向 .pt pickle 文件。
             strict: 是否要求加载的 state_dict 与模型完全匹配（默认 False，宽松）。
             **kwargs: 传给 HybridLM 的额外参数（覆盖构造时的 arch_kwargs）。
 
         Returns:
             HybridLM 实例（已 eval 模式，``requires_grad=False``）。
+            ``arch="cometspark"`` 时返回 CometSparkLM 实例。
         """
+        # CometSpark arch: 走专用加载路径（从 pickle 文件加载完整模型）
+        if self.arch == "cometspark":
+            return self._load_cometspark(repo_or_path, strict=strict, **kwargs)
+
         # 1. 合并 config
         config = _merge_config(self.arch, dict(self.arch_kwargs))
         # 显式参数覆盖
@@ -249,6 +348,89 @@ class ModelLoader:
         return model
 
     # ------------------------------------------------------------------
+    # CometSpark 专用加载（Stage 7）
+    # ------------------------------------------------------------------
+
+    def _load_cometspark(self, repo_or_path: Optional[str], strict: bool = False, **kwargs):
+        """从 pickle 文件加载完整 CometSparkLM（含 config + state_dict）。
+
+        期望文件格式（由 ``CometSparkLM.save`` 产生）::
+
+            {
+                "config": dict,        # CometSparkConfig.to_dict()
+                "state_dict": dict,    # {name: ndarray}
+                "arch": str,           # "hybrid" / "transformer"
+            }
+
+        Args:
+            repo_or_path: .pt 文件路径。必须提供。
+            strict: state_dict 加载是否严格匹配（默认 False，宽松）。
+            **kwargs: 预留，目前未使用。
+
+        Returns:
+            CometSparkLM 实例（已 eval，``requires_grad=False``），
+            并挂载 ``_arch="cometspark"`` 与 ``_loader_config`` 属性。
+        """
+        if not repo_or_path:
+            raise ValueError(
+                "cometspark arch 需要提供 model_path（.pt 文件路径），"
+                "例如 ModelLoader(arch='cometspark').load('/path/to/cometspark.pt')"
+            )
+        if not os.path.isfile(repo_or_path):
+            raise FileNotFoundError(f"CometSpark 模型文件不存在：{repo_or_path!r}")
+
+        # 1. 动态加载 CometSparkLM 类
+        CometSparkLM = _import_cometspark_lm()
+
+        # 2. 从 pickle 读取 payload
+        with open(repo_or_path, "rb") as f:
+            payload = pickle.load(f)
+
+        # 兼容两种格式：
+        #   (a) {"config": dict, "state_dict": dict, "arch": str}  ← CometSparkLM.save
+        #   (b) {"model_state_dict": dict, ...}                    ← CheckpointManager
+        if isinstance(payload, dict) and "config" in payload and "state_dict" in payload:
+            # 格式 (a)：直接用 CometSparkLM.from_pretrained（含 config + 权重）
+            model = CometSparkLM.from_pretrained(repo_or_path)
+        elif isinstance(payload, dict) and "model_state_dict" in payload:
+            # 格式 (b)：仅 state_dict，需要外部 config
+            # 这里用 self.vocab_size / dim / n_layers 构造一个默认 config
+            from data.demo.model.config import CometSparkConfig  # type: ignore
+            config_dict = {
+                "vocab_size": self.vocab_size,
+                "n_layer": self.n_layers,
+                "n_embd": self.dim,
+                "arch": "transformer",
+            }
+            config = CometSparkConfig.from_dict(config_dict)
+            model = CometSparkLM(config)
+            model.load_state_dict(payload["model_state_dict"], strict=False)
+        else:
+            raise ValueError(
+                f"无法识别的 CometSpark 文件格式：{repo_or_path!r}。"
+                f"期望 keys 包括 'config' + 'state_dict' 或 'model_state_dict'，"
+                f"实际 keys={list(payload.keys()) if isinstance(payload, dict) else type(payload)}"
+            )
+
+        # 3. 若 strict=True，重新严格加载一遍以校验完整性
+        if strict and "state_dict" in payload:
+            model.load_state_dict(payload["state_dict"], strict=True)
+
+        # 4. 切换到 eval 模式 + 关闭梯度
+        model.eval()
+        for p in model.parameters():
+            p.requires_grad = False
+
+        # 5. 挂载 config 与 arch 信息，便于 generator 访问
+        object.__setattr__(model, "_arch", "cometspark")
+        try:
+            loader_config = model.config.to_dict()
+        except Exception:
+            loader_config = {"arch": "cometspark"}
+        object.__setattr__(model, "_loader_config", loader_config)
+        return model
+
+    # ------------------------------------------------------------------
     # 权重覆盖：宽松匹配
     # ------------------------------------------------------------------
 
@@ -292,4 +474,4 @@ class ModelLoader:
                             break
 
 
-__all__ = ["ModelLoader"]
+__all__ = ["ModelLoader", "register_cometspark_path"]

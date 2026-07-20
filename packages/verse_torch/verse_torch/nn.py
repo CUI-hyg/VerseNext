@@ -473,3 +473,326 @@ class ModuleList(Module):
     def forward(self, x):
         # ModuleList 默认不实现 forward，需用户在外部遍历
         raise NotImplementedError("ModuleList does not implement forward(); iterate over it manually.")
+
+
+# ---------------------------------------------------------------------------
+# 多层神经网络组件 (Stage 2 Task 1.1-1.4)
+# ---------------------------------------------------------------------------
+
+
+def _concat(tensors, dim: int = 1):
+    """可微的 Tensor 拼接函数（沿指定维度）。
+
+    用于 KV cache 在序列维度的拼接。支持反向传播。
+    """
+    datas = [t.data for t in tensors]
+    out_data = np.concatenate(datas, axis=dim)
+    requires_grad = _GRAD_ENABLED and any(t.requires_grad for t in tensors)
+    children = tuple(t for t in tensors if t.requires_grad)
+    out = Tensor(out_data, requires_grad=requires_grad,
+                 _children=children if requires_grad else (), _op="concat")
+    if requires_grad:
+        sizes = [t.shape[dim] for t in tensors]
+        starts = [0]
+        for s in sizes[:-1]:
+            starts.append(starts[-1] + s)
+
+        def _backward():
+            grad = out.grad
+            for t, start, size in zip(tensors, starts, sizes):
+                if t.requires_grad:
+                    idx = [slice(None)] * grad.ndim
+                    idx[dim] = slice(start, start + size)
+                    t._accumulate_grad(grad[tuple(idx)])
+
+        out._backward = _backward
+    return out
+
+
+def repeat_kv(x: Tensor, n_rep: int) -> Tensor:
+    """GQA 工具函数：在 head 维度（axis=2）上重复 n_rep 次。
+
+    输入: (B, T, n_kv_head, head_dim)
+    输出: (B, T, n_kv_head * n_rep, head_dim)
+
+    每个 kv head 重复 n_rep 次相邻（与 HuggingFace repeat_kv 行为一致）。
+    """
+    if n_rep == 1:
+        return x
+    B, T, n_kv, D = x.shape
+    out_data = np.repeat(x.data, n_rep, axis=2)
+    requires_grad = _GRAD_ENABLED and x.requires_grad
+    out = Tensor(out_data, requires_grad=requires_grad,
+                 _children=(x,) if requires_grad else (), _op="repeat_kv")
+    if requires_grad:
+        def _backward():
+            # 反向：将 n_rep 个相邻 head 的梯度求和
+            grad = out.grad  # (B, T, n_kv * n_rep, D)
+            grad_reshaped = grad.reshape(B, T, n_kv, n_rep, D)
+            g = grad_reshaped.sum(axis=3)  # (B, T, n_kv, D)
+            x._accumulate_grad(g)
+        out._backward = _backward
+    return out
+
+
+class SwiGLUMLP(Module):
+    """SwiGLU MLP: dropout(w_down( silu(w_gate(x)) * w_up(x) ))
+
+    Args:
+        d: 输入/输出维度
+        dropout: dropout 概率
+        hidden_multiple: 隐藏层维度倍数（默认 4）
+        align: 隐藏层维度对齐（默认 64）
+    """
+
+    def __init__(self, d: int, dropout: float = 0.0, hidden_multiple: int = 4, align: int = 64):
+        super().__init__()
+        self.d = d
+        self.align = align
+        # hidden 计算：2/3 缩放后向上对齐到 align 的倍数
+        hidden = int((hidden_multiple * d * 2 / 3 + align - 1) // align) * align
+        self.hidden = hidden
+        self.w_gate = Linear(d, hidden, bias=False)
+        self.w_up = Linear(d, hidden, bias=False)
+        self.w_down = Linear(hidden, d, bias=False)
+        self.dropout = Dropout(dropout)
+
+    def forward(self, x: Tensor) -> Tensor:
+        gate = self.w_gate(x).silu()
+        up = self.w_up(x)
+        h = gate * up
+        h = self.w_down(h)
+        h = self.dropout(h)
+        return h
+
+
+class GQASelfAttention(Module):
+    """Grouped Query Attention with RoPE and KV cache.
+
+    Args:
+        d: 模型维度
+        n_head: query head 数量
+        n_kv_head: key/value head 数量（默认 = n_head，即标准 MHA）
+        dropout: dropout 概率
+    """
+
+    def __init__(self, d: int, n_head: int, n_kv_head: int = None, dropout: float = 0.0):
+        super().__init__()
+        if n_kv_head is None:
+            n_kv_head = n_head
+        assert d % n_head == 0, f"d({d}) 必须能被 n_head({n_head}) 整除"
+        assert n_head % n_kv_head == 0, f"n_head({n_head}) 必须能被 n_kv_head({n_kv_head}) 整除"
+        self.d = d
+        self.n_head = n_head
+        self.n_kv_head = n_kv_head
+        self.head_dim = d // n_head
+        self.n_rep = n_head // n_kv_head
+        # 四个投影矩阵，均 bias=False
+        # wq: d → n_head * head_dim = d
+        # wk/wv: d → n_kv_head * head_dim（GQA 下小于 d）
+        # proj: n_head * head_dim = d → d
+        kv_dim = n_kv_head * self.head_dim
+        self.wq = Linear(d, n_head * self.head_dim, bias=False)
+        self.wk = Linear(d, kv_dim, bias=False)
+        self.wv = Linear(d, kv_dim, bias=False)
+        self.proj = Linear(n_head * self.head_dim, d, bias=False)
+        self.dropout = Dropout(dropout)
+        # RoPE 预计算 cos/sin 表（避免依赖 verse_nex，自带实现以支持 position_offset）
+        self._build_rope_table(self.head_dim, 32768)
+
+    def _build_rope_table(self, head_dim: int, max_seq_len: int):
+        half = head_dim // 2
+        i = np.arange(half, dtype=np.float32)
+        inv_freq = 1.0 / (10000.0 ** (2.0 * i / head_dim))
+        positions = np.arange(max_seq_len, dtype=np.float32)
+        angles = np.outer(positions, inv_freq)  # (T, half)
+        cos = np.concatenate([np.cos(angles), np.cos(angles)], axis=-1)  # (T, head_dim)
+        sin = np.concatenate([np.sin(angles), np.sin(angles)], axis=-1)
+        self._cos_table = cos
+        self._sin_table = sin
+        self._max_seq_len = max_seq_len
+
+    def _apply_rope(self, x: Tensor, position_offset: int = 0) -> Tensor:
+        """对 x 应用 RoPE。
+
+        Args:
+            x: Tensor shape (B, T, H, D)
+            position_offset: 位置偏移（用于 KV cache 场景下新 token 的起始位置）
+        """
+        B, T, H, D = x.shape
+        if position_offset + T > self._max_seq_len:
+            new_max = max(self._max_seq_len * 2, position_offset + T)
+            self._build_rope_table(D, new_max)
+        pos = position_offset + np.arange(T)
+        cos = self._cos_table[pos]  # (T, D)
+        sin = self._sin_table[pos]
+        cos_b = cos.reshape(1, T, 1, D)
+        sin_b = sin.reshape(1, T, 1, D)
+        x_data = x.data
+        half = D // 2
+        # rotate_half(x) = concat(-x[half:], x[:half])
+        rotate_half = np.concatenate([-x_data[..., half:], x_data[..., :half]], axis=-1)
+        rotated = x_data * cos_b + rotate_half * sin_b
+
+        requires_grad = _GRAD_ENABLED and x.requires_grad
+        out = Tensor(rotated, requires_grad=requires_grad,
+                     _children=(x,) if requires_grad else (), _op="rope")
+        if requires_grad:
+            def _backward():
+                # dx = grad * cos + rotate_half(grad) * sin
+                grad = out.grad
+                g = grad * cos_b + np.concatenate(
+                    [-grad[..., half:], grad[..., :half]], axis=-1
+                ) * sin_b
+                x._accumulate_grad(g)
+            out._backward = _backward
+        return out
+
+    def forward(self, x: Tensor, kv_cache=None):
+        B, T, d = x.shape
+        # 1. 投影 q/k/v，shape (B, T, d)
+        q = self.wq(x).reshape(B, T, self.n_head, self.head_dim)
+        k = self.wk(x).reshape(B, T, self.n_kv_head, self.head_dim)
+        v = self.wv(x).reshape(B, T, self.n_kv_head, self.head_dim)
+
+        # 2. 计算 position_offset（KV cache 场景下，新 token 的起始位置 = cache 长度）
+        position_offset = 0
+        if kv_cache is not None:
+            k_cache, v_cache = kv_cache
+            position_offset = k_cache.shape[1]
+
+        # 3. 应用 RoPE（仅 q, k；v 不应用）
+        q = self._apply_rope(q, position_offset)
+        k = self._apply_rope(k, position_offset)
+
+        # 4. KV cache 拼接前缀
+        if kv_cache is not None:
+            k = _concat([k_cache, k], dim=1)
+            v = _concat([v_cache, v], dim=1)
+        # detach 后存入新 cache，避免梯度跨越 step 传播
+        new_kv_cache = (k.detach(), v.detach())
+
+        # 5. repeat_kv：将 kv head 重复 n_rep 次匹配 q head 数量
+        k = repeat_kv(k, self.n_rep)
+        v = repeat_kv(v, self.n_rep)
+
+        # 6. 转置为 (B, n_head, T, head_dim)
+        q = q.permute(0, 2, 1, 3)
+        k = k.permute(0, 2, 1, 3)
+        v = v.permute(0, 2, 1, 3)
+
+        # 7. attention 计算
+        scale = 1.0 / (self.head_dim ** 0.5)
+        scores = (q @ k.transpose(-1, -2)) * scale  # (B, n_head, T_q, T_k)
+        # causal mask: mask[i, j] = 0 if j <= i + offset else -1e9
+        # offset = T_k - T_q（KV cache 场景下 q 只对应最后 T_q 个位置）
+        T_q = q.shape[2]
+        T_k = k.shape[2]
+        offset = T_k - T_q
+        i_idx = np.arange(T_q)[:, None]
+        j_idx = np.arange(T_k)[None, :]
+        mask_2d = np.where(j_idx <= i_idx + offset, 0.0, -1e9).astype(np.float32)
+        mask = Tensor(mask_2d.reshape(1, 1, T_q, T_k), requires_grad=False)
+        scores = scores + mask
+        attn = scores.softmax(dim=-1)
+        attn = self.dropout(attn)
+        out = attn @ v  # (B, n_head, T_q, head_dim)
+
+        # 8. reshape 回 (B, T_q, d) 并投影
+        out = out.transpose(1, 2).reshape(B, T_q, d)
+        out = self.proj(out)
+        return out, new_kv_cache
+
+
+class TransformerBlock(Module):
+    """Pre-norm Transformer block.
+
+    结构:
+        x = x + attn(norm1(x))
+        x = x + mlp(norm2(x))
+    """
+
+    def __init__(self, d: int, n_head: int, n_kv_head: int = None, dropout: float = 0.0):
+        super().__init__()
+        self.norm1 = RMSNorm(d)
+        self.attn = GQASelfAttention(d, n_head, n_kv_head, dropout)
+        self.norm2 = RMSNorm(d)
+        self.mlp = SwiGLUMLP(d, dropout)
+
+    def forward(self, x: Tensor, kv_cache=None):
+        attn_out, new_kv_cache = self.attn(self.norm1(x), kv_cache=kv_cache)
+        x = x + attn_out
+        x = x + self.mlp(self.norm2(x))
+        return x, new_kv_cache
+
+
+class TransformerLM(Module):
+    """Transformer Language Model.
+
+    结构: tok_emb → N × TransformerBlock → RMSNorm → head
+
+    Args:
+        vocab_size: 词表大小
+        n_layer: Transformer block 层数
+        n_head: attention head 数量
+        n_embd: 嵌入维度
+        seq_len: 最大序列长度
+        dropout: dropout 概率
+        n_kv_head: kv head 数量（None 表示 = n_head）
+        tie_weights: 是否共享 tok_emb 与 head 的权重
+    """
+
+    def __init__(self, vocab_size: int, n_layer: int, n_head: int, n_embd: int,
+                 seq_len: int = 128, dropout: float = 0.1,
+                 n_kv_head: int = None, tie_weights: bool = True):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.n_layer = n_layer
+        self.n_head = n_head
+        self.n_embd = n_embd
+        self.seq_len = seq_len
+        self.n_kv_head = n_kv_head if n_kv_head is not None else n_head
+        self.tie_weights = tie_weights
+
+        self.tok_emb = Embedding(vocab_size, n_embd)
+        self.blocks = ModuleList([
+            TransformerBlock(n_embd, n_head, n_kv_head, dropout)
+            for _ in range(n_layer)
+        ])
+        self.norm = RMSNorm(n_embd)
+        self.head = Linear(n_embd, vocab_size, bias=False)
+
+        if tie_weights:
+            # head.weight 与 tok_emb.weight 共享同一个 Tensor 对象
+            self.head.weight = self.tok_emb.weight
+        # 参数初始化
+        self._init_weights()
+
+    def _init_weights(self):
+        # Linear / Embedding 用 normal_(std=0.02)
+        for m in self.modules():
+            if isinstance(m, Linear):
+                normal_(m.weight, std=0.02)
+                if m.bias is not None:
+                    normal_(m.bias, std=0.02)
+            elif isinstance(m, Embedding):
+                normal_(m.weight, std=0.02)
+        # 残差分支缩放：1/sqrt(2*n_layer)，保证训练稳定性
+        scale = 1.0 / ((2 * self.n_layer) ** 0.5)
+        for block in self.blocks:
+            with no_grad():
+                block.attn.proj.weight.data = (
+                    block.attn.proj.weight.data * scale
+                ).astype(np.float32)
+                block.mlp.w_down.weight.data = (
+                    block.mlp.w_down.weight.data * scale
+                ).astype(np.float32)
+
+    def forward(self, idx) -> Tensor:
+        # idx: (B, T) int → emb (B, T, n_embd) → blocks → norm → head → logits (B, T, vocab)
+        x = self.tok_emb(idx)
+        for block in self.blocks:
+            x, _ = block(x)
+        x = self.norm(x)
+        logits = self.head(x)
+        return logits
