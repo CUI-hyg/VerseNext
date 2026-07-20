@@ -2,7 +2,7 @@
 
 > **VerseNext** —— 纯 Python / 纯 CPU 的深度学习与大语言模型框架（VerseTorch + VerseNex + VerseAWM），不强制依赖 PyTorch / Transformers，可在消费级 CPU、嵌入式设备与树莓派上开箱即用。
 
-Verse 的目标是用 **线性复杂度架构（SSM / Mamba / RWKV / Linear Attention）** 替代或混合 Transformer，根治自注意力 O(N²) 与 KV Cache 线性膨胀问题；并为下一代 **世界模型（JEPA、RSSM、H-JEPA）** 与端侧高能力 LLM 提供原生支撑，同时尽可能兼容 HuggingFace / PyTorch 生态以降低迁移成本。
+VerseNext 的目标是用 **线性复杂度架构（SSM / Mamba / RWKV / Linear Attention）** 替代或混合 Transformer，根治自注意力 O(N²) 与 KV Cache 线性膨胀问题；并为下一代 **世界模型（JEPA、RSSM、H-JEPA）** 与端侧高能力 LLM 提供原生支撑，同时尽可能兼容 HuggingFace / PyTorch 生态以降低迁移成本。
 
 ## 三包定位
 
