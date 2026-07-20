@@ -151,6 +151,9 @@ hybrid 架构在 verse_nex Mamba2 数值溢出修复后已可启用（seq_len=12
 | `micro_batch` | int | `4` | 梯度累积时的 micro batch |
 | `lr` | float | `0.003` | 学习率 |
 | `weight_decay` | float | `0.01` | AdamW 权重衰减 |
+| `no_decay` | bool | `true` | bias/norm 参数不参与 weight decay（参数组分离） |
+| `grad_clip` | float | `1.0` | 梯度裁剪最大范数（`0` 关闭，稳定训练防梯度爆炸） |
+| `label_smoothing` | float | `0.1` | 标签平滑系数（`0` 关闭，缓解过拟合） |
 | `max_steps` | int | `200` | 训练步数 |
 | `warmup` | int | `20` | warmup 步数 |
 | `eval_interval` | int | `20` | 评估间隔 |
@@ -158,6 +161,38 @@ hybrid 架构在 verse_nex Mamba2 数值溢出修复后已可启用（seq_len=12
 | `grad_accum` | int | `1` | 梯度累积步数 |
 | `log_interval` | int | `20` | 日志打印间隔 |
 | `seed` | int | `42` | 随机种子 |
+| `enable_progress_bar` | bool | `true` | tqdm 进度条（需安装 tqdm，否则降级为带 ETA 的文本日志） |
+| `realtime_plot` | bool | `true` | 训练中每次评估实时刷新 loss 曲线文件 |
+| `eta_window` | int | `20` | ETA 时间估算的滑动窗口大小 |
+
+### 训练精度优化与训练体验增强
+
+#### 精度优化（减少过拟合 / 错误回答）
+
+| 机制 | 说明 |
+|---|---|
+| **梯度裁剪** `grad_clip` | `optimizer.step` 前裁剪梯度总范数到 `max_norm`，防止梯度爆炸导致训练发散 |
+| **标签平滑** `label_smoothing` | cross_entropy 混合 hard target 与均匀分布 `loss = (1-ε)·CE_hard + ε·CE_uniform`，抑制过拟合、提升泛化 |
+| **no_decay 参数组** | bias 与 RMSNorm/LayerNorm 参数不参与 weight decay（标准正则化做法），提升收敛与泛化 |
+| **Dropout** | `model.dropout=0.1`，attention softmax 后与 MLP 中间层均施加（训练态启用、评估态关闭） |
+| **EarlyStopping** | val_loss 连续 `patience` 次无改善即停止，避免过拟合 |
+| **best.pt 自动保存** | val_loss 创新低时自动保存到 `checkpoints/best.pt`，评估默认加载 best 模型 |
+
+#### 训练体验（参考 GPT_teacher-3.37M-cn）
+
+- **tqdm 进度条**：训练时显示 `step/total`、`it/s`、`ETA`，后缀含 `loss/val/lr/best`。安装方式：`pip install "verse-torch[ui]"`
+- **ETA 时间估算**：无 tqdm 时基于滑动窗口平均步耗时估算剩余时间，在日志中显示 `eta=Xs`
+- **实时 loss 图**：每次 `eval_interval` 评估后刷新 `loss_curve.png/txt`，训练中即可查看曲线进度
+- **训练摘要**：训练结束打印 `done steps=N/M wall=Xs avg_step=Ys best_val=Z best@step=K`
+
+```
+[train] param groups: decay=16 no_decay=5
+[train] 开始训练 max_steps=200 batch_size=8 lr=0.003 warmup=20 grad_clip=1.0 label_smoothing=0.1
+[step      0/200] train_loss=5.588059 val_loss=5.579241 lr=1.500000e-04 eta=7s
+...
+[step    180/200] train_loss=2.729494 val_loss=2.414866 lr=8.172214e-05 eta=0s
+[train] done steps=200/200 wall=8.06s avg_step=0.040s best_val=2.4149 best@step=180
+```
 
 ### `tokenizer`
 | 字段 | 类型 | 默认值 | 说明 |
@@ -213,3 +248,12 @@ medium 配置（`config_medium.yml`）实测：
 ## 依赖
 
 仅依赖 `verse_torch` / `verse_nex` / `verse_tokenizer` / `verse_inference`（运行时不需要 PyTorch / TensorFlow / JAX / transformers）。
+
+可选依赖（增强训练体验）：
+
+```bash
+pip install "verse-torch[ui]"   # 安装 tqdm 进度条 + matplotlib loss 曲线
+```
+
+- **tqdm**：训练进度条（step/total、it/s、ETA）。未安装时降级为带 ETA 的文本日志
+- **matplotlib**：loss 曲线 PNG 图。未安装时降级为 ASCII 字符图

@@ -20,6 +20,9 @@ training:
   micro_batch: 4
   lr: 0.003
   weight_decay: 0.01
+  no_decay: true
+  grad_clip: 1.0
+  label_smoothing: 0.1
   max_steps: 200
   warmup: 20
   eval_interval: 20
@@ -27,6 +30,9 @@ training:
   grad_accum: 1
   log_interval: 20
   seed: 42
+  enable_progress_bar: true
+  realtime_plot: true
+  eta_window: 20
 
 tokenizer:
   kind: byte

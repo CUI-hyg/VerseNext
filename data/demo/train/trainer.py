@@ -125,7 +125,28 @@ def train(
     # 6. 优化器 + 学习率调度
     lr = float(train_cfg.get("lr", 1e-3))
     weight_decay = float(train_cfg.get("weight_decay", 0.01))
-    optimizer = AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    # no_decay 参数组：bias 与 norm 类参数不参与 weight decay（标准正则化做法，
+    # 避免对偏置/归一化缩放做衰减，提升收敛与泛化）
+    no_decay = bool(train_cfg.get("no_decay", True))
+    if no_decay:
+        decay_params, nodecay_params = [], []
+        for name, p in model.named_parameters():
+            if not p.requires_grad:
+                continue
+            if name.endswith("bias") or "norm" in name.lower():
+                nodecay_params.append(p)
+            else:
+                decay_params.append(p)
+        param_groups = [
+            {"params": decay_params, "weight_decay": weight_decay},
+            {"params": nodecay_params, "weight_decay": 0.0},
+        ]
+        n_decay, n_nodecay = len(decay_params), len(nodecay_params)
+        print(f"[train] param groups: decay={n_decay} no_decay={n_nodecay}",
+              flush=True)
+        optimizer = AdamW(param_groups, lr=lr, weight_decay=weight_decay)
+    else:
+        optimizer = AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
 
     max_steps = int(train_cfg.get("max_steps", 200))
     warmup = int(train_cfg.get("warmup", 20))
@@ -138,6 +159,11 @@ def train(
     eval_interval = int(train_cfg.get("eval_interval", 20))
     grad_accum = int(train_cfg.get("grad_accum", 1))
     log_interval = int(train_cfg.get("log_interval", 10))
+    grad_clip = float(train_cfg.get("grad_clip", 1.0))
+    label_smoothing = float(train_cfg.get("label_smoothing", 0.1))
+    enable_progress_bar = bool(train_cfg.get("enable_progress_bar", True))
+    realtime_plot = bool(train_cfg.get("realtime_plot", True))
+    eta_window = int(train_cfg.get("eta_window", 20))
 
     trainer_cfg = {
         "max_steps": max_steps,
@@ -147,6 +173,11 @@ def train(
         "grad_accum": grad_accum,
         "log_interval": log_interval,
         "loss_rate_window": min(50, max(10, max_steps // 4)),
+        "grad_clip": grad_clip,
+        "label_smoothing": label_smoothing,
+        "enable_progress_bar": enable_progress_bar,
+        "realtime_plot": realtime_plot,
+        "eta_window": eta_window,
     }
     trainer = Trainer(
         model=model,
@@ -157,7 +188,8 @@ def train(
         cfg=trainer_cfg,
     )
     print(f"[train] 开始训练 max_steps={max_steps} batch_size={batch_size} "
-          f"lr={lr} warmup={warmup}", flush=True)
+          f"lr={lr} warmup={warmup} grad_clip={grad_clip} "
+          f"label_smoothing={label_smoothing}", flush=True)
     train_losses, val_losses = trainer.fit()
 
     wall_clock = time.time() - start_time

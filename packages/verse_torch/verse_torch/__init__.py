@@ -93,6 +93,7 @@ from .training import (
     compute_loss_rate,
     plot_loss_curve,
     Trainer,
+    clip_grad_norm,
 )
 from .compress import (
     OutlierSafePruner,
@@ -175,6 +176,7 @@ __all__ = [
     "compute_loss_rate",
     "plot_loss_curve",
     "Trainer",
+    "clip_grad_norm",
     # quantize 函数
     "quantize_int8",
     "dequantize_int8",

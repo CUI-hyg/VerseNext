@@ -27,6 +27,9 @@ training:
   micro_batch: 4
   lr: 0.003
   weight_decay: 0.01
+  no_decay: true          # bias/norm 参数不参与 weight decay
+  grad_clip: 1.0          # 梯度裁剪最大范数（0=关闭）
+  label_smoothing: 0.1    # 标签平滑（0=关闭，缓解过拟合）
   max_steps: 200
   warmup: 20
   eval_interval: 20
@@ -34,6 +37,9 @@ training:
   grad_accum: 1
   log_interval: 20
   seed: 42
+  enable_progress_bar: true   # tqdm 进度条
+  realtime_plot: true         # 训练中实时刷新 loss 曲线
+  eta_window: 20              # ETA 滑动窗口
 
 tokenizer:
   kind: byte

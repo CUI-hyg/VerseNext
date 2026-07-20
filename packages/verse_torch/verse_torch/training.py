@@ -20,6 +20,8 @@ import json
 import math
 import os
 import pickle
+import time
+from collections import deque
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
@@ -28,13 +30,84 @@ import numpy as np
 from .tensor import Tensor, no_grad
 from .optim import Optimizer, LambdaLR, warmup_cosine_lr  # noqa: F401  重新导出方便用户
 
+# tqdm 为可选依赖：缺失时降级为无进度条的普通迭代器
+try:
+    from tqdm.auto import tqdm as _tqdm  # type: ignore
+    _HAS_TQDM = True
+except Exception:  # pragma: no cover - 环境差异
+    _HAS_TQDM = False
+    _tqdm = None
+
+
+class _NoOpPBar:
+    """无 tqdm 时的进度条占位：所有方法为 no-op，仅迭代底层 iterable。"""
+
+    def __init__(self, iterable):
+        self._it = iterable
+
+    def __iter__(self):
+        return iter(self._it)
+
+    def set_postfix(self, *args, **kwargs):
+        pass
+
+    def set_description(self, *args, **kwargs):
+        pass
+
+    def update(self, n=1):
+        pass
+
+    def close(self):
+        pass
+
+
+def clip_grad_norm(params, max_norm: float) -> float:
+    """裁剪梯度总范数到 ``max_norm``（in-place 修改 ``p.grad``）。
+
+    返回裁剪前的梯度总范数。``max_norm <= 0`` 时不裁剪。
+
+    Args:
+        params: 可迭代的参数（Tensor），仅处理 ``p.grad is not None`` 的参数
+        max_norm: 梯度总范数上界
+
+    Returns:
+        裁剪前的总范数（float）
+    """
+    if max_norm is None or max_norm <= 0:
+        return 0.0
+    grads = [p.grad for p in params if p.grad is not None]
+    if not grads:
+        return 0.0
+    total_norm = float(math.sqrt(sum(float(np.sum(g * g)) for g in grads)))
+    if total_norm > max_norm and total_norm > 0:
+        scale = max_norm / (total_norm + 1e-6)
+        for p in params:
+            if p.grad is not None:
+                p.grad = p.grad * scale
+    return total_norm
+
+
+def _format_eta(seconds: float) -> str:
+    """把秒数格式化为人类可读的 ETA 字符串。"""
+    if seconds is None or seconds < 0 or math.isnan(seconds):
+        return "?"
+    s = int(seconds)
+    if s < 60:
+        return f"{s}s"
+    m, s = divmod(s, 60)
+    if m < 60:
+        return f"{m}m{s:02d}s"
+    h, m = divmod(m, 60)
+    return f"{h}h{m:02d}m"
+
 
 # ---------------------------------------------------------------------------
 # Task 2.1: cross_entropy_loss
 # ---------------------------------------------------------------------------
 
 
-def cross_entropy_loss(logits: Tensor, targets, ignore_index: int = -100) -> Tensor:
+def cross_entropy_loss(logits: Tensor, targets, ignore_index: int = -100,
+                       label_smoothing: float = 0.0) -> Tensor:
     """交叉熵损失，支持 (B, T, V) / (N, V) 形状与 ignore_index 屏蔽。
 
     内部实现：log_softmax + NLL，对 ``ignore_index`` 位置不计入 loss 与梯度。
@@ -44,6 +117,9 @@ def cross_entropy_loss(logits: Tensor, targets, ignore_index: int = -100) -> Ten
         targets: 形状 (B, T) 或 (N,) 的整型类别索引，
                  可以是 Tensor / np.ndarray / list
         ignore_index: 待忽略的标签值（默认 -100），不参与 loss 计算
+        label_smoothing: 标签平滑系数（默认 0.0 关闭）。>0 时将 hard target
+            与均匀分布混合，``loss = (1-ε)·CE_hard + ε·CE_uniform``，
+            起到正则化、缓解过拟合的作用。
 
     Returns:
         标量 Tensor，支持 backward
@@ -84,8 +160,15 @@ def cross_entropy_loss(logits: Tensor, targets, ignore_index: int = -100) -> Ten
     # 选取每个样本对应类别的 log_prob
     selected = valid_log_probs[np.arange(n_valid), valid_targets]  # (n_valid,)
 
-    # 负平均
-    loss = -selected.mean()
+    # 标签平滑：loss = (1-ε)·CE_hard + ε·CE_uniform
+    if label_smoothing is not None and label_smoothing > 0.0:
+        hard_loss = -selected.mean()
+        # 均匀分布部分：所有类别 log_prob 的平均（等价于 -mean(sum_V log_probs / V)）
+        uniform_loss = -valid_log_probs.mean()
+        loss = (1.0 - label_smoothing) * hard_loss + label_smoothing * uniform_loss
+    else:
+        # 负平均
+        loss = -selected.mean()
     return loss
 
 
@@ -581,6 +664,14 @@ class Trainer:
         self.log_interval = int(_cfg_get(cfg, "log_interval", 10))
         self.loss_rate_window = int(_cfg_get(cfg, "loss_rate_window", 50))
 
+        # 精度优化：梯度裁剪 / 标签平滑
+        self.grad_clip = float(_cfg_get(cfg, "grad_clip", 0.0))
+        self.label_smoothing = float(_cfg_get(cfg, "label_smoothing", 0.0))
+        # 训练 UX：tqdm 进度条 / 实时 loss 图 / ETA 滑动窗口
+        self.enable_progress_bar = bool(_cfg_get(cfg, "enable_progress_bar", True))
+        self.realtime_plot = bool(_cfg_get(cfg, "realtime_plot", True))
+        self.eta_window = int(_cfg_get(cfg, "eta_window", 20))
+
         # 子控制器
         self.early_stopping = EarlyStopping(self.patience)
         # 梯度累积：micro_batch=1, effective_batch=grad_accum_n
@@ -626,13 +717,38 @@ class Trainer:
         return total_loss / n_batches
 
     def fit(self):
-        """主训练循环。返回 (train_losses, val_losses)。"""
+        """主训练循环。返回 (train_losses, val_losses)。
+
+        增强点（参考 GPT_teacher-3.37M-cn）：
+        - tqdm 进度条（可选）：显示 step/total、it/s、ETA，后缀含 loss/lr/best_val
+        - 梯度裁剪（grad_clip>0）：在 optimizer.step 前裁剪梯度总范数，稳定训练
+        - 标签平滑（label_smoothing>0）：cross_entropy 混合均匀分布，缓解过拟合
+        - 实时 loss 图（realtime_plot）：每次 eval_interval 刷新 loss_curve 文件
+        - ETA 时间估算：无 tqdm 时用滑动窗口平均步耗时估算剩余时间
+        """
         # 用 itertools.cycle 循环遍历 train_loader
         # 注意：若 train_loader 是生成器（一次性），cycle 会缓存全部数据
         train_iter = itertools.cycle(self.train_loader)
 
+        # 进度条：tqdm 可用且启用时用真进度条，否则用 no-op 占位
+        use_tqdm = self.enable_progress_bar and _HAS_TQDM
+        if use_tqdm:
+            pbar = _tqdm(
+                range(self.max_steps),
+                desc="train",
+                unit="step",
+                dynamic_ncols=True,
+            )
+        else:
+            pbar = _NoOpPBar(range(self.max_steps))
+
+        t_train_start = time.time()
+        step_times: deque = deque(maxlen=max(self.eta_window, 1))
         last_log_step = -1
-        for step in range(self.max_steps):
+        best_step = -1
+
+        for step in pbar:
+            t_step = time.time()
             try:
                 batch = next(train_iter)
             except StopIteration:
@@ -645,11 +761,16 @@ class Trainer:
             y = _as_tensor(y)
 
             logits = self.model(x)
-            loss = cross_entropy_loss(logits, y)
+            loss = cross_entropy_loss(
+                logits, y, label_smoothing=self.label_smoothing
+            )
             loss.backward()
 
             self.grad_accum.step()
             if self.grad_accum.should_step():
+                # 梯度裁剪：在 optimizer.step 前裁剪累积梯度的总范数
+                if self.grad_clip > 0:
+                    clip_grad_norm(self.model.parameters(), self.grad_clip)
                 self.optimizer.step()
                 self.optimizer.zero_grad()
 
@@ -658,6 +779,7 @@ class Trainer:
 
             loss_val = _scalar(loss)
             self.train_losses.append(loss_val)
+            step_times.append(time.time() - t_step)
 
             # 定期评估 + checkpoint + early stop
             if self.eval_interval > 0 and step % self.eval_interval == 0:
@@ -669,6 +791,7 @@ class Trainer:
                 self.checkpoint.save_last(state)
                 if val_loss < self.best_val_loss:
                     self.best_val_loss = float(val_loss)
+                    best_step = step
                     self.checkpoint.save_best(state)
 
                 # 计算 loss 下降率（用于诊断）
@@ -676,24 +799,69 @@ class Trainer:
                     self.train_losses, window=self.loss_rate_window
                 )
 
+                # 实时 loss 图：每次评估后刷新曲线文件，便于训练中查看进度
+                if self.realtime_plot:
+                    curve_path = os.path.join(self.save_dir, "loss_curve.png")
+                    try:
+                        plot_loss_curve(
+                            self.train_losses,
+                            self.val_losses,
+                            curve_path,
+                            eval_interval=self.eval_interval,
+                        )
+                    except Exception:
+                        pass  # 实时绘图失败不影响训练
+
                 if self.early_stopping.should_stop:
                     last_log_step = step
                     break
 
-            # 日志打印
+            # 更新进度条后缀
+            lr_now = getattr(self.optimizer, "lr", None)
+            if use_tqdm:
+                postfix = {"loss": f"{loss_val:.4f}"}
+                if self.val_losses:
+                    postfix["val"] = f"{self.val_losses[-1]:.4f}"
+                if lr_now is not None:
+                    postfix["lr"] = f"{lr_now:.2e}"
+                postfix["best"] = f"{self.best_val_loss:.4f}"
+                try:
+                    pbar.set_postfix(postfix)
+                except Exception:
+                    pass
+
+            # 无 tqdm 时：保留 log_interval 打印（含 ETA），用于 CI / 无 TTY 场景
             if (
-                self.log_interval > 0
+                not use_tqdm
+                and self.log_interval > 0
                 and (step % self.log_interval == 0 or step == self.max_steps - 1)
                 and step != last_log_step
             ):
                 last_log_step = step
-                lr_now = getattr(self.optimizer, "lr", None)
-                msg = f"[step {step:>6d}] train_loss={loss_val:.6f}"
+                msg = f"[step {step:>6d}/{self.max_steps}] train_loss={loss_val:.6f}"
                 if self.val_losses:
                     msg += f" val_loss={self.val_losses[-1]:.6f}"
                 if lr_now is not None:
                     msg += f" lr={lr_now:.6e}"
+                # ETA：基于滑动窗口平均步耗时估算
+                if step_times and step < self.max_steps - 1:
+                    avg_dt = float(np.mean(list(step_times)))
+                    eta = _format_eta(avg_dt * (self.max_steps - step - 1))
+                    msg += f" eta={eta}"
                 print(msg, flush=True)
+
+        pbar.close()
+
+        # 训练摘要
+        wall = time.time() - t_train_start
+        n_done = len(self.train_losses)
+        avg_step = wall / n_done if n_done > 0 else 0.0
+        print(
+            f"[train] done steps={n_done}/{self.max_steps} wall={wall:.2f}s "
+            f"avg_step={avg_step:.3f}s best_val={self.best_val_loss:.4f}"
+            + (f" best@step={best_step}" if best_step >= 0 else ""),
+            flush=True,
+        )
 
         # 训练结束：保存 loss_history.json + loss_curve 图
         self._save_history()
@@ -742,6 +910,7 @@ __all__ = [
     "compute_loss_rate",
     "plot_loss_curve",
     "Trainer",
+    "clip_grad_norm",
     # 重新导出 optim 中新增项，方便用户从 training 一次性导入
     "LambdaLR",
     "warmup_cosine_lr",
