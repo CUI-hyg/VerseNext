@@ -20,15 +20,32 @@ from .tensor import Tensor
 
 
 class Optimizer:
-    """优化器基类。"""
+    """优化器基类。
+
+    支持两种 params 传入方式（与 PyTorch 对齐）：
+    1. 扁平参数：``Module`` / ``list[Tensor]`` / generator —— 全部用 defaults
+    2. 参数组：``list[dict]``，每个 dict 含 ``"params"`` 与可覆盖的超参
+       （如 ``{"params": [...], "weight_decay": 0.0}``）。
+    """
 
     def __init__(self, params, defaults: dict):
-        # params 可以是 generator / list / Module
         if hasattr(params, "parameters"):
-            params = list(params.parameters())
+            flat = list(params.parameters())
+            self.param_groups = [{"params": flat, **dict(defaults)}]
         else:
-            params = list(params)
-        self.params = params
+            items = list(params)
+            if items and isinstance(items[0], dict):
+                # 参数组：每组合并 defaults 后用组内值覆盖
+                self.param_groups = []
+                for g in items:
+                    group = dict(defaults)
+                    group.update(g)
+                    group["params"] = list(g["params"])
+                    self.param_groups.append(group)
+            else:
+                self.param_groups = [{"params": items, **dict(defaults)}]
+        # 扁平视图，保持向后兼容（zero_grad / 旧 step 逻辑仍可用）
+        self.params = [p for g in self.param_groups for p in g["params"]]
         self.defaults = defaults
         self.state = {}  # 每个参数的状态（如 momentum buffer）
 
@@ -173,31 +190,33 @@ class AdamW(Optimizer):
 
     def step(self):
         self.t += 1
-        for p in self.params:
-            if p.grad is None:
-                continue
-            g = p.grad
-            key = id(p)
-            state = self.state.get(key, None)
-            if state is None:
-                state = {
-                    "m": np.zeros_like(p.data, dtype=np.float32),
-                    "v": np.zeros_like(p.data, dtype=np.float32),
-                }
-                self.state[key] = state
-            m = state["m"]
-            v = state["v"]
-            m = self.beta1 * m + (1.0 - self.beta1) * g
-            v = self.beta2 * v + (1.0 - self.beta2) * (g * g)
-            state["m"] = m
-            state["v"] = v
-            m_hat = m / (1.0 - self.beta1 ** self.t)
-            v_hat = v / (1.0 - self.beta2 ** self.t)
-            # 解耦 weight decay：先做 Adam 更新，再单独乘 (1 - lr * wd)
-            update = self.lr * m_hat / (np.sqrt(v_hat) + self.eps)
-            p.data = p.data - update
-            if self.weight_decay != 0:
-                p.data = p.data * (1.0 - self.lr * self.weight_decay)
+        for group in self.param_groups:
+            wd = group.get("weight_decay", self.weight_decay)
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                g = p.grad
+                key = id(p)
+                state = self.state.get(key, None)
+                if state is None:
+                    state = {
+                        "m": np.zeros_like(p.data, dtype=np.float32),
+                        "v": np.zeros_like(p.data, dtype=np.float32),
+                    }
+                    self.state[key] = state
+                m = state["m"]
+                v = state["v"]
+                m = self.beta1 * m + (1.0 - self.beta1) * g
+                v = self.beta2 * v + (1.0 - self.beta2) * (g * g)
+                state["m"] = m
+                state["v"] = v
+                m_hat = m / (1.0 - self.beta1 ** self.t)
+                v_hat = v / (1.0 - self.beta2 ** self.t)
+                # 解耦 weight decay：先做 Adam 更新，再单独乘 (1 - lr * wd)
+                update = self.lr * m_hat / (np.sqrt(v_hat) + self.eps)
+                p.data = p.data - update
+                if wd != 0:
+                    p.data = p.data * (1.0 - self.lr * wd)
 
 
 # ---------------------------------------------------------------------------

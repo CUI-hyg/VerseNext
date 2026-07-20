@@ -682,6 +682,12 @@ class GQASelfAttention(Module):
         v = v.permute(0, 2, 1, 3)
 
         # 7. attention 计算
+        # einsum 优化评估（Task 10.3）：
+        #   QK^T 与 attn@V 均为 4D 批量矩阵乘法 (B, n_head, T, head_dim)，
+        #   Tensor.__matmul__ 内部调用 np.matmul，已直接走 BLAS 批量 GEMM 路径，
+        #   性能优于 np.einsum（einsum 多一层 contraction path 解释开销，
+        #   且对标准 batched matmul 不会找到比 BLAS 更优的路径）。
+        #   故此处保留 matmul 实现，不强行改 einsum。
         scale = 1.0 / (self.head_dim ** 0.5)
         scores = (q @ k.transpose(-1, -2)) * scale  # (B, n_head, T_q, T_k)
         # causal mask: mask[i, j] = 0 if j <= i + offset else -1e9

@@ -43,8 +43,15 @@ import time
 import uuid
 from typing import Any, Optional
 
-from .generator import StreamingGenerator
-from .sampler import Sampler
+# 兼容两种执行方式：
+# - 作为模块运行 ``python -m verse_inference.server`` → 包内相对导入可用
+# - 作为脚本运行 ``python server.py`` → 相对导入失败，回退到绝对导入
+try:
+    from .generator import StreamingGenerator
+    from .sampler import Sampler
+except ImportError:  # pragma: no cover - 仅在直接脚本执行时触发
+    from verse_inference.generator import StreamingGenerator
+    from verse_inference.sampler import Sampler
 
 
 # ---------------------------------------------------------------------------
@@ -426,8 +433,11 @@ if __name__ == "__main__":
     parser.add_argument("--model-name", default="verse-mamba2")
     args = parser.parse_args()
 
-    # 延迟导入，避免在 __init__ 时强依赖
-    from .model_loader import ModelLoader
+    # 延迟导入，避免在 __init__ 时强依赖；兼容脚本直接执行与 -m 模块执行
+    try:
+        from verse_inference.model_loader import ModelLoader
+    except ImportError:  # pragma: no cover - 仅在脚本直接执行且 PYTHONPATH 含包父目录时触发
+        from .model_loader import ModelLoader
     from verse_tokenizer import CharTokenizer
 
     loader = ModelLoader(

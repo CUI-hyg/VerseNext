@@ -1163,19 +1163,28 @@ class Tensor:
             grad = grad.astype(self.data.dtype, copy=False)
         self.grad = grad
 
-        # 拓扑排序：DFS
+        # 拓扑排序：迭代式 DFS（显式栈替代递归，避免深度计算图触发
+        # `RecursionError: maximum recursion depth exceeded`）。
+        # 原递归实现在多层 Mamba2 / Transformer 计算图（每层几十个算子）
+        # 下深度可达 1000+，超过 Python 默认递归上限。
         topo = []
         visited = set()
-
-        def build(v):
-            if id(v) in visited:
-                return
-            visited.add(id(v))
-            for child in v._prev:
-                build(child)
-            topo.append(v)
-
-        build(self)
+        # 栈元素：(node, child_iter)；child_iter 用于"续迭"剩余子节点
+        stack = [(self, iter(self._prev))]
+        visited.add(id(self))
+        while stack:
+            node, child_iter = stack[-1]
+            advanced = False
+            for child in child_iter:
+                if id(child) not in visited:
+                    visited.add(id(child))
+                    stack.append((child, iter(child._prev)))
+                    advanced = True
+                    break
+            if not advanced:
+                # 当前节点所有子节点已处理完毕，输出到 topo
+                topo.append(node)
+                stack.pop()
 
         # 逆序调用 _backward
         for v in reversed(topo):

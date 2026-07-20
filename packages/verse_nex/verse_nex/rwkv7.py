@@ -180,6 +180,11 @@ class RWKV7TimeMix(Module):
         cs_j = cs[:, 1:, :, :]
         # log_decay: (B, T_i, T_j, H, K)
         log_decay = cs_i[:, :, None, :, :] - cs_j[:, None, :, :, :]
+        # 数值稳定性修复：clip log_decay 到 [-50, 0]
+        # 理论上 log_decay <= 0（w 已约束为 -softplus(raw) < 0，cumsum 不减），
+        # 但训练中 w_raw 可能学到异常值使 cumsum 出现极正，触发 exp 溢出为 inf
+        # exp(-50) ≈ 1.9e-22 足够小但不 NaN；exp(0) = 1 上界安全
+        log_decay = np.clip(log_decay, -50.0, 0.0)
         idx = np.arange(T)
         mask = (idx[:, None] >= idx[None, :]).astype(np.float64)  # (T, T)
         L_data = np.exp(log_decay) * mask[None, :, :, None, None]  # (B, T, T, H, K)

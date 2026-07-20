@@ -59,11 +59,59 @@ def _safe_decode(tok, ids):
             return tok.decode(list(ids))
 
 
+def _get_eos_id(tok):
+    """从 tokenizer 获取 eos_id（兼容 ByteTokenizer / BPETokenizer / CharTokenizer）。
+
+    - ByteTokenizer: ``tok.eos_id``
+    - BPETokenizer / CharTokenizer: ``tok.vocab.get("<eos>")``
+    """
+    # ByteTokenizer 直接暴露 eos_id 属性
+    eos_id = getattr(tok, "eos_id", None)
+    if eos_id is not None:
+        return int(eos_id)
+    # BPETokenizer / CharTokenizer: 从 vocab 查 "<eos>"
+    vocab = getattr(tok, "vocab", None)
+    if isinstance(vocab, dict):
+        eos = vocab.get("<eos>")
+        if eos is not None:
+            return int(eos)
+    return None
+
+
+def _safe_decode_with_prompt(tok, prompt_text, prompt_ids, gen_ids):
+    """Task 5.4: 分别 decode prompt 和生成部分再拼接，避免边界乱码。
+
+    - prompt 部分直接用原始文本（不 decode，避免 prompt 末尾字节与生成
+      首字节拼接产生非法 UTF-8 序列）；
+    - 生成部分用 ``tokenizer.decode``（已内置字节对齐检查）。
+
+    Args:
+        tok: tokenizer 实例
+        prompt_text: 原始 prompt 字符串
+        prompt_ids: prompt 编码后的 id 列表
+        gen_ids: 完整生成结果（含 prompt + 生成）的 id 列表
+
+    Returns:
+        拼接后的完整文本 ``prompt_text + decoded_generated``
+    """
+    # 只取生成部分（去掉开头的 prompt_ids）
+    n_prompt = len(prompt_ids)
+    # 防御性：若 gen_ids 长度小于 prompt_ids，全部当作生成部分
+    if n_prompt >= len(gen_ids):
+        generated_ids = []
+    else:
+        generated_ids = list(gen_ids[n_prompt:])
+    # prompt 用原始文本，生成部分用 tokenizer.decode
+    decoded_generated = _safe_decode(tok, generated_ids)
+    return prompt_text + decoded_generated
+
+
 def evaluate(
     config_path: str,
     base_dir: str = ".",
     prompts=None,
     max_new_tokens: int = 32,
+    temperature: float = 1.0,
     top_k: int = None,
     seed: int = 42,
 ) -> dict:
@@ -74,6 +122,7 @@ def evaluate(
         base_dir: 相对路径基准
         prompts: 自定义 prompt 列表；None 用默认 5 条
         max_new_tokens: 每条 prompt 生成 token 数
+        temperature: 采样温度；1.0 等价 greedy，>1 增加随机性，<1 收敛
         top_k: top-k 采样；None 表示 greedy
         seed: 随机种子
     Returns:
@@ -132,10 +181,13 @@ def evaluate(
         prompts = list(_DEFAULT_PROMPTS)
 
     results = []
-    print(f"[evaluate] 开始生成 {len(prompts)} 条 prompt，每条 {max_new_tokens} tokens", flush=True)
+    print(f"[evaluate] 开始生成 {len(prompts)} 条 prompt，每条 {max_new_tokens} tokens "
+          f"(temperature={temperature}, top_k={top_k})", flush=True)
+    # Task 5.3: 获取 eos_id，传给 generate 以确保末尾追加 eos
+    eos_id = _get_eos_id(tok)
     with no_grad():
         model.eval()
-        for prompt in prompts:
+        for i, prompt in enumerate(prompts):
             ids = _safe_encode(tok, prompt)
             if not ids:
                 # 编码失败：用空 prompt 也至少产生一个 token
@@ -148,8 +200,9 @@ def evaluate(
                 generated = model.generate(
                     idx_np,
                     max_new_tokens=int(max_new_tokens),
-                    temperature=1.0,
+                    temperature=float(temperature),
                     top_k=top_k,
+                    eos_id=eos_id,
                 )
                 if isinstance(generated, Tensor):
                     gen_ids = generated.data.reshape(-1).tolist()
@@ -159,16 +212,20 @@ def evaluate(
                 print(f"[evaluate] 生成失败 prompt={prompt!r}: {e}", flush=True)
                 gen_ids = list(ids)
 
-            full_text = _safe_decode(tok, gen_ids)
+            # Task 5.4: 分别 decode prompt 和生成部分再拼接，避免边界乱码
+            # prompt 部分用原始文本（不 decode），生成部分用 tokenizer.decode
+            full_text = _safe_decode_with_prompt(tok, prompt, ids, gen_ids)
             results.append({
                 "prompt": prompt,
                 "generated": full_text,
                 "n_tokens": len(gen_ids),
             })
-            print(f"  [prompt] {prompt}", flush=True)
+            # Task 7.4: 评估输出格式化（每个 prompt 用分隔线隔开）
+            print("-" * 60, flush=True)
+            print(f"  [{i+1}/{len(prompts)}] [prompt] {prompt}", flush=True)
             print(f"  [output] {full_text}", flush=True)
             print(f"  (tokens: {len(gen_ids)})", flush=True)
-            print("", flush=True)
+        print("-" * 60, flush=True)
 
     wall_clock = time.time() - start_time
     print(f"[evaluate] 完成 wall_clock={wall_clock:.2f}s", flush=True)

@@ -35,10 +35,12 @@ pip install -e packages/verse_torch packages/verse_nex packages/verse_awm
 uv sync
 
 # 3) 可选运行时依赖（按需安装）
-pip install "numba>=0.60"        # CPU GEMM 加速
+pip install "verse-nex[speed]"  # 安装 numba 加速 selective scan（推荐）
 pip install "safetensors>=0.4"   # 加载 .safetensors 权重
 pip install "fastapi>=0.110"     # OpenAI 兼容 HTTP server
 ```
+
+> **numba 加速说明**：`verse-nex[speed]` 会安装 `numba>=0.60`，对 Mamba-2 / Hybrid 的 selective scan 递推循环做 JIT 编译，recurrent 模式生成吞吐量提升约 1.8× ~ 3.2×。numba 是可选依赖——不安装也能运行，只是 `@njit` 装饰器退化为 no-op。详见 [性能调优指南](docs/performance_tuning.md)。
 
 ## 最小示例
 
@@ -80,6 +82,10 @@ print(x.grad)            # [2. 4.]  与 PyTorch 一致
 ### 训练指南
 
 [Verse 训练指南](docs/training_guide.md) —— 从零训练 LM 的完整流程：数据准备 → tokenizer → 模型 → 训练 → 评估 → 压缩 → 推理。
+
+### 性能调优
+
+[Verse 性能调优指南](docs/performance_tuning.md) —— numba JIT 加速、BLAS 配置、batch_size 选择、CPU 线程数、量化加速、并行计算六个维度的 CPU 调优手册。
 
 ### 各包文档
 

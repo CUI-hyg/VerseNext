@@ -1,0 +1,46 @@
+# CometSpark-v0.1 small 配置（~130K 参数）
+# 用途：3 核 CPU / 5GB 内存沙箱下，~30 秒跑完 200 步，验证端到端流程
+# 等价于原 config.yml 默认值（n_layer=2 n_embd=64 seq_len=64 batch_size=8）
+
+model:
+  arch: transformer
+  vocab_size: 256
+  n_layer: 2
+  n_head: 4
+  n_embd: 64
+  seq_len: 64
+  dropout: 0.1
+  n_kv_head: 2
+  ssm_kind: mamba2
+  sparse_ratio: 0.5
+  tie_weights: true
+
+training:
+  batch_size: 8
+  micro_batch: 4
+  lr: 0.003
+  weight_decay: 0.01
+  no_decay: true
+  grad_clip: 1.0
+  label_smoothing: 0.1
+  max_steps: 200
+  warmup: 20
+  eval_interval: 20
+  patience: 5
+  grad_accum: 1
+  log_interval: 20
+  seed: 42
+  enable_progress_bar: true
+  realtime_plot: true
+  eta_window: 20
+
+tokenizer:
+  kind: byte
+  vocab_size: 259
+
+data:
+  train_path: data/train.jsonl
+  val_path: data/val.jsonl
+
+checkpoint:
+  save_dir: checkpoints

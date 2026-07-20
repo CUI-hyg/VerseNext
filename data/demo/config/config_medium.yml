@@ -1,0 +1,54 @@
+# CometSpark-v0.1 medium 配置（~850K 参数）
+# 用途：3 核 CPU / 5GB 内存沙箱下，验证模型容量提升
+# - n_layer=4, n_embd=128, seq_len=128
+# - 参数量 853,888（约 0.85M，tie_weights=True 共享 embedding/lm_head）
+#
+# 内存调优说明：
+# - 5GB 沙箱下原 batch_size=8 max_steps=200 会因 verse_torch 计算图
+#   累积 OOM（约在 step 80-100 触发 SIGKILL）
+# - 默认 batch_size=4 max_steps=60，可在 5GB 沙箱下 15 秒内完成
+# - 如需更长训练，建议降低 batch_size 或在更大内存环境运行
+# - 也可通过 ``--skip-eval`` 跳过评估减少内存峰值
+
+model:
+  arch: transformer
+  vocab_size: 256
+  n_layer: 4
+  n_head: 8
+  n_embd: 128
+  seq_len: 128
+  dropout: 0.1
+  n_kv_head: 4
+  ssm_kind: mamba2
+  sparse_ratio: 0.5
+  tie_weights: true
+
+training:
+  batch_size: 4
+  micro_batch: 2
+  lr: 0.002
+  weight_decay: 0.01
+  no_decay: true
+  grad_clip: 1.0
+  label_smoothing: 0.1
+  max_steps: 60
+  warmup: 10
+  eval_interval: 20
+  patience: 5
+  grad_accum: 1
+  log_interval: 20
+  seed: 42
+  enable_progress_bar: true
+  realtime_plot: true
+  eta_window: 20
+
+tokenizer:
+  kind: byte
+  vocab_size: 259
+
+data:
+  train_path: data/train.jsonl
+  val_path: data/val.jsonl
+
+checkpoint:
+  save_dir: checkpoints
