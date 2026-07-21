@@ -150,7 +150,7 @@ class CometSparkConfig:
         seq_len: 训练序列长度
         dropout: dropout 概率（通用，向后兼容）
         n_kv_head: GQA 的 kv head 数；None 表示 = n_head
-        arch: 架构选择，"hybrid" 或 "transformer"
+        arch: 架构选择，"hybrid" / "transformer" / "verse_nex"
         ssm_kind: 仅 arch="hybrid" 时生效，"mamba2" 或 "rwkv7"
         sparse_ratio: 仅 arch="hybrid" 时生效，Sparse Attention 层占比
         tie_weights: 是否共享 embedding 与 lm_head 权重
@@ -161,6 +161,20 @@ class CometSparkConfig:
         attention_dropout: attention softmax 后的 dropout（独立于 dropout）
         hidden_dropout: MLP 中间层的 dropout（独立于 dropout）
         embedding_dropout: embedding 后的 dropout（独立于 dropout）
+
+    Part4 新增（仅 arch="verse_nex" 时生效）：
+        layer_pattern: list[str]，每元素 "trisparse" 或 "mod"；None 表示
+            自动按 mod_every 规则生成（每 4 层 1 个 MoD）
+        mod_every: int，自动生成 layer_pattern 时的 MoD 层间隔
+            （仅 layer_pattern=None 时生效）
+        num_dense_parts: int，MoD 的 DensePart 数量（默认 5）
+        num_experts_per_part: int，每个 DensePart 内的 Expert 数（默认 8）
+        top_k: int，每个 token 选出的 Expert 数（默认 3）
+        window_size: int，TriSparse 滑动窗口大小（默认 512）
+        num_global_tokens: int，TriSparse 全局 sink token 数（默认 64）
+        use_alibi: bool，TriSparse 是否启用 ALiBi 路径（默认 True）
+        use_rope: bool，TriSparse 是否对 Q/K 应用 RoPE（默认 False）
+        aux_loss_weight: float，MoD aux loss 权重（默认 0.01）
     """
 
     vocab_size: int = 256
@@ -180,6 +194,17 @@ class CometSparkConfig:
     attention_dropout: float = 0.0
     hidden_dropout: float = 0.0
     embedding_dropout: float = 0.0
+    # Part4 新增：arch="verse_nex" 专用字段（向后兼容，默认值不破坏现有配置）
+    layer_pattern: Optional[list] = None
+    mod_every: int = 4
+    num_dense_parts: int = 5
+    num_experts_per_part: int = 8
+    top_k: int = 3
+    window_size: int = 512
+    num_global_tokens: int = 64
+    use_alibi: bool = True
+    use_rope: bool = False
+    aux_loss_weight: float = 0.01
 
     # ------------------------------------------------------------------
     # YAML 持久化

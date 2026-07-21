@@ -1,0 +1,14 @@
+{
+  "type": "byte",
+  "bos_id": 256,
+  "eos_id": 257,
+  "pad_id": 258,
+  "unk_id": 255,
+  "vocab_size": 259,
+  "special_tokens": {
+    "<bos>": 256,
+    "<eos>": 257,
+    "<pad>": 258,
+    "<unk>": 255
+  }
+}

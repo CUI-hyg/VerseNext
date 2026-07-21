@@ -1,17 +1,31 @@
 # VerseTokenizer
 
-> 中文定位：轻量分词器，支持 BPE / Byte / Char 三种模式；无 `tokenizers` / `sentencepiece` 重型依赖时仍可运行，可加载 HuggingFace `tokenizer.json`。
+> 中文定位：轻量分词器，支持 BPE / Byte / Char / VerseTokenizer（Qwen 风格优化）四种模式；无 `tokenizers` / `sentencepiece` 重型依赖时仍可运行，可加载 HuggingFace `tokenizer.json`。
 
 [返回主 README](../../README.md)
 
 ## 特性
 
-- 三种 tokenizer：`BPETokenizer` / `ByteTokenizer` / `CharTokenizer`。
+- 四种 tokenizer：`BPETokenizer` / `ByteTokenizer` / `CharTokenizer` / `VerseTokenizer`。
 - BPE 训练：`BPETokenizer.train(corpus, vocab_size)` 字节级 merge，GPT-2 风格预切分。
 - 持久化：`save(path)` / `load(path)` JSON 格式。
 - HuggingFace 兼容：可从 `tokenizer.json` 加载（`from_file` / `from_hf`）。
 - 特殊 token：`<bos>` / `<eos>` / `<pad>` / `<unk>` 自动管理。
 - 零重型依赖：`tokenizers` 包可选（仅在 `kind="hf"` 时使用）。
+
+### Part4 新增能力（VerseTokenizer）
+
+- **VerseTokenizer**：原 QwenTokenizer 改名而来，针对 Qwen 系列模型 tokenizer 做了 9 项深度优化：
+  1. **高效 BPE merge**：基于优先级队列的 merge 算法，O(N·V) 复杂度
+  2. **特殊 token 管理**：`<|endoftext|>` / `<|im_start|>` / `<|im_end|>` 等自动注册
+  3. **UTF-8 边界修复**：`trim_to_utf8_boundary`，防 `errors="replace"` 产生 U+FFFD 乱码
+  4. **chat template**：`apply_chat_template` / `apply_prompt_template`，与 `<|im_start|>system\n...<|im_end|>` 格式对齐
+  5. **NFKC 归一化**：`nfkc_normalize`，统一全角/半角、组合字符
+  6. **GPT-4 风格预分词**：中文整字独立成块，数字与英文连续
+  7. **vocab 自适应**：训练数据不足时自动回退到更小 vocab
+  8. **add_special_tokens 开关**：`encode` 时可选是否添加 bos/eos
+  9. **持久化兼容**：可加载 Qwen 系列 `tokenizer.json`，也可保存为自有格式
+- **替代旧版 tokenizer.json**：CometSpark-V0.2 默认使用 VerseTokenizer，不再依赖旧版 `tokenizer.json`。
 
 ### Part3K2 新增能力
 
