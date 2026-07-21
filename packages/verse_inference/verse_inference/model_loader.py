@@ -96,8 +96,18 @@ def _merge_config(arch: str, user_kwargs: dict) -> dict:
 
 # 缓存已加载的 CometSparkLM 类，避免重复 import
 _COMETSPARK_LM_CLASS = None
-# 默认 demo 路径（可通过环境变量 COMETSPARK_DEMO_PATH 覆盖）
-_DEFAULT_COMETSPARK_DEMO_PATH = "/workspace/data/demo"
+# 默认 demo 路径基于 __file__ 推断，避免硬编码 /workspace（Task 7.5 修复）。
+# 假设包结构：<repo_root>/packages/verse_inference/verse_inference/model_loader.py
+# 推断 <repo_root> 后拼接 data/demo。
+# 用户可通过环境变量 COMETSPARK_DEMO_PATH 覆盖默认路径。
+_REPO_ROOT = os.path.dirname(
+    os.path.dirname(
+        os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__))  # verse_inference/  (package dir)
+        )  # verse_inference/  (project dir)
+    )  # packages/
+)  # <repo_root>/
+_DEFAULT_COMETSPARK_DEMO_PATH = os.path.join(_REPO_ROOT, "data", "demo")
 
 
 def register_cometspark_path(demo_path: str) -> None:

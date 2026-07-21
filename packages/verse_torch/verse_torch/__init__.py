@@ -113,6 +113,7 @@ from .training import (
     Trainer,
     BatchLoader,
     clip_grad_norm,
+    ParallelTrainer,
 )
 from .compress import (
     OutlierSafePruner,
@@ -128,6 +129,14 @@ from .compress import (
     count_parameters as compress_count_parameters,
     count_nonzero_params,
     compute_compressed_bits,
+)
+from .scoring import (
+    ScoringEvaluator,
+    exact_match,
+    prefix_accuracy,
+    char_f1,
+    bleu,
+    rouge_l,
 )
 
 __version__ = "0.1.0"
@@ -212,6 +221,7 @@ __all__ = [
     "Trainer",
     "BatchLoader",
     "clip_grad_norm",
+    "ParallelTrainer",
     # quantize 函数
     "quantize_int8",
     "dequantize_int8",
@@ -241,4 +251,11 @@ __all__ = [
     "compress_count_parameters",
     "count_nonzero_params",
     "compute_compressed_bits",
+    # scoring 函数/类
+    "ScoringEvaluator",
+    "exact_match",
+    "prefix_accuracy",
+    "char_f1",
+    "bleu",
+    "rouge_l",
 ]

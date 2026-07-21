@@ -110,13 +110,16 @@ def cross_entropy_loss(logits: Tensor, targets, ignore_index: int = -100,
                        label_smoothing: float = 0.0) -> Tensor:
     """交叉熵损失，支持 (B, T, V) / (N, V) 形状与 ignore_index 屏蔽。
 
-    内部实现：log_softmax + NLL，对 ``ignore_index`` 位置不计入 loss 与梯度。
+    Task 7.4: 合并重复实现，本函数改为委托给
+    :func:`verse_torch.losses.cross_entropy`，两个 API 入口共用同一实现，
+    保持向后兼容（用户惯用 ``training.cross_entropy_loss`` 仍可用）。
 
     Args:
         logits: 形状 (B, T, V) 或 (N, V) 的未归一化预测
         targets: 形状 (B, T) 或 (N,) 的整型类别索引，
                  可以是 Tensor / np.ndarray / list
-        ignore_index: 待忽略的标签值（默认 -100），不参与 loss 计算
+        ignore_index: 待忽略的标签值（默认 -100），不参与 loss 计算；
+            传 ``None`` 表示不做屏蔽（与 ``losses.cross_entropy`` 行为一致）
         label_smoothing: 标签平滑系数（默认 0.0 关闭）。>0 时将 hard target
             与均匀分布混合，``loss = (1-ε)·CE_hard + ε·CE_uniform``，
             起到正则化、缓解过拟合的作用。
@@ -124,52 +127,10 @@ def cross_entropy_loss(logits: Tensor, targets, ignore_index: int = -100,
     Returns:
         标量 Tensor，支持 backward
     """
-    if not isinstance(logits, Tensor):
-        logits = Tensor(logits, requires_grad=True)
-
-    # 把 targets 转为 int64 ndarray
-    if isinstance(targets, Tensor):
-        targets_np = targets.data
-    else:
-        targets_np = np.asarray(targets)
-    targets_np = targets_np.astype(np.int64)
-
-    # 自动 reshape 为 (N, V) / (N,)
-    if logits.ndim > 2:
-        V = logits.shape[-1]
-        logits = logits.reshape(-1, V)
-        targets_np = targets_np.reshape(-1)
-
-    N = logits.shape[0]
-    # log_softmax 沿最后一维
-    log_probs = logits.log_softmax(dim=-1)  # (N, V)
-
-    # 计算 ignore_index mask（转为整数索引以便 __getitem__ 反向稳定）
-    mask = (targets_np != ignore_index)  # (N,) bool
-    valid_idx = np.where(mask)[0]  # (n_valid,) int
-    n_valid = int(valid_idx.shape[0])
-
-    if n_valid == 0:
-        # 所有位置都被忽略：返回 0 标量但保持计算图连接，避免 backward 报错
-        return log_probs.sum() * 0.0
-
-    # 选取有效样本（用整数索引，反向 add.at 行为更明确）
-    valid_log_probs = log_probs[valid_idx]  # (n_valid, V)
-    valid_targets = targets_np[valid_idx]  # (n_valid,)
-
-    # 选取每个样本对应类别的 log_prob
-    selected = valid_log_probs[np.arange(n_valid), valid_targets]  # (n_valid,)
-
-    # 标签平滑：loss = (1-ε)·CE_hard + ε·CE_uniform
-    if label_smoothing is not None and label_smoothing > 0.0:
-        hard_loss = -selected.mean()
-        # 均匀分布部分：所有类别 log_prob 的平均（等价于 -mean(sum_V log_probs / V)）
-        uniform_loss = -valid_log_probs.mean()
-        loss = (1.0 - label_smoothing) * hard_loss + label_smoothing * uniform_loss
-    else:
-        # 负平均
-        loss = -selected.mean()
-    return loss
+    # 延迟导入避免循环依赖（losses.py 不依赖 training.py，可安全 import）
+    from .losses import cross_entropy
+    return cross_entropy(logits, targets, ignore_index=ignore_index,
+                         label_smoothing=label_smoothing)
 
 
 # ---------------------------------------------------------------------------
@@ -901,6 +862,193 @@ class Trainer:
             eval_interval=self.eval_interval,
         )
 
+    # ------------------------------------------------------------------
+    # Task 6.2: inference —— 批量推理生成
+    # ------------------------------------------------------------------
+
+    def inference(
+        self,
+        prompts,
+        temperature: float = 1.0,
+        top_k=None,
+        top_p=None,
+        max_tokens: int = 30,
+    ):
+        """模型推理：批量生成（同时支持字符串 prompt 与 token ID 序列）。
+
+        支持三种输入模式：
+        1. **字符串 prompt + tokenizer**：先用 ``tokenizer.encode`` 把字符串
+           转为 token ID 序列，调用 ``model.generate`` 生成，再用
+           ``tokenizer.decode`` 把结果转回字符串。
+        2. **字符串 prompt + 无 tokenizer**：原样把字符串传给
+           ``model.generate``（由模型自己处理编码），返回值转为字符串。
+        3. **token ID 序列**（向后兼容）：直接传给 ``model.generate``，
+           返回 ``list[list[int]]``（每条 prompt 对应的完整 ID 序列）。
+
+        若模型未实现 ``generate``，抛 ``NotImplementedError``。
+
+        Args:
+            prompts: 字符串列表（需 tokenizer 或模型自带编码）或
+                     token ID 序列列表（list / np.ndarray / Tensor 均可）
+            temperature: 采样温度；1.0 等价 greedy，>1 增加随机性，<1 收敛
+            top_k: top-k 采样；None 表示不限制
+            top_p: nucleus sampling 阈值 (0,1)；None 表示不限制
+            max_tokens: 每条 prompt 生成的最大 token 数
+
+        Returns:
+            - 字符串 prompt：返回 ``list[str]``（每条 prompt 对应的生成文本）
+            - token ID 序列 prompt：返回 ``list[list[int]]``（每条 prompt
+              对应的完整 token ID 序列，含原始 prompt + 新生成部分）
+        """
+        # 模型必须实现 generate
+        if not (hasattr(self.model, "generate") and callable(self.model.generate)):
+            raise NotImplementedError(
+                "Trainer.inference 需要模型实现 generate 方法；"
+                f"当前模型 {type(self.model).__name__} 未提供。"
+            )
+
+        # 可选 tokenizer：若 Trainer 实例上挂了 tokenizer 属性则使用
+        tokenizer = getattr(self, "tokenizer", None)
+
+        results = []
+        with no_grad():
+            if hasattr(self.model, "eval"):
+                try:
+                    self.model.eval()
+                except Exception:
+                    pass
+            for prompt in prompts:
+                is_str = isinstance(prompt, str)
+
+                if is_str:
+                    if tokenizer is not None:
+                        # 字符串 + tokenizer：encode → generate → decode
+                        input_ids = self._tokenizer_encode(tokenizer, prompt)
+                        generated = self._call_generate(
+                            input_ids, temperature, top_k, top_p, max_tokens
+                        )
+                        gen_ids = self._extract_ids(generated)
+                        result = tokenizer.decode(gen_ids)
+                    else:
+                        # 字符串 + 无 tokenizer：原样传给 generate
+                        generated = self._call_generate(
+                            prompt, temperature, top_k, top_p, max_tokens
+                        )
+                        # 模型可能返回字符串或 ndarray/list/Tensor
+                        if isinstance(generated, str):
+                            result = generated
+                        else:
+                            arr = (generated.data if isinstance(generated, Tensor)
+                                   else np.asarray(generated))
+                            result = str(arr.reshape(-1).tolist())
+                    results.append(result)
+                else:
+                    # token ID 序列（向后兼容）
+                    if isinstance(prompt, Tensor):
+                        ids_np = prompt.data.reshape(-1).astype(np.int64)
+                    else:
+                        ids_np = np.asarray(prompt).reshape(-1).astype(np.int64)
+                    idx_2d = ids_np[None, :]  # (1, T)
+                    generated = self._call_generate(
+                        idx_2d, temperature, top_k, top_p, max_tokens
+                    )
+                    if isinstance(generated, Tensor):
+                        gen_ids = generated.data.reshape(-1).tolist()
+                    else:
+                        gen_ids = np.asarray(generated).reshape(-1).tolist()
+                    results.append([int(x) for x in gen_ids])
+        return results
+
+    @staticmethod
+    def _tokenizer_encode(tokenizer, text):
+        """调用 tokenizer.encode，兼容是否接受 ``add_special_tokens`` 参数。"""
+        try:
+            return tokenizer.encode(text, add_special_tokens=True)
+        except TypeError:
+            return tokenizer.encode(text)
+
+    @staticmethod
+    def _extract_ids(generated):
+        """把 generate 的返回值统一转为 1D int 列表（供 tokenizer.decode）。"""
+        if isinstance(generated, Tensor):
+            arr = generated.data
+        else:
+            arr = np.asarray(generated)
+        return [int(x) for x in arr.reshape(-1).tolist()]
+
+    def _call_generate(self, idx_2d, temperature, top_k, top_p, max_tokens):
+        """调用模型 generate，兼容是否支持 top_p 参数。"""
+        try:
+            return self.model.generate(
+                idx_2d,
+                max_new_tokens=int(max_tokens),
+                temperature=float(temperature),
+                top_k=top_k,
+                top_p=top_p,
+            )
+        except TypeError:
+            # 模型 generate 不支持 top_p，降级调用
+            return self.model.generate(
+                idx_2d,
+                max_new_tokens=int(max_tokens),
+                temperature=float(temperature),
+                top_k=top_k,
+            )
+
+    def _generate_loop(self, ids, temperature, top_k, top_p, max_tokens):
+        """手动 token-by-token 生成（当模型无 generate 时使用）。"""
+        ids = list(ids)
+        for _ in range(int(max_tokens)):
+            x = Tensor(np.asarray([ids], dtype=np.int64))
+            logits = self.model(x)
+            logits_np = logits.data if isinstance(logits, Tensor) else np.asarray(logits)
+            # 取最后一个时间步的 logits，兼容 (B, T, V) / (B, V) / (V,)
+            while logits_np.ndim > 1:
+                if logits_np.shape[0] == 1:
+                    logits_np = logits_np[0]
+                else:
+                    logits_np = logits_np[-1]
+            next_id = self._sample_from_logits(
+                logits_np.reshape(-1), temperature, top_k, top_p
+            )
+            ids.append(int(next_id))
+        return ids
+
+    @staticmethod
+    def _sample_from_logits(logits, temperature, top_k, top_p):
+        """从 logits 采样单个 token，支持 temperature / top_k / top_p。"""
+        # 温度 ≤ 0 等价 greedy
+        if temperature is None or temperature <= 0:
+            return int(np.argmax(logits))
+        scaled = logits / max(float(temperature), 1e-8)
+        # 数值稳定：减去最大值后再 softmax
+        scaled = scaled - np.max(scaled)
+        probs = np.exp(scaled)
+        s = probs.sum()
+        if s <= 0:
+            return int(np.argmax(logits))
+        probs = probs / s
+        # top-k 截断
+        if top_k is not None and top_k > 0:
+            k = min(int(top_k), len(probs))
+            top_idx = np.argpartition(probs, -k)[-k:]
+            mask = np.zeros_like(probs)
+            mask[top_idx] = 1.0
+            probs = probs * mask
+            probs = probs / probs.sum()
+        # top-p (nucleus) 截断
+        if top_p is not None and 0.0 < float(top_p) < 1.0:
+            sorted_idx = np.argsort(probs)[::-1]
+            cumsum = np.cumsum(probs[sorted_idx])
+            cutoff = int(np.searchsorted(cumsum, float(top_p))) + 1
+            cutoff = min(cutoff, len(probs))
+            keep = sorted_idx[:cutoff]
+            mask = np.zeros_like(probs)
+            mask[keep] = 1.0
+            probs = probs * mask
+            probs = probs / probs.sum()
+        return int(np.random.choice(len(probs), p=probs))
+
 
 # ---------------------------------------------------------------------------
 # Task 3.6: BatchLoader —— 对齐 torch.utils.data.DataLoader 接口
@@ -1021,7 +1169,355 @@ __all__ = [
     "Trainer",
     "BatchLoader",
     "clip_grad_norm",
+    "ParallelTrainer",
     # 重新导出 optim 中新增项，方便用户从 training 一次性导入
     "LambdaLR",
     "warmup_cosine_lr",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Task 5: ParallelTrainer —— 并行训练器（CPU 串行实现，接口对齐并行）
+# ---------------------------------------------------------------------------
+
+
+class ParallelTrainer:
+    """并行训练器（CPU 串行实现，接口对齐并行）。
+
+    把 ``max_steps`` 拆成 N 个 chunk，每个 chunk 用一个独立 ``Trainer`` 实例训练，
+    训练完后按 ``train_loss + val_loss`` 排序（**差的前、好的后**）串行重训，
+    最后整体 fine-tune 若干步。
+
+    关键 BUG 修复：每个 chunk 完成后基于**完整** val 数据集更新 ``val_loss``
+    （旧实现只用 batch 局部 val，存在不可比与方差大的漏洞）。
+
+    Args:
+        model: 模型（需实现 ``state_dict`` / ``load_state_dict`` / ``parameters``）
+        train_dataset: 训练数据集（实现 ``__getitem__`` 与 ``__len__``）
+        val_dataset: 验证数据集（**完整！**用于 ``val_loss`` 更新）
+        optimizer_cls: 优化器类（默认在 ``fit`` 时回退到 ``AdamW``）
+        optimizer_kwargs: 优化器额外参数（如 ``betas`` / ``eps`` / ``weight_decay``）
+        cfg: 训练配置 dict，包含：
+            - parallel_chunks: int (N, 默认 4)
+            - max_steps: int (默认 200)
+            - batch_size: int (默认 8)
+            - lr: float (默认 0.003)
+            - warmup: int (默认 20)
+            - eval_interval: int (默认 20)
+            - grad_clip: float (默认 0.0)
+            - label_smoothing: float (默认 0.0)
+            - merge_finetune_steps: int (默认 max_steps // 10)
+            - seed: int (默认 42)
+            - patience: int (默认 10，传入 chunk Trainer 用于早停)
+        loss_fn: 损失函数（默认 ``cross_entropy_loss``）
+        collate_fn: 批处理函数（默认 ``_default_collate``）
+        checkpoint_mgr: ``CheckpointManager``（可选；若提供则在 fit 结束保存 best）
+
+    用法:
+        >>> trainer = ParallelTrainer(model, train_ds, val_ds, cfg={"parallel_chunks": 4, "max_steps": 200})
+        >>> trainer.fit()
+    """
+
+    def __init__(self, model, train_dataset, val_dataset,
+                 optimizer_cls=None, optimizer_kwargs=None,
+                 cfg=None, loss_fn=None, collate_fn=None,
+                 checkpoint_mgr=None):
+        self.model = model
+        self.train_dataset = train_dataset
+        self.val_dataset = val_dataset
+        self.optimizer_cls = optimizer_cls  # 默认在 fit 时回退到 AdamW
+        self.optimizer_kwargs = optimizer_kwargs or {}
+        self.cfg = cfg or {}
+        self.loss_fn = loss_fn  # 默认 cross_entropy_loss
+        self.collate_fn = collate_fn  # 默认 _default_collate
+        self.checkpoint_mgr = checkpoint_mgr
+
+        self.parallel_chunks = int(self.cfg.get("parallel_chunks", 4))
+        if self.parallel_chunks < 1:
+            self.parallel_chunks = 1
+        self.max_steps = int(self.cfg.get("max_steps", 200))
+        self.batch_size = int(self.cfg.get("batch_size", 8))
+        self.lr = float(self.cfg.get("lr", 0.003))
+        self.warmup = int(self.cfg.get("warmup", 20))
+        self.eval_interval = int(self.cfg.get("eval_interval", 20))
+        self.grad_clip = float(self.cfg.get("grad_clip", 0.0))
+        self.label_smoothing = float(self.cfg.get("label_smoothing", 0.0))
+        self.merge_finetune_steps = int(self.cfg.get(
+            "merge_finetune_steps", max(1, self.max_steps // 10)))
+        self.seed = int(self.cfg.get("seed", 42))
+        # chunk Trainer 的早停耐心（设大一些避免 chunk 内过早停止）
+        self.patience = int(self.cfg.get("patience", 10))
+
+        # 训练历史
+        self.history = {"train_loss": [], "val_loss": [], "steps": []}
+        self.chunk_stats = []  # 每个 chunk 的统计（按完成顺序）
+        self.chunk_steps_list = []  # 拆分后的步数列表（fit 后填充）
+        self.best_val_loss = float("inf")
+        self.best_state_dict = None
+
+    # ------------------------------------------------------------------
+    # 公开辅助：步数拆分（便于测试验证）
+    # ------------------------------------------------------------------
+
+    def _split_steps(self):
+        """把 ``max_steps`` 拆成 ``parallel_chunks`` 份，余数均摊到前几个 chunk。
+
+        返回 ``list[int]``，长度 = ``parallel_chunks``，和 = ``max_steps``。
+        """
+        n = self.parallel_chunks
+        base = self.max_steps // n
+        remainder = self.max_steps % n
+        steps_list = [base] * n
+        for i in range(remainder):
+            steps_list[i] += 1
+        # 过滤 0 步 chunk（max_steps < parallel_chunks 时部分 chunk 为 0）
+        steps_list = [s for s in steps_list if s > 0]
+        return steps_list
+
+    # ------------------------------------------------------------------
+    # 关键 BUG 修复：基于完整 val 数据集评估
+    # ------------------------------------------------------------------
+
+    def _eval_full_val(self, model) -> float:
+        """【BUG 修复】基于完整 val 数据集计算平均 val_loss。
+
+        旧实现只用一个 batch 估算 val_loss，存在严重漏洞：
+        - 不同 chunk 用的 batch 可能不同，val_loss 不可比
+        - 单 batch 估算方差大，无法准确反映模型质量
+
+        本方法跑完整 val 数据集，返回平均 val_loss。
+        若 ``val_dataset`` 为空，返回 ``inf``。
+        """
+        if self.val_dataset is None or len(self.val_dataset) == 0:
+            return float("inf")
+
+        loss_fn = self.loss_fn if self.loss_fn is not None else cross_entropy_loss
+
+        total_loss = 0.0
+        n_batches = 0
+        # 用 BatchLoader 跑完整 val（shuffle=False 保证可复现）
+        val_loader = BatchLoader(
+            self.val_dataset, batch_size=self.batch_size,
+            shuffle=False, collate_fn=self.collate_fn, seed=self.seed,
+        )
+        with no_grad():
+            for batch in val_loader:
+                if batch is None:
+                    continue
+                x_batch, y_batch = batch
+                x = _as_tensor(x_batch)
+                y = _as_tensor(y_batch)
+                logits = model(x)
+                loss = loss_fn(logits, y, label_smoothing=self.label_smoothing)
+                total_loss += _scalar(loss)
+                n_batches += 1
+        if n_batches == 0:
+            return float("inf")
+        return total_loss / n_batches
+
+    # ------------------------------------------------------------------
+    # 单个 chunk 训练
+    # ------------------------------------------------------------------
+
+    def _train_chunk(self, model, train_dataset, chunk_steps, chunk_id):
+        """训练单个 chunk，返回 ``(model, train_loss, val_loss)``。
+
+        - 用 ``BatchLoader`` 包装 ``train_dataset`` / ``val_dataset`` 后传入 ``Trainer``
+          （修复参考实现中错误使用 ``train_dataset=`` 关键字的 Bug）。
+        - 用 ``tempfile.TemporaryDirectory`` 作为 chunk 的 ``save_dir``，
+          避免 chunk 内部的 checkpoint/loss 文件污染用户目录。
+        - 关闭 tqdm 进度条与实时绘图，降低 IO 噪音。
+        - chunk 训练结束后调用 ``_eval_full_val`` 计算可比较的 val_loss。
+        """
+        if chunk_steps <= 0:
+            # 0 步 chunk：仅评估当前模型
+            val_loss = self._eval_full_val(model)
+            return model, float("inf"), val_loss
+
+        # chunk 配置：覆盖 max_steps/warmup/eval_interval，关闭进度条与实时绘图
+        chunk_cfg = dict(self.cfg)
+        chunk_cfg["max_steps"] = chunk_steps
+        chunk_cfg["warmup"] = min(self.warmup, max(1, chunk_steps // 4))
+        chunk_cfg["eval_interval"] = min(self.eval_interval, max(1, chunk_steps // 2))
+        chunk_cfg["patience"] = max(self.patience, chunk_steps + 1)  # chunk 内不早停
+        chunk_cfg["grad_clip"] = self.grad_clip
+        chunk_cfg["label_smoothing"] = self.label_smoothing
+        chunk_cfg["enable_progress_bar"] = False
+        chunk_cfg["realtime_plot"] = False
+        chunk_cfg["log_interval"] = max(chunk_steps + 1, 1000)  # 静默
+        chunk_cfg["loss_rate_window"] = min(50, max(10, chunk_steps // 4))
+
+        optimizer_cls = self.optimizer_cls
+        if optimizer_cls is None:
+            from .optim import AdamW
+            optimizer_cls = AdamW
+        optimizer = optimizer_cls(
+            model.parameters(), lr=self.lr, **self.optimizer_kwargs)
+
+        # 用 BatchLoader 包装 dataset，对齐 Trainer 接口
+        # 注意：chunk_id 在重训阶段为 -(idx+1)、finetune 阶段为 -999，
+        # 直接相加会导致 seed 为负数（RandomState 要求 [0, 2**32-1]），
+        # 用 abs(chunk_id)+1 偏移确保非负且各 chunk 间 seed 互不相同。
+        chunk_seed = int(self.seed) + abs(int(chunk_id)) + 1
+        chunk_seed = chunk_seed % (2**32 - 1)
+        train_loader = BatchLoader(
+            train_dataset, batch_size=self.batch_size, shuffle=True,
+            collate_fn=self.collate_fn, seed=chunk_seed)
+        val_loader = BatchLoader(
+            self.val_dataset, batch_size=self.batch_size, shuffle=False,
+            collate_fn=self.collate_fn, seed=self.seed)
+
+        loss_fn = self.loss_fn if self.loss_fn is not None else cross_entropy_loss
+
+        # chunk 临时保存目录（自动清理）
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix=f"verse_chunk_{chunk_id}_") as tmp_dir:
+            chunk_cfg["save_dir"] = tmp_dir
+            chunk_trainer = Trainer(
+                model=model,
+                train_loader=train_loader,
+                val_loader=val_loader,
+                optimizer=optimizer,
+                scheduler=None,
+                cfg=chunk_cfg,
+            )
+            chunk_trainer.fit()
+            # 关键：用完整 val 数据集计算 val_loss（修复 BUG）
+            val_loss = self._eval_full_val(model)
+            train_loss = (chunk_trainer.train_losses[-1]
+                          if chunk_trainer.train_losses else float("inf"))
+        return model, train_loss, val_loss
+
+    # ------------------------------------------------------------------
+    # 主流程
+    # ------------------------------------------------------------------
+
+    def fit(self):
+        """并行训练主流程。
+
+        1. 拆分 ``max_steps`` 为 N 个 chunk
+        2. 每个 chunk 独立训练（CPU 串行，避免 GIL 竞争），每个 chunk 结束后用
+           完整 val 数据集评估 val_loss
+        3. 按 ``train_loss + val_loss`` 排序（差前好后）
+        4. 串行重训（差的部分先收敛、好的部分微调），每次重训后更新 best
+        5. 整体 fine-tune（``merge_finetune_steps`` 步）
+        6. 加载最佳状态到 ``self.model``，若提供 ``checkpoint_mgr`` 则保存
+
+        Returns:
+            ``self.history`` dict，含 ``train_loss`` / ``val_loss`` / ``steps`` 三个列表
+        """
+        import copy
+
+        print(f"[parallel] 开始并行训练 chunks={self.parallel_chunks} "
+              f"max_steps={self.max_steps} merge_ft={self.merge_finetune_steps}",
+              flush=True)
+
+        # 1. 拆分步数
+        chunk_steps_list = self._split_steps()
+        self.chunk_steps_list = list(chunk_steps_list)
+        actual_chunks = len(chunk_steps_list)
+        print(f"[parallel] 步数拆分: {chunk_steps_list}", flush=True)
+
+        # 备份原始模型状态（每个 chunk 都从同一状态出发）
+        original_state = None
+        if hasattr(self.model, "state_dict"):
+            original_state = copy.deepcopy(self.model.state_dict())
+
+        # 2. 训练每个 chunk（从原始状态出发，独立训练）
+        chunk_results = []
+        for i in range(actual_chunks):
+            # 重置模型到原始状态
+            if original_state is not None and hasattr(self.model, "load_state_dict"):
+                self.model.load_state_dict(copy.deepcopy(original_state))
+
+            print(f"[parallel] chunk {i+1}/{actual_chunks} "
+                  f"训练 {chunk_steps_list[i]} 步...", flush=True)
+            model, train_loss, val_loss = self._train_chunk(
+                self.model, self.train_dataset, chunk_steps_list[i], i)
+
+            stat = {
+                "chunk_id": i,
+                "steps": chunk_steps_list[i],
+                "train_loss": float(train_loss),
+                "val_loss": float(val_loss),
+                "model_state": (copy.deepcopy(model.state_dict())
+                                if hasattr(model, "state_dict") else None),
+            }
+            chunk_results.append(stat)
+            self.chunk_stats.append(stat)
+            print(f"[parallel] chunk {i+1} 完成: "
+                  f"train_loss={train_loss:.4f} val_loss={val_loss:.4f}", flush=True)
+
+            # 更新 best（chunk 阶段也记录）
+            if val_loss < self.best_val_loss:
+                self.best_val_loss = float(val_loss)
+                if hasattr(self.model, "state_dict"):
+                    self.best_state_dict = copy.deepcopy(self.model.state_dict())
+
+        # 3. 按 train_loss + val_loss 排序（差前好后：loss 大的在前）
+        chunk_results.sort(
+            key=lambda x: x["train_loss"] + x["val_loss"], reverse=True)
+        print(f"[parallel] chunk 排序（差前好后）: "
+              f"{[r['chunk_id'] for r in chunk_results]}", flush=True)
+
+        # 4. 串行重训（差前好后）
+        if original_state is not None and hasattr(self.model, "load_state_dict"):
+            self.model.load_state_dict(copy.deepcopy(original_state))
+
+        for idx, result in enumerate(chunk_results):
+            print(f"[parallel] 串行重训 chunk {result['chunk_id']} "
+                  f"({idx+1}/{len(chunk_results)})...", flush=True)
+            # 加载该 chunk 的最佳状态作为重训起点
+            if result["model_state"] is not None and hasattr(self.model, "load_state_dict"):
+                self.model.load_state_dict(copy.deepcopy(result["model_state"]))
+            # 再训练一段短步数（chunk_steps // 4，至少 1 步）
+            retrain_steps = max(1, result["steps"] // 4)
+            self._train_chunk(
+                self.model, self.train_dataset, retrain_steps, -(idx + 1))
+            # 更新 val_loss 与 best
+            val_loss = self._eval_full_val(self.model)
+            if val_loss < self.best_val_loss:
+                self.best_val_loss = float(val_loss)
+                if hasattr(self.model, "state_dict"):
+                    self.best_state_dict = copy.deepcopy(self.model.state_dict())
+                print(f"[parallel] 新最佳 val_loss={val_loss:.4f}", flush=True)
+
+        # 5. 整体 fine-tune
+        if self.merge_finetune_steps > 0:
+            print(f"[parallel] 整体 fine-tune {self.merge_finetune_steps} 步...",
+                  flush=True)
+            if self.best_state_dict is not None and hasattr(self.model, "load_state_dict"):
+                self.model.load_state_dict(copy.deepcopy(self.best_state_dict))
+            self._train_chunk(
+                self.model, self.train_dataset,
+                self.merge_finetune_steps, -999)
+            val_loss = self._eval_full_val(self.model)
+            if val_loss < self.best_val_loss:
+                self.best_val_loss = float(val_loss)
+                if hasattr(self.model, "state_dict"):
+                    self.best_state_dict = copy.deepcopy(self.model.state_dict())
+
+        # 6. 加载最佳状态到 model
+        if self.best_state_dict is not None and hasattr(self.model, "load_state_dict"):
+            self.model.load_state_dict(copy.deepcopy(self.best_state_dict))
+
+        # 7. 保存 checkpoint（若提供了 CheckpointManager）
+        if self.checkpoint_mgr is not None and self.best_state_dict is not None:
+            try:
+                # CheckpointManager.save_best 期望 state dict（任意结构）
+                self.checkpoint_mgr.save_best({
+                    "model_state_dict": self.best_state_dict,
+                    "val_loss": float(self.best_val_loss),
+                })
+            except Exception as e:
+                print(f"[parallel] 警告：保存 checkpoint 失败：{e}", flush=True)
+
+        # 8. 汇总 history（取每个 chunk 的最终 train/val loss）
+        for stat in self.chunk_stats:
+            self.history["train_loss"].append(stat["train_loss"])
+            self.history["val_loss"].append(stat["val_loss"])
+            self.history["steps"].append(stat["steps"])
+
+        print(f"[parallel] 训练完成 best_val_loss={self.best_val_loss:.4f}",
+              flush=True)
+        return self.history

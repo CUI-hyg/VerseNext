@@ -36,6 +36,7 @@ training:
   enable_progress_bar: true
   realtime_plot: true
   eta_window: 20
+  parallel_chunks: 1          # Part3K2: 并行训练 chunk 数（1=不并行）
 
 tokenizer:
   kind: byte

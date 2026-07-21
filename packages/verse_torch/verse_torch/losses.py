@@ -17,31 +17,90 @@ import numpy as np
 from .tensor import Tensor
 
 
-def cross_entropy(logits: Tensor, targets) -> Tensor:
+def cross_entropy(logits: Tensor, targets, ignore_index: int = -100,
+                  label_smoothing: float = 0.0) -> Tensor:
     """多分类交叉熵损失。
 
     等价于 PyTorch `F.cross_entropy(logits, targets)`，内部用 log_softmax + nll_loss。
 
     Args:
-        logits: (N, C) 未归一化的预测
-        targets: (N,) int 类别索引（可传入 list / ndarray / Tensor）
+        logits: ``(N, C)`` 或 ``(B, T, V)`` 的未归一化预测。
+            3D 输入会自动 reshape 为 2D（与 PyTorch 行为一致）。
+        targets: ``(N,)`` 或 ``(B, T)`` 的 int 类别索引
+            （可传入 list / ndarray / Tensor）。
+        ignore_index: 待忽略的标签值（默认 -100，与 PyTorch / HF 默认值一致），
+            该位置的样本不计入 loss 与梯度；``None`` 表示不做屏蔽（向后兼容旧 API）。
+        label_smoothing: 标签平滑系数（默认 0.0 关闭）。
+            ``>0`` 时将 hard target 与均匀分布混合，
+            ``loss = (1-ε)·CE_hard + ε·CE_uniform``。
 
     Returns:
-        标量 Tensor
+        标量 Tensor，支持 backward
+
+    Task 7.4: 与 ``verse_torch.training.cross_entropy_loss`` 共用同一实现，
+    后者仅作为别名委托给本函数。
     """
+    if not isinstance(logits, Tensor):
+        logits = Tensor(logits, requires_grad=True)
+
+    # 把 targets 转为 int64 ndarray
     if isinstance(targets, Tensor):
-        targets = targets.data
-    targets = np.asarray(targets).astype(np.int64)
-    N = logits.shape[0]
-    # log_softmax 沿 dim=-1
-    log_probs = logits.log_softmax(dim=-1)
-    # 选取正确类别的 log_prob
-    # 用 advanced indexing: log_probs[arange(N), targets]
-    arange = np.arange(N)
-    # 通过 __getitem__ 实现可微
-    selected = log_probs[arange, targets]
-    # 取负平均
-    loss = -selected.mean()
+        targets_np = targets.data
+    else:
+        targets_np = np.asarray(targets)
+    targets_np = targets_np.astype(np.int64)
+
+    # 自动 reshape 为 (N, V) / (N,)（与 PyTorch F.cross_entropy 行为一致）
+    if logits.ndim > 2:
+        V = logits.shape[-1]
+        logits = logits.reshape(-1, V)
+        targets_np = targets_np.reshape(-1)
+
+    # log_softmax 沿最后一维
+    log_probs = logits.log_softmax(dim=-1)  # (N, V)
+
+    # 计算 ignore_index mask（转为整数索引以便 __getitem__ 反向稳定）
+    if ignore_index is None:
+        # 旧 API 行为：不做屏蔽（默认对所有样本求平均）
+        N = logits.shape[0]
+        arange = np.arange(N)
+        # 通过 __getitem__ 实现可微 advanced indexing
+        selected = log_probs[arange, targets_np]  # (N,)
+        # 标签平滑：loss = (1-ε)·CE_hard + ε·CE_uniform
+        if label_smoothing is not None and label_smoothing > 0.0:
+            hard_loss = -selected.mean()
+            uniform_loss = -log_probs.mean()
+            loss = (1.0 - label_smoothing) * hard_loss + label_smoothing * uniform_loss
+        else:
+            loss = -selected.mean()
+        return loss
+
+    # 带屏蔽的标准实现（与 training.cross_entropy_loss 共用）
+    mask = (targets_np != ignore_index)  # (N,) bool
+    valid_idx = np.where(mask)[0]  # (n_valid,) int
+    n_valid = int(valid_idx.shape[0])
+
+    if n_valid == 0:
+        # 所有位置都被忽略：返回 0 标量但保持计算图连接，避免 backward 报错
+        return log_probs.sum() * 0.0
+
+    # 选取有效样本（用整数索引，反向 add.at 行为更明确）
+    valid_log_probs = log_probs[valid_idx]  # (n_valid, V)
+    valid_targets = targets_np[valid_idx]  # (n_valid,)
+
+    # 选取每个样本对应类别的 log_prob
+    arange = np.arange(n_valid)
+    selected = valid_log_probs[arange, valid_targets]  # (n_valid,)
+
+    # 标签平滑：loss = (1-ε)·CE_hard + ε·CE_uniform
+    if label_smoothing is not None and label_smoothing > 0.0:
+        hard_loss = -selected.mean()
+        # 均匀分布部分：所有类别 log_prob 的平均（等价于 -mean(sum_V log_probs / V)）
+        uniform_loss = -valid_log_probs.mean()
+        loss = (1.0 - label_smoothing) * hard_loss + label_smoothing * uniform_loss
+    else:
+        # 负平均
+        loss = -selected.mean()
     return loss
 
 
@@ -130,8 +189,9 @@ def binary_cross_entropy_with_logits(logits: Tensor, target: Tensor) -> Tensor:
     def _backward():
         if logits.requires_grad:
             # dL/dx = sigmoid(x) - target，再除以 N
+            # 用 tanh 等价公式避免 np.where 两分支都计算导致的 overflow
             N = logits.data.size
-            sx = np.where(x >= 0, 1.0 / (1.0 + np.exp(-x)), np.exp(x) / (1.0 + np.exp(x)))
+            sx = 0.5 * (1.0 + np.tanh(0.5 * x))
             grad = (sx - t) / N
             logits._accumulate_grad(out.grad * grad)
         if target.requires_grad:

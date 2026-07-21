@@ -501,11 +501,13 @@ class Tensor:
         return out
 
     def sigmoid(self) -> "Tensor":
-        # 数值稳定 sigmoid
+        # 数值稳定 sigmoid：用等价公式 0.5 * (1 + tanh(x/2))。
+        # 旧版 np.where(x>=0, 1/(1+exp(-x)), exp(x)/(1+exp(x))) 虽然
+        # 结果正确，但 NumPy 语义下两个分支都会被计算，导致
+        # x 为大负数时 exp(-x) 溢出、大正数时 exp(x) 溢出，产生 RuntimeWarning。
+        # tanh 是数值稳定的，无 overflow 风险。
         x = self.data
-        out_data = np.where(x >= 0,
-                            1.0 / (1.0 + np.exp(-x)),
-                            np.exp(x) / (1.0 + np.exp(x)))
+        out_data = 0.5 * (1.0 + np.tanh(0.5 * x))
 
         def _backward():
             if self.requires_grad:
@@ -530,10 +532,9 @@ class Tensor:
 
     def silu(self) -> "Tensor":
         # SiLU = x * sigmoid(x)
+        # sigmoid 用 0.5 * (1 + tanh(x/2)) 等价公式避免 overflow warning
         x = self.data
-        s = np.where(x >= 0,
-                     1.0 / (1.0 + np.exp(-x)),
-                     np.exp(x) / (1.0 + np.exp(x)))
+        s = 0.5 * (1.0 + np.tanh(0.5 * x))
         out_data = x * s
 
         def _backward():
