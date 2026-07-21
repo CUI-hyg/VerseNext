@@ -1,4 +1,4 @@
-"""数据加载：支持 chat 数组 + prompt-completion 双格式。
+"""数据加载：支持 chat 数组 + prompt-completion + text 三种格式。
 
 仅依赖 NumPy + 标准库。返回的 (x, y) 是 ``np.ndarray``，verse_torch.training.Trainer
 内部会用 ``_as_tensor`` 自动转为 Tensor。
@@ -8,8 +8,9 @@
        → 逐消息编码为 ``<|role|>content``，assistant content 参与 loss
     2. prompt-completion：``{"prompt":"...","completion":"..."}``
        → ``<|user|>prompt<|assistant|>completion<|eos|>``，completion 参与 loss
-
-旧版 ``{"text":"..."}`` 格式已废弃，会抛出 ``ValueError``。
+       （允许单样本：只存在 prompt 或只存在 completion 时，存在字段当作纯文本，全部参与 loss）
+    3. text：``{"text":"..."}``
+       → 纯文本，所有 token 参与 loss（适用于预训练 / 续训）
 """
 
 from __future__ import annotations
@@ -63,7 +64,8 @@ def _detect_format(item) -> str:
     """检测样本格式。
 
     Returns:
-        ``"chat"`` | ``"prompt_completion"`` | ``"legacy_text"`` | ``"unknown"``
+        ``"chat"`` | ``"prompt_completion"`` | ``"prompt_only"`` |
+        ``"completion_only"`` | ``"text"`` | ``"unknown"``
     """
     if isinstance(item, list):
         # chat 数组：每个元素是 {"role":..., "content":...}
@@ -73,8 +75,13 @@ def _detect_format(item) -> str:
     if isinstance(item, dict):
         if "prompt" in item and "completion" in item:
             return "prompt_completion"
+        # 单样本：只存在 prompt 或只存在 completion
+        if "prompt" in item:
+            return "prompt_only"
+        if "completion" in item:
+            return "completion_only"
         if "text" in item:
-            return "legacy_text"
+            return "text"
     return "unknown"
 
 
@@ -86,13 +93,14 @@ def _detect_format(item) -> str:
 class TextDataset:
     """基于 jsonl + tokenizer 的 next-token prediction 数据集。
 
-    支持两种样本格式：
+    支持三种样本格式：
         1. chat 数组：``[{"role":"user","content":"..."},{"role":"assistant","content":"..."}]``
            → 逐消息编码为 ``<|role|>content``，assistant content 参与 loss
         2. prompt-completion：``{"prompt":"...","completion":"..."}``
            → ``<|user|>prompt<|assistant|>completion<|eos|>``，completion 参与 loss
-
-    旧版 ``{"text":"..."}`` 格式已废弃，会抛出 ``ValueError``。
+           （允许单样本：只存在 prompt 或只存在 completion 时，存在字段当作纯文本，全部参与 loss）
+        3. text：``{"text":"..."}``
+           → 纯文本，所有 token 参与 loss（适用于预训练 / 续训）
 
     Args:
         tok: tokenizer 对象（需有 ``encode`` 方法；若有
@@ -124,19 +132,20 @@ class TextDataset:
 
         for item in items:
             fmt = _detect_format(item)
-            if fmt == "legacy_text":
-                raise ValueError(
-                    f"旧版 text 格式已废弃，请使用 chat 数组或 prompt-completion 格式。"
-                    f"文件：{jsonl_path}"
-                )
             if fmt == "unknown":
                 # 跳过未知格式（不中断加载，但记录警告）
                 continue
 
             if fmt == "chat":
                 ids, mask = self._encode_chat(item)
-            else:  # prompt_completion
+            elif fmt == "prompt_completion":
                 ids, mask = self._encode_prompt_completion(item)
+            elif fmt in ("text", "prompt_only", "completion_only"):
+                # text / 单样本：存在的字段当作纯文本，全部参与 loss
+                text = item.get("text") or item.get("prompt") or item.get("completion") or ""
+                ids, mask = self._encode_text(text)
+            else:
+                continue
 
             all_ids.extend(ids)
             all_mask.extend(mask)
@@ -224,6 +233,21 @@ class TextDataset:
             + [1] * len(completion_ids)
             + [1] * len(eos_ids)
         )
+        return ids, mask
+
+    def _encode_text(self, text: str) -> tuple:
+        """编码纯文本为 (ids, loss_mask)，所有 token 参与 loss。
+
+        适用于：
+        - ``{"text":"..."}`` 格式（预训练 / 续训）
+        - 单样本：只存在 prompt 或只存在 completion 时，存在的字段当作纯文本
+
+        末尾追加 ``<|eos|>``（参与 loss），作为样本边界标记。
+        """
+        ids = self._safe_encode(text)
+        eos_ids = self._safe_encode(_EOS_STR)
+        ids = list(ids) + eos_ids
+        mask = [1] * len(ids)
         return ids, mask
 
     # ------------------------------------------------------------------
