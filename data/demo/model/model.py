@@ -1,14 +1,11 @@
 """CometSparkLM: CometSpark-v0.1 语言模型。
 
-支持三种架构（Part4 P3.3 升级）：
+支持两种架构：
 - arch="hybrid": 基于 ``verse_nex.hybrid.HybridLM``（SSM + Sparse Attention 混合）
 - arch="transformer": 基于 ``verse_torch.nn.TransformerLM``（GQA + RoPE Transformer）
-- arch="versenex": 基于 ``verse_nex.versenex.VerseNexLM``（**完全原生架构**，
-  UltraSparse 多注意力 + MoD 多稠密分区 + 可选 Medusa 副头，无需 Transformer 依赖）
 
 对外统一接口：
 - ``forward(idx)`` → logits (B, T, vocab)
-- ``forward(idx, targets=y)`` → dict（含 logits / loss / aux_loss / total_loss 等）
 - ``generate(idx, max_new_tokens, temperature, top_k)`` → idx ndarray
 - ``save(path)`` / ``load(path)`` / ``from_pretrained(path)``
 - ``save_pretrained(dir_path)`` / ``from_pretrained(dir_path)``（HuggingFace 风格目录）
@@ -38,14 +35,8 @@ def _import_hybrid_lm():
     return HybridLM
 
 
-# Part4 P3.3: 延迟导入 VerseNexLM，避免在不使用 versenex 时也加载 verse_nex
-def _import_versenex_lm():
-    from verse_nex.versenex import VerseNexLM, VerseNexConfig
-    return VerseNexLM, VerseNexConfig
-
-
 class CometSparkLM(Module):
-    """CometSpark-v0.1 语言模型（hybrid / transformer / versenex 三选一）。
+    """CometSpark-v0.1 语言模型（hybrid / transformer 二选一）。
 
     Args:
         config: :class:`CometSparkConfig` 实例
@@ -55,9 +46,9 @@ class CometSparkLM(Module):
         super().__init__()
         self.config = config
         # 校验 arch
-        if config.arch not in ("hybrid", "transformer", "versenex"):
+        if config.arch not in ("hybrid", "transformer"):
             raise ValueError(
-                f"arch 必须为 'hybrid' / 'transformer' / 'versenex'，得到 {config.arch!r}"
+                f"arch 必须为 'hybrid' 或 'transformer'，得到 {config.arch!r}"
             )
 
         if config.arch == "hybrid":
@@ -76,34 +67,6 @@ class CometSparkLM(Module):
                 sparse_placement="spread",
                 tie_weights=config.tie_weights,
             )
-        elif config.arch == "versenex":
-            # Part4 P3.3: 原生 VerseNex 架构（UltraSparse + MoD + Medusa）
-            VerseNexLM, VerseNexConfig = _import_versenex_lm()
-            d_model = (config.d_model if config.d_model is not None
-                       else config.n_embd)
-            mod_d_ff = (config.mod_d_ff if config.mod_d_ff is not None
-                        else 4 * config.n_embd)
-            vn_config = VerseNexConfig(
-                vocab_size=config.vocab_size,
-                n_layer=config.n_layer,
-                d_model=d_model,
-                n_head=config.n_head,
-                n_kv_head=config.n_kv_head,
-                attn_top_k=config.attn_top_k,
-                dropout=config.dropout,
-                mod_n_parts=config.mod_n_parts,
-                mod_n_experts=config.mod_n_experts,
-                mod_top_k_parts=config.mod_top_k_parts,
-                mod_top_k_experts=config.mod_top_k_experts,
-                mod_d_ff=mod_d_ff,
-                mod_aux_loss_weight=config.mod_aux_loss_weight,
-                medusa_n_heads=config.medusa_n_heads,
-                medusa_aux_weight=config.medusa_aux_weight,
-                max_position_embeddings=config.max_position_embeddings,
-                tie_weights=config.tie_weights,
-                use_position_embed=config.use_position_embed,
-            )
-            self.net = VerseNexLM(vn_config)
         else:
             # arch == "transformer"
             self.net = TransformerLM(
@@ -211,19 +174,11 @@ class CometSparkLM(Module):
         遍历 ``self.parameters()`` 累加每个参数张量的元素数
         （``np.prod(p.data.shape)``）。
 
-        Part4 P3.3 修复：当 ``tie_weights=True`` 时，``token_embed.weight`` 与
-        ``lm_head.weight`` 共享同一个 Tensor 对象，``parameters()`` 会返回两次，
-        导致参数量多算。用 ``id(p)`` 去重统计。
-
         Returns:
             参数总量（int）
         """
-        seen = set()
         total = 0
         for p in self.parameters():
-            if id(p) in seen:
-                continue
-            seen.add(id(p))
             total += int(np.prod(p.data.shape))
         return total
 
@@ -231,35 +186,20 @@ class CometSparkLM(Module):
     # forward
     # ------------------------------------------------------------------
 
-    def forward(self, idx, targets=None):
+    def forward(self, idx) -> Tensor:
         """前向计算。
 
         Args:
             idx: 形状 (B, T) 的整数索引，Tensor / ndarray / list 均可
-            targets: 可选，(B, T) 整数目标 token ids
 
         Returns:
-            - 当 ``targets is None``：返回 logits Tensor, shape (B, T, vocab_size)
-            - 当 ``targets is not None``：
-                * transformer / hybrid arch：仍返回 logits（保持向后兼容，
-                  训练器侧用 ``cross_entropy_loss(logits, y)`` 计算 loss）
-                * versenex arch：返回 dict（含 ``logits`` / ``loss`` /
-                  ``aux_loss`` / ``total_loss`` 等），由 VerseNexLM 内置
-                  loss 计算（含 MoD aux + Medusa 副头 loss）
+            logits: Tensor, shape (B, T, vocab_size)
         """
         if not isinstance(idx, Tensor):
             idx = Tensor(np.asarray(idx, dtype=np.int64))
         elif idx.data.dtype != np.int64:
             # 用 .astype 拷贝避免破坏原 Tensor
             idx = Tensor(idx.data.astype(np.int64))
-
-        # versenex arch: 委托给 VerseNexLM.forward，支持 targets 与内置 loss
-        if self.config.arch == "versenex":
-            if targets is not None and not isinstance(targets, Tensor):
-                targets = Tensor(np.asarray(targets, dtype=np.int64))
-            return self.net(idx, targets=targets)
-
-        # transformer / hybrid arch: 不接受 targets，仅返回 logits
         return self.net(idx)
 
     # ------------------------------------------------------------------
@@ -274,8 +214,6 @@ class CometSparkLM(Module):
         - ``arch="hybrid"``: 委托给内部 ``HybridLM.forward_recurrent``，维护 SSM 状态；
         - ``arch="transformer"``: TransformerLM 无递归状态，直接调用 ``self.net``
           做前向计算，``new_states`` 始终为 ``None``（每步独立计算，无 KV cache 复用）。
-        - ``arch="versenex"``: 委托给 ``VerseNexLM.forward``，``states`` 作为
-          ``kv_caches``（list of per-layer KV cache），返回 ``(logits, new_kv_caches)``。
 
         注意：transformer 分支 **直接调用 ``self.net(idx)``**，而非 ``self.forward``，
         以避免 ``self.forward`` 任何潜在回调 ``forward_recurrent`` 形成循环。
@@ -291,16 +229,6 @@ class CometSparkLM(Module):
         # hybrid arch: 内部 net 是 HybridLM，原生支持 forward_recurrent
         if hasattr(self.net, "forward_recurrent"):
             return self.net.forward_recurrent(input_ids, states)
-        # versenex arch: 用 KV cache 单步前向
-        if self.config.arch == "versenex":
-            if not isinstance(input_ids, Tensor):
-                idx = Tensor(np.asarray(input_ids, dtype=np.int64))
-            elif input_ids.data.dtype != np.int64:
-                idx = Tensor(input_ids.data.astype(np.int64))
-            else:
-                idx = input_ids
-            result = self.net(idx, targets=None, kv_caches=states)
-            return result["logits"], result["new_kv_caches"]
         # transformer arch: 无递归状态，直接走 self.net（不经 self.forward，
         # 防御性打断 forward → forward_recurrent 的潜在循环）
         if not isinstance(input_ids, Tensor):
@@ -367,15 +295,9 @@ class CometSparkLM(Module):
         ):
             with no_grad():
                 self.eval()
-                # VerseNexLM.generate 不接受 mode 参数，仅 transformer/hybrid 接受
-                if self.config.arch == "versenex":
-                    out = self.net.generate(
-                        Tensor(idx_np), max_new_tokens=max_new_tokens,
-                    )
-                else:
-                    out = self.net.generate(
-                        Tensor(idx_np), max_new_tokens=max_new_tokens, mode="recurrent"
-                    )
+                out = self.net.generate(
+                    Tensor(idx_np), max_new_tokens=max_new_tokens, mode="recurrent"
+                )
             if isinstance(out, Tensor):
                 out = out.data
             else:
@@ -404,7 +326,6 @@ class CometSparkLM(Module):
     ) -> np.ndarray:
         """基于 forward 的循环生成（支持 temperature / top_k 采样）。"""
         rng = np.random.default_rng()
-        is_versenex = (self.config.arch == "versenex")
         with no_grad():
             self.eval()
             cur = idx_np.copy()
@@ -416,12 +337,7 @@ class CometSparkLM(Module):
                     inp = cur[:, -context_len:]
                 else:
                     inp = cur
-                # VerseNexLM.forward 返回 dict（含 logits），其他 arch 返回 Tensor
-                out = self.net(Tensor(inp))
-                if is_versenex:
-                    logits = out["logits"]
-                else:
-                    logits = out
+                logits = self.net(Tensor(inp))  # (B, T_in, vocab)
                 logits_np = logits.data[:, -1, :]  # (B, vocab)
                 if temperature <= 0:
                     # 纯 greedy

@@ -204,24 +204,27 @@ class TopKChunkSparseAttention(Module):
         return selected_indices, selected_scores
 
     # ------------------------------------------------------------------
-    # Parallel 模式（训练，可微，block-sparse 实现）
+    # Parallel 模式（训练，可微）
     # ------------------------------------------------------------------
 
     def forward_parallel(self, x: Tensor) -> Tensor:
         """整序列稀疏注意力（可微，用于训练）。
 
-        Part4 P1.4 修复：从 O(T²) 内存改为 **block-sparse** 实现。
+        策略：
+            1. 把序列划分为 chunks（长度 C）
+            2. 用 numpy 计算 chunk selection（top-k 不可微，detach Q, K）
+            3. 构造 (T, T) sparse mask（1 表示 query i attend key j）
+            4. 用 Tensor ops 实现 full attention with mask，保留 Q, K, V 梯度：
+               - scores = Q @ K^T  (B, H, T, T)
+               - scores = scores + (1 - mask) * (-inf)
+               - attn = softmax(scores)
+               - out = attn @ V
+            5. 裁剪到原 T，应用 norm + out_proj
 
-        原实现构造 (T, T) mask + (B, H, T, T) scores 矩阵，对于 T=2048 即
-        占用 B*H*16MB 内存，T=4096 则 B*H*64MB，导致训练 OOM。
-
-        新实现按 (query_chunk, key_chunk) 子块逐块计算 attention：
-        - 对每个 query chunk ci，仅对被选中的 attend_chunks 中的 key chunk cj
-          计算 (C, C) 子注意力（causal 在 ci==cj 时启用）
-        - 拼接所有子块的输出得到最终结果
-        - 内存复杂度 O(B * H * T * C * (W + k_top + 1))，远低于 O(T²)
-
-        保留完整的 Q, K, V 梯度路径（每个子块的 attention 都是标准 Tensor ops）。
+        注意：训练时用 (T, T) 矩阵实现，O(T^2) 内存。
+        这违背了 sparse 的初衷，但保证了完整的 Q, K, V 梯度。
+        对于训练（T 通常不大）这是可接受的妥协。
+        推理时用 forward_recurrent，保持常数内存。
         """
         B, T, D = x.shape
         H, d = self.n_heads, self.d_head
@@ -240,26 +243,17 @@ class TopKChunkSparseAttention(Module):
             k = _pad_last_dim(k, pad_len, axis=1)
             v = _pad_last_dim(v, pad_len, axis=1)
 
-        # 转置为 (B, H, T_padded, d) 便于按 head 切分
-        q_t = q.permute(0, 2, 1, 3)  # (B, H, T_padded, d)
-        k_t = k.permute(0, 2, 1, 3)
-        v_t = v.permute(0, 2, 1, 3)
-
-        # 用 numpy 计算 chunk selection（detach Q, K，因为 top-k 不可微）
+        # ----- 用 numpy 计算 chunk selection，构造 (T_padded, T_padded) sparse mask -----
+        # chunk selection 依赖 Q, K 的值，但选择本身不可微，所以用 detach 的 data
         qd = q.data.reshape(B, n_chunks, C, H, d).transpose(0, 3, 1, 2, 4)  # (B, H, n_chunks, C, d)
         kd = k.data.reshape(B, n_chunks, C, H, d).transpose(0, 3, 1, 2, 4)
 
-        # 输出累加：用 NumPy 收集每个位置的输出，最后转为 Tensor
-        # 由于不同子块之间是 disjoint（每个 query 位置只在一个 query chunk 中），
-        # 可以用 cat 拼接子块输出。
-        # 但为了保持 autograd，每个子块的输出是 Tensor，最后用 cat 拼接。
-        from verse_torch.tensor import Tensor as _Tensor
-        # 缓存每个 query chunk 的输出 Tensor（长度 n_chunks）
-        chunk_outputs: list[_Tensor | None] = [None] * n_chunks
+        # mask[i, j] = 1 if query i 可以 attend key j (且 j <= i, causal)
+        mask = np.zeros((T_padded, T_padded), dtype=np.float32)
 
         for ci in range(n_chunks):
             # 当前 query chunk: (B, H, C, d)
-            q_ci_mean = qd[:, :, ci].mean(axis=2)  # (B, H, d)
+            q_ci = qd[:, :, ci]  # (B, H, C, d)
             # sliding window: 最近 W 个 past chunks (ci-W .. ci-1)
             sliding_start = max(0, ci - W)
             sliding_chunks = list(range(sliding_start, ci))
@@ -267,179 +261,61 @@ class TopKChunkSparseAttention(Module):
             remaining_past = list(range(0, sliding_start))
             topk_chunks = []
             if len(remaining_past) > 0 and k_top > 0:
-                # chunk-level Q·K score（用 chunk-mean）
+                # chunk-level Q·K score
+                q_ci_mean = q_ci.mean(axis=2)  # (B, H, d)
                 k_past_full = kd[:, :, remaining_past, :, :]  # (B, H, P, C, d)
                 k_past = k_past_full.mean(axis=3)  # (B, H, P, d)
+                k_past = np.transpose(k_past, (0, 2, 1, 3))  # (B, P, H, d)
+                scores = np.einsum("bhd,bphd->bph", q_ci_mean, k_past)  # (B, P, H)
                 # 用 batch+head 平均的 score 选（所有 batch/head 共享）
-                # scores_avg_global: (P,)
-                scores = np.einsum("bhd,bhpd->bhp", q_ci_mean, k_past)  # (B, H, P)
                 scores_avg_global = scores.mean(axis=2).mean(axis=0)  # (P,)
                 k_actual = min(k_top, len(remaining_past))
                 topk_idx = np.argsort(-scores_avg_global)[:k_actual]
                 topk_chunks = [remaining_past[i] for i in topk_idx]
 
-            # 所有要 attend 的 chunks（包括自己；排序保证因果顺序）
+            # 所有要 attend 的 chunks（包括自己）
             attend_chunks = sorted(set(sliding_chunks + topk_chunks + [ci]))
-
-            # 提取 query chunk 的 Tensor 切片：q_t[:, :, ci*C:(ci+1)*C, :]
-            # 用 .__getitem__ 保持梯度路径
-            q_ci_tensor = q_t[:, :, ci * C:(ci + 1) * C, :]  # (B, H, C, d)
-
-            # 拼接所有 attend key chunks 的 K, V
-            # 用 cat 沿 T 轴拼接
-            k_chunks_tensors = []
-            v_chunks_tensors = []
-            # 同时构造 causal mask for the concatenated keys
-            # 对每个 attend chunk cj:
-            #   - 如果 cj < ci: 所有 C 个 key 都可见（past chunk）
-            #   - 如果 cj == ci: causal within chunk (tril)
-            key_mask_parts = []  # each (C,) or (C, C)
-
+            # 在 mask 中标记：query i in chunk ci 可以 attend key j in chunk cj
+            # if cj < ci: 所有 j 都可见（past chunk）
+            # if cj == ci: 只有 j <= i 可见（causal within chunk）
             for cj in attend_chunks:
-                k_cj = k_t[:, :, cj * C:(cj + 1) * C, :]  # (B, H, C, d)
-                v_cj = v_t[:, :, cj * C:(cj + 1) * C, :]
-                k_chunks_tensors.append(k_cj)
-                v_chunks_tensors.append(v_cj)
-                if cj < ci:
-                    # past chunk: 全部 C 个 key 可见
-                    key_mask_parts.append(np.ones((C,), dtype=np.float32))
-                else:
-                    # cj == ci: causal within chunk
-                    key_mask_parts.append(
-                        np.tril(np.ones((C, C), dtype=np.float32))
-                    )
+                for i_local in range(C):
+                    i_global = ci * C + i_local
+                    if i_global >= T_padded:
+                        break
+                    for j_local in range(C):
+                        j_global = cj * C + j_local
+                        if j_global >= T_padded:
+                            break
+                        if j_global <= i_global:
+                            mask[i_global, j_global] = 1.0
 
-            # 拼接 K, V: (B, H, M, d), M = len(attend_chunks) * C
-            # 用 Tensor.cat（如果有），否则用 numpy 拼接 + 重建 Tensor
-            # VerseTorch Tensor 支持 __getitem__，但 cat 需要手动实现
-            # 简单实现：先 numpy 拼接 data，再用 result Tensor 重建 autograd 节点
-            # 但这样会丢失子 Tensor 的梯度路径。
-            #
-            # 替代方案：用 __getitem__ + 多次 matmul + 加法
-            # 由于 matmul 是 (B, H, C, d) @ (B, H, d, M) = (B, H, C, M)
-            # 我们可以分块计算：q_ci @ k_cj^T = (B, H, C, C) per chunk
-            # 然后按 chunk 拼接 scores，再 softmax，再 @ V
-            #
-            # 但更简单的是：用 numpy 拼接 data 后用一次 matmul，但需要保留梯度
-            # VerseTorch Tensor 的 matmul 支持 broadcasting，所以可以：
-            #   K_all: (B, H, M, d) - 用 cat 拼接
-            #   scores = q_ci @ K_all^T: (B, H, C, M)
-            # 但我们需要实现 cat。
+        # ----- 用 Tensor ops 实现 full attention with mask（保留 Q, K, V 梯度）-----
+        # q, k, v: (B, T_padded, H, d) -> (B, H, T_padded, d)
+        q_t = q.permute(0, 2, 1, 3)  # (B, H, T_padded, d)
+        k_t = k.permute(0, 2, 1, 3)
+        v_t = v.permute(0, 2, 1, 3)
 
-            # 使用 q_ci @ each k_cj^T 然后用 concat（沿 last dim）
-            # 输出 scores_ci: (B, H, C, M)
-            scores_parts = []  # list of (B, H, C, C) Tensor
-            for kj, k_cj in enumerate(k_chunks_tensors):
-                # q_ci: (B, H, C, d), k_cj: (B, H, C, d)
-                # scores: (B, H, C, C) = q_ci @ k_cj^T
-                #   = matmul(q_ci, k_cj.transpose(-1, -2))
-                k_cj_t = k_cj.transpose(-1, -2)  # (B, H, d, C)
-                s = q_ci_tensor.matmul(k_cj_t)  # (B, H, C, C)
-                scores_parts.append(s)
+        # scores = q @ k^T: (B, H, T_padded, T_padded)
+        k_t_t = k_t.transpose(-1, -2)  # (B, H, d, T_padded)
+        scores = q_t.matmul(k_t_t)  # (B, H, T_padded, T_padded)
 
-            # 用 numpy 沿 last dim 拼接 scores_parts 的 data，
-            # 但要保留梯度。VerseTorch Tensor 没有 cat，所以我们用 result Tensor
-            # + 自定义 _backward 把梯度分发到各 parts。
-            M_total = len(scores_parts) * C
-            scores_data = np.concatenate(
-                [s.data for s in scores_parts], axis=-1
-            )  # (B, H, C, M_total)
-            scores_ci = _Tensor(
-                scores_data,
-                requires_grad=any(s.requires_grad for s in scores_parts),
-                _children=tuple(scores_parts) if any(s.requires_grad for s in scores_parts) else (),
-                _op="sparse_concat",
-            )
-            # 为 scores_ci 设置 _backward：把上游 grad 按 last dim 切分回各 parts
-            if scores_ci.requires_grad:
-                _parts = scores_parts  # 闭包捕获
-                _C = C
+        # apply mask: scores = scores + (1 - mask) * (-1e9)
+        # mask: (T_padded, T_padded) -> broadcast to (1, 1, T_padded, T_padded)
+        neg_mask_data = (1.0 - mask).reshape(1, 1, T_padded, T_padded)
+        # 用常量 Tensor（requires_grad=False）
+        neg_mask = Tensor(neg_mask_data.astype(np.float32), requires_grad=False)
+        # masked scores: 原始 scores + (1-mask) * (-1e9)
+        # 用乘法+加法表达，保持 scores 的梯度路径
+        masked_scores = scores + neg_mask * (-1e9)
 
-                def _backward():
-                    if scores_ci.grad is None:
-                        return
-                    g = scores_ci.grad  # (B, H, C, M_total)
-                    for j, p in enumerate(_parts):
-                        if p.requires_grad:
-                            sub = g[..., j * _C:(j + 1) * _C]
-                            p._accumulate_grad(sub)
-                scores_ci._backward = _backward
+        # softmax over last dim
+        attn = masked_scores.softmax(dim=-1)  # (B, H, T_padded, T_padded)
 
-            # 构造 mask: (C, M_total) - block diagonal of (C,) ones or (C, C) tril
-            mask_blocks = []
-            for cj_idx, cj in enumerate(attend_chunks):
-                if cj < ci:
-                    # past chunk: 全部 C 个 key 可见 -> (C,) ones
-                    mask_blocks.append(np.ones((C, C), dtype=np.float32))
-                else:
-                    # cj == ci: causal within chunk
-                    mask_blocks.append(np.tril(np.ones((C, C), dtype=np.float32)))
-            mask_ci = np.concatenate(mask_blocks, axis=1)  # (C, M_total)
+        # out = attn @ v: (B, H, T_padded, d)
+        out = attn.matmul(v_t)  # (B, H, T_padded, d)
 
-            # apply mask: scores = scores + (1 - mask) * (-1e9)
-            neg_mask_data = (1.0 - mask_ci).reshape(1, 1, C, M_total)
-            neg_mask = _Tensor(neg_mask_data.astype(np.float32), requires_grad=False)
-            masked_scores = scores_ci + neg_mask * (-1e9)
-
-            # softmax over last dim
-            attn_ci = masked_scores.softmax(dim=-1)  # (B, H, C, M_total)
-
-            # out = attn @ V: (B, H, C, d)
-            # V 拼接：v_chunks_tensors 各为 (B, H, C, d)，沿 T 轴拼成 (B, H, M_total, d)
-            # 同样需要保留梯度
-            v_data = np.concatenate(
-                [v.data for v in v_chunks_tensors], axis=2
-            )  # (B, H, M_total, d)
-            v_all = _Tensor(
-                v_data,
-                requires_grad=any(v.requires_grad for v in v_chunks_tensors),
-                _children=tuple(v_chunks_tensors) if any(v.requires_grad for v in v_chunks_tensors) else (),
-                _op="sparse_concat_v",
-            )
-            if v_all.requires_grad:
-                _v_parts = v_chunks_tensors
-
-                def _backward_v():
-                    if v_all.grad is None:
-                        return
-                    g = v_all.grad  # (B, H, M_total, d)
-                    for j, p in enumerate(_v_parts):
-                        if p.requires_grad:
-                            sub = g[:, :, j * C:(j + 1) * C, :]
-                            p._accumulate_grad(sub)
-                v_all._backward = _backward_v
-
-            # out_ci: (B, H, C, d) = attn_ci @ v_all
-            #   attn_ci: (B, H, C, M), v_all: (B, H, M, d)
-            out_ci = attn_ci.matmul(v_all)  # (B, H, C, d)
-            chunk_outputs[ci] = out_ci
-
-        # 拼接所有 chunk 的输出: (B, H, T_padded, d)
-        # 同样需要保留梯度
-        all_out_data = np.concatenate(
-            [o.data for o in chunk_outputs], axis=2
-        )  # (B, H, T_padded, d)
-        out = _Tensor(
-            all_out_data,
-            requires_grad=any(o.requires_grad for o in chunk_outputs),
-            _children=tuple(chunk_outputs) if any(o.requires_grad for o in chunk_outputs) else (),
-            _op="sparse_concat_out",
-        )
-        if out.requires_grad:
-            _out_parts = chunk_outputs
-            _C2 = C
-
-            def _backward_out():
-                if out.grad is None:
-                    return
-                g = out.grad  # (B, H, T_padded, d)
-                for i, p in enumerate(_out_parts):
-                    if p.requires_grad:
-                        sub = g[:, :, i * _C2:(i + 1) * _C2, :]
-                        p._accumulate_grad(sub)
-            out._backward = _backward_out
-
-        # reshape to (B, T_padded, H, d) -> (B, T_padded, D)
+        # reshape to (B, T_padded, D)
         out = out.permute(0, 2, 1, 3)  # (B, T_padded, H, d)
         out = out.reshape(B, T_padded, D)
 

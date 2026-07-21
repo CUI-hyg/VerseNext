@@ -217,19 +217,6 @@ def stage_build_tokenizer(config_path: str, base_dir: str, force: bool = False) 
             save_path=tok_path,
             kind="byte",
         )
-    elif tok_kind == "qwen":
-        # Part4: Qwen tokenizer 直接复制预下载的 HF tokenizer.json
-        # vocab_size 由源 tokenizer 决定（Qwen2.5-32B-Instruct = 151665），参数忽略
-        print(
-            f"[build_tokenizer] kind=qwen, vocab_size=auto (source=Qwen2.5-32B-Instruct)",
-            flush=True,
-        )
-        build_tokenizer(
-            corpus_path="",
-            vocab_size=0,
-            save_path=tok_path,
-            kind="qwen",
-        )
     else:
         # BPE 需要从训练语料构建
         train_path = _resolve(base_dir, str(data_cfg.get("train_path", "data/train.jsonl")))
@@ -399,10 +386,6 @@ def main():
         "--references-file", default=None,
         help="参考答案文件路径（每行一个，与 prompts 一一对应）；仅 --score 时生效",
     )
-    parser.add_argument(
-        "--skip-visualize", action="store_true",
-        help="Part4 新增：跳过 loss 曲线可视化阶段",
-    )
     args = parser.parse_args()
 
     base_dir = _DEMO_DIR
@@ -514,15 +497,12 @@ def main():
                 print("[evaluate] 跳过评估（继续后续步骤）", flush=True)
 
         # Extra: visualize
-        if train_result is not None and not args.skip_visualize:
+        if train_result is not None:
             try:
-                actual_curve = stage_visualize(
+                stage_visualize(
                     train_result["loss_history_path"],
                     train_result["checkpoint_dir"],
                 )
-                # Part4 修复：打印实际生成的文件路径（.png 或 .txt），
-                # 避免用户以为"未绘制"（原硬编码 loss_curve.png，实际可能降级为 .txt）
-                print(f"[visualize] loss 曲线实际保存到: {actual_curve}", flush=True)
             except Exception as e:
                 _print_stage_error("visualize", e, args.verbose)
 
