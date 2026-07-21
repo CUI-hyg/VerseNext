@@ -216,3 +216,105 @@ def kl_div_loss(log_probs: Tensor, target_probs: Tensor) -> Tensor:
     if out.requires_grad:
         out._backward = _backward
     return out
+
+
+def focal_loss(logits: Tensor, targets, gamma: float = 2.0, alpha: float = 0.25,
+               ignore_index: int = -100, label_smoothing: float = 0.0) -> Tensor:
+    """Focal Loss: ``FL(p_t) = -alpha * (1 - p_t)^gamma * log(p_t)``
+
+    论文: https://arxiv.org/abs/1708.02002
+
+    类别不均衡场景使用：``gamma`` 越大，对易分样本的抑制越强（focusing parameter），
+    使模型更关注难分样本。``alpha`` 是类别平衡因子（默认 0.25，与原论文一致）。
+
+    Args:
+        logits: ``(N, C)`` 或 ``(B, T, V)`` 的未归一化预测
+        targets: ``(N,)`` 或 ``(B, T)`` 的 int 类别索引
+        gamma: focusing parameter（默认 2.0）；``gamma=0`` 退化为带 ``alpha`` 加权的 CE
+        alpha: 平衡因子（默认 0.25）；``alpha=1.0`` 退化为无加权的 focal
+        ignore_index: 待忽略的标签值（默认 -100），不参与 loss 与梯度
+        label_smoothing: 标签平滑系数（默认 0.0 关闭）
+
+    Returns:
+        标量 Tensor
+
+    实现说明:
+        - 内部用 ``log_softmax`` 提取 ``log(p_t)`` 与 ``p_t = exp(log(p_t))``，
+          全程可微，梯度自动通过 autograd 反向传播
+        - ``ignore_index`` 通过 mask 实现：被屏蔽位置不计入 loss 与梯度
+        - ``label_smoothing > 0`` 时混合均匀分布，与 ``cross_entropy`` 行为一致
+    """
+    if not isinstance(logits, Tensor):
+        logits = Tensor(logits, requires_grad=True)
+
+    # 把 targets 转为 int64 ndarray
+    if isinstance(targets, Tensor):
+        targets_np = targets.data
+    else:
+        targets_np = np.asarray(targets)
+    targets_np = targets_np.astype(np.int64)
+
+    # 自动 reshape 为 (N, V) / (N,)
+    if logits.ndim > 2:
+        V = logits.shape[-1]
+        logits = logits.reshape(-1, V)
+        targets_np = targets_np.reshape(-1)
+
+    N, V = logits.shape
+    # log_softmax 沿最后一维
+    log_probs = logits.log_softmax(dim=-1)  # (N, V)
+
+    # 计算 ignore_index mask
+    mask = (targets_np != ignore_index)  # (N,) bool
+    valid_idx = np.where(mask)[0]  # (n_valid,) int
+    n_valid = int(valid_idx.shape[0])
+
+    if n_valid == 0:
+        # 所有位置都被忽略：返回 0 标量但保持计算图连接
+        return log_probs.sum() * 0.0
+
+    # 选取有效样本
+    valid_log_probs = log_probs[valid_idx]  # (n_valid, V)
+    valid_targets = targets_np[valid_idx]  # (n_valid,)
+
+    # 选取每个样本对应类别的 log_prob
+    arange = np.arange(n_valid)
+    selected_log_pt = valid_log_probs[arange, valid_targets]  # (n_valid,)
+    # p_t = exp(log(p_t))
+    pt = selected_log_pt.exp()  # (n_valid,)
+
+    # focal 调制因子: (1 - p_t)^gamma
+    # 用 1 - pt 而非 -pt + 1 以保持可微性
+    one_minus_pt = 1.0 - pt
+    # 数值稳定：gamma=0 时 one_minus_pt^0 = 1，需特殊处理避免 0^0
+    if gamma == 0.0:
+        modulating = 1.0
+    else:
+        modulating = one_minus_pt ** gamma
+    # FL = -alpha * modulating * log(p_t)
+    focal_per_sample = -alpha * modulating * selected_log_pt  # (n_valid,)
+
+    if label_smoothing is not None and label_smoothing > 0.0:
+        # 标签平滑：混合均匀分布的 focal 项
+        # uniform_focal = -alpha * (1 - 1/V)^gamma * mean(log_probs)
+        # 简化实现：对 valid_log_probs 求平均后乘以平滑系数
+        uniform_pt = valid_log_probs.exp().mean(dim=-1)  # (n_valid,) 平均概率
+        one_minus_uniform = 1.0 - uniform_pt
+        if gamma == 0.0:
+            uniform_modulating = 1.0
+        else:
+            uniform_modulating = one_minus_uniform ** gamma
+        # uniform 部分：所有类别的平均 focal
+        # focal_uniform = -alpha * uniform_modulating * mean(valid_log_probs)
+        mean_log_probs = valid_log_probs.mean(dim=-1)  # (n_valid,)
+        uniform_focal = -alpha * uniform_modulating * mean_log_probs
+        loss_per_sample = (
+            (1.0 - label_smoothing) * focal_per_sample
+            + label_smoothing * uniform_focal
+        )
+    else:
+        loss_per_sample = focal_per_sample
+
+    # 平均
+    loss = loss_per_sample.mean()
+    return loss

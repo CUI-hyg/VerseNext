@@ -148,12 +148,19 @@ class CometSparkConfig:
         n_head: 注意力头数（仅 arch="transformer" 时使用）
         n_embd: 模型隐藏维度
         seq_len: 训练序列长度
-        dropout: dropout 概率
+        dropout: dropout 概率（通用，向后兼容）
         n_kv_head: GQA 的 kv head 数；None 表示 = n_head
         arch: 架构选择，"hybrid" 或 "transformer"
         ssm_kind: 仅 arch="hybrid" 时生效，"mamba2" 或 "rwkv7"
         sparse_ratio: 仅 arch="hybrid" 时生效，Sparse Attention 层占比
         tie_weights: 是否共享 embedding 与 lm_head 权重
+        rope_theta: RoPE 基础频率（默认 10000.0，与 Llama/Mistral 一致）
+        max_position_embeddings: 模型支持的最大上下文长度
+            （与 seq_len 分离：seq_len 是训练时的实际长度，
+            max_position_embeddings 是 RoPE 预计算缓存大小上限）
+        attention_dropout: attention softmax 后的 dropout（独立于 dropout）
+        hidden_dropout: MLP 中间层的 dropout（独立于 dropout）
+        embedding_dropout: embedding 后的 dropout（独立于 dropout）
     """
 
     vocab_size: int = 256
@@ -167,6 +174,12 @@ class CometSparkConfig:
     ssm_kind: str = "mamba2"
     sparse_ratio: float = 0.5
     tie_weights: bool = True
+    # Task 4.1: 新增字段（向后兼容，默认值不破坏现有配置）
+    rope_theta: float = 10000.0
+    max_position_embeddings: int = 2048
+    attention_dropout: float = 0.0
+    hidden_dropout: float = 0.0
+    embedding_dropout: float = 0.0
 
     # ------------------------------------------------------------------
     # YAML 持久化
@@ -196,6 +209,43 @@ class CometSparkConfig:
         os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             f.write(text)
+
+    # ------------------------------------------------------------------
+    # Task 4.1: HuggingFace 风格目录持久化
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def from_pretrained(cls, dir_path: str) -> "CometSparkConfig":
+        """从目录加载配置（HuggingFace 风格）。
+
+        期望目录结构：
+            dir_path/
+              config.yml   ← 必需，包含 model 段
+
+        与 ``from_yaml`` 的区别：``from_yaml`` 接收完整文件路径，
+        ``from_pretrained`` 接收目录路径并自动拼接 ``config.yml``。
+
+        Args:
+            dir_path: 配置目录
+
+        Returns:
+            :class:`CometSparkConfig` 实例
+        """
+        cfg_path = os.path.join(dir_path, "config.yml")
+        return cls.from_yaml(cfg_path)
+
+    def save_pretrained(self, dir_path: str) -> None:
+        """保存配置到目录（HuggingFace 风格）。
+
+        将当前配置以 ``config.yml`` 写入 ``dir_path`` 目录。
+        如目录不存在会自动创建。
+
+        Args:
+            dir_path: 目标目录
+        """
+        os.makedirs(dir_path, exist_ok=True)
+        cfg_path = os.path.join(dir_path, "config.yml")
+        self.to_yaml(cfg_path)
 
     # ------------------------------------------------------------------
     # 便捷方法

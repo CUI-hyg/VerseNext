@@ -56,6 +56,9 @@ from .nn import (
     GQASelfAttention,
     TransformerBlock,
     TransformerLM,
+    SlidingWindowAttention,
+    ALiBi,
+    DeepNorm,
     repeat_kv,
     kaiming_uniform_,
     xavier_uniform_,
@@ -76,6 +79,20 @@ from .optim import (
     LambdaLR,
     warmup_cosine_lr,
 )
+from .optim_extras import (
+    Lion,
+    Adafactor,
+)
+from .scheduler_extras import (
+    OneCycleLR,
+    ReduceLROnPlateau,
+    CosineRestartsLR,
+)
+from .activations import (
+    SiLU,
+    Mish,
+    GeGLU,
+)
 from .losses import (
     cross_entropy,
     nll_loss,
@@ -84,6 +101,7 @@ from .losses import (
     mse_loss,
     l1_loss,
     kl_div_loss,
+    focal_loss,
 )
 from .training import (
     cross_entropy_loss,
@@ -93,6 +111,7 @@ from .training import (
     compute_loss_rate,
     plot_loss_curve,
     Trainer,
+    BatchLoader,
     clip_grad_norm,
 )
 from .compress import (
@@ -142,6 +161,9 @@ __all__ = [
     "GQASelfAttention",
     "TransformerBlock",
     "TransformerLM",
+    "SlidingWindowAttention",
+    "ALiBi",
+    "DeepNorm",
     "repeat_kv",
     "kaiming_uniform_",
     "xavier_uniform_",
@@ -160,6 +182,17 @@ __all__ = [
     "CosineAnnealingLR",
     "LambdaLR",
     "warmup_cosine_lr",
+    # optim_extras 类
+    "Lion",
+    "Adafactor",
+    # scheduler_extras 类
+    "OneCycleLR",
+    "ReduceLROnPlateau",
+    "CosineRestartsLR",
+    # activations 类
+    "SiLU",
+    "Mish",
+    "GeGLU",
     # losses 函数
     "cross_entropy",
     "nll_loss",
@@ -168,6 +201,7 @@ __all__ = [
     "mse_loss",
     "l1_loss",
     "kl_div_loss",
+    "focal_loss",
     # training 模块
     "cross_entropy_loss",
     "EarlyStopping",
@@ -176,6 +210,7 @@ __all__ = [
     "compute_loss_rate",
     "plot_loss_curve",
     "Trainer",
+    "BatchLoader",
     "clip_grad_norm",
     # quantize 函数
     "quantize_int8",

@@ -8,10 +8,15 @@
 - ``forward(idx)`` → logits (B, T, vocab)
 - ``generate(idx, max_new_tokens, temperature, top_k)`` → idx ndarray
 - ``save(path)`` / ``load(path)`` / ``from_pretrained(path)``
+- ``save_pretrained(dir_path)`` / ``from_pretrained(dir_path)``（HuggingFace 风格目录）
+- ``compress(compress_config)`` → 压缩后的新模型
+- ``compression_stats()`` → 压缩统计 dict
 """
 
 from __future__ import annotations
 
+import copy
+import json
 import os
 import pickle
 from typing import Optional, List
@@ -19,7 +24,7 @@ from typing import Optional, List
 import numpy as np
 
 from verse_torch import Tensor, no_grad
-from verse_torch.nn import TransformerLM, Module
+from verse_torch.nn import TransformerLM, Module, GQASelfAttention, SwiGLUMLP, Dropout, Sequential
 
 from .config import CometSparkConfig
 
@@ -75,9 +80,89 @@ class CometSparkLM(Module):
                 tie_weights=config.tie_weights,
             )
 
+        # Task 4.2: 应用新配置（RoPE theta / 分离的 dropout / max_position_embeddings）
+        # 仅 transformer arch 适用：GQASelfAttention 与 SwiGLUMLP 是 TransformerLM 内部组件
+        if config.arch == "transformer":
+            self._apply_advanced_config()
+
+        # Task 4.2: 压缩统计缓存（compress() 时填充）
+        self._pre_compress_param_count: Optional[int] = None
+        self._compression_stats_cache: Optional[dict] = None
+        # 可选的 tokenizer（save_pretrained/from_pretrained 会读写）
+        self.tokenizer = None
+
         # Task 9.2: 初始化末尾打印参数量
         n_params = self.count_parameters()
         print(f"[model] arch={config.arch} parameters: {n_params}", flush=True)
+
+    # ------------------------------------------------------------------
+    # Task 4.2: 应用高级配置（RoPE theta / 分离的 dropout / max_position_embeddings）
+    # ------------------------------------------------------------------
+
+    def _apply_advanced_config(self) -> None:
+        """将 ``rope_theta`` / ``max_position_embeddings`` / 三种 dropout 应用到 net。
+
+        由于 ``TransformerLM`` / ``GQASelfAttention`` 的构造函数不直接接收这些参数，
+        在构造完成后通过原地替换 / monkey-patch 的方式应用：
+
+        - ``rope_theta`` 与 ``max_position_embeddings``：重建每个 GQASelfAttention
+          的 RoPE cos/sin 表（替换硬编码的 10000.0 与 32768）。
+        - ``attention_dropout``：若 > 0，替换 ``block.attn.dropout`` 为新的 Dropout；
+          否则保持原 ``dropout`` 不变（向后兼容）。
+        - ``hidden_dropout``：若 > 0，替换 ``block.mlp.dropout``。
+        - ``embedding_dropout``：若 > 0，将 ``net.tok_emb`` 包装为
+          ``Sequential(Embedding, Dropout)``，并保持 tie_weights 引用一致。
+        """
+        cfg = self.config
+
+        # 1. RoPE theta + max_position_embeddings
+        for m in self.net.modules():
+            if isinstance(m, GQASelfAttention):
+                self._rebuild_rope_table(
+                    m,
+                    head_dim=m.head_dim,
+                    max_seq_len=max(cfg.max_position_embeddings, cfg.seq_len),
+                    theta=cfg.rope_theta,
+                )
+
+        # 2. attention_dropout / hidden_dropout（仅当显式 > 0 时覆盖）
+        if cfg.attention_dropout > 0.0:
+            for block in self.net.blocks:
+                block.attn.dropout = Dropout(cfg.attention_dropout)
+        if cfg.hidden_dropout > 0.0:
+            for block in self.net.blocks:
+                block.mlp.dropout = Dropout(cfg.hidden_dropout)
+
+        # 3. embedding_dropout：包装 tok_emb 为 Sequential(Embedding, Dropout)
+        #    注意保持 tie_weights 引用一致（head.weight 仍指向原 Embedding.weight）
+        if cfg.embedding_dropout > 0.0:
+            old_emb = self.net.tok_emb
+            if not isinstance(old_emb, Sequential):
+                wrapped = Sequential(old_emb, Dropout(cfg.embedding_dropout))
+                self.net.tok_emb = wrapped
+                # 修复 tie_weights：head.weight 必须仍指向 Embedding.weight
+                if self.net.tie_weights:
+                    self.net.head.weight = old_emb.weight
+
+    @staticmethod
+    def _rebuild_rope_table(attn: GQASelfAttention,
+                            head_dim: int, max_seq_len: int,
+                            theta: float = 10000.0) -> None:
+        """重建 ``GQASelfAttention`` 的 RoPE cos/sin 表，支持自定义 ``theta`` 与 ``max_seq_len``。
+
+        与 ``GQASelfAttention._build_rope_table`` 等价，但 ``theta`` 可调（原实现硬编码 10000.0）。
+        重建后 ``attn._cos_table`` / ``attn._sin_table`` / ``attn._max_seq_len`` 被替换。
+        """
+        half = head_dim // 2
+        i = np.arange(half, dtype=np.float32)
+        inv_freq = 1.0 / (float(theta) ** (2.0 * i / head_dim))
+        positions = np.arange(max_seq_len, dtype=np.float32)
+        angles = np.outer(positions, inv_freq)  # (T, half)
+        cos = np.concatenate([np.cos(angles), np.cos(angles)], axis=-1)  # (T, head_dim)
+        sin = np.concatenate([np.sin(angles), np.sin(angles)], axis=-1)
+        attn._cos_table = cos
+        attn._sin_table = sin
+        attn._max_seq_len = int(max_seq_len)
 
     # ------------------------------------------------------------------
     # 参数量统计
@@ -325,11 +410,47 @@ class CometSparkLM(Module):
     def from_pretrained(cls, path: str) -> "CometSparkLM":
         """从 path 加载完整模型（含 config + 权重）。
 
+        支持两种模式（自动检测）：
+
+        1. **目录模式**（HuggingFace 风格，推荐）：path 是目录，
+           期望目录结构：
+               path/
+                 config.yml        ← 必需，CometSparkConfig
+                 model.pt          ← 必需，state_dict（pickle）
+                 tokenizer.json    ← 可选，tokenizer
+        2. **单文件模式**（向后兼容）：path 是 .pt 文件，包含
+           ``{"config": dict, "state_dict": dict, "arch": str}`` payload。
+
         Args:
-            path: .pt 文件路径
+            path: 目录路径或 .pt 文件路径
         Returns:
             新构造的 :class:`CometSparkLM` 实例，已加载权重
         """
+        if os.path.isdir(path):
+            # 目录模式：HuggingFace 风格
+            config = CometSparkConfig.from_pretrained(path)
+            model = cls(config)
+            # 加载 state_dict
+            model_pt = os.path.join(path, "model.pt")
+            if os.path.exists(model_pt):
+                with open(model_pt, "rb") as f:
+                    sd = pickle.load(f)
+                # 兼容两种格式：直接 state_dict 或 {"state_dict": ...}
+                if isinstance(sd, dict) and "state_dict" in sd:
+                    sd = sd["state_dict"]
+                model.load_state_dict(sd, strict=False)
+            # 加载 tokenizer（可选）
+            tok_path = os.path.join(path, "tokenizer.json")
+            if os.path.exists(tok_path):
+                try:
+                    from .tokenizer import load_tokenizer
+                    model.tokenizer = load_tokenizer(tok_path, kind="byte")
+                except Exception:
+                    # tokenizer 加载失败不阻断模型加载
+                    model.tokenizer = None
+            return model
+
+        # 单文件模式：向后兼容原 pickle payload
         with open(path, "rb") as f:
             payload = pickle.load(f)
         config = CometSparkConfig.from_dict(payload["config"])
@@ -337,6 +458,139 @@ class CometSparkLM(Module):
         sd = payload["state_dict"] if "state_dict" in payload else payload
         model.load_state_dict(sd, strict=False)
         return model
+
+    # ------------------------------------------------------------------
+    # Task 4.2: HuggingFace 风格目录持久化
+    # ------------------------------------------------------------------
+
+    def save_pretrained(self, dir_path: str) -> None:
+        """保存模型到目录（HuggingFace 风格）。
+
+        生成目录结构：
+            dir_path/
+              config.yml        ← CometSparkConfig
+              model.pt          ← state_dict（pickle）
+              tokenizer.json    ← tokenizer（如有）
+
+        Args:
+            dir_path: 目标目录
+        """
+        os.makedirs(dir_path, exist_ok=True)
+        # 1. config.yml
+        self.config.save_pretrained(dir_path)
+        # 2. model.pt（state_dict，pickle 格式）
+        sd = {k: np.asarray(v) for k, v in self.state_dict().items()}
+        model_pt = os.path.join(dir_path, "model.pt")
+        with open(model_pt, "wb") as f:
+            pickle.dump(sd, f)
+        # 3. tokenizer.json（如有）
+        if self.tokenizer is not None:
+            tok_path = os.path.join(dir_path, "tokenizer.json")
+            try:
+                if hasattr(self.tokenizer, "save"):
+                    self.tokenizer.save(tok_path)
+            except Exception:
+                # tokenizer 保存失败不阻断模型保存
+                pass
+
+    # ------------------------------------------------------------------
+    # Task 4.2: 压缩接口
+    # ------------------------------------------------------------------
+
+    def compress(self, compress_config: dict) -> "CometSparkLM":
+        """应用压缩管线，返回压缩后的新模型实例（**不修改原模型**）。
+
+        支持的压缩配置（任意组合）::
+
+            {
+                "prune":     {"sparsity": 0.5, "method": "outlier_safe"},
+                "quantize":  {"bits": 4, "schema": "symmetric"},
+                "lora":      {"rank": 8, "alpha": 16},
+                "ternary":   {},
+                "distill":   {"teacher": teacher_model, "epochs": 10, "lr": 1e-4}
+            }
+
+        Args:
+            compress_config: 压缩配置 dict
+
+        Returns:
+            压缩后的新 :class:`CometSparkLM` 实例
+        """
+        # 延迟导入避免循环依赖
+        from verse_torch.compress import compress_pipeline
+
+        # 记录压缩前参数量（写到 self 与压缩后模型上，供 compression_stats 使用）
+        original_params = self.count_parameters()
+        self._pre_compress_param_count = original_params
+
+        # 调用新 API：compress_pipeline(model, config_dict, return_stats=True)
+        # 返回 (compressed_model, stats_dict)
+        compressed_model, stats = compress_pipeline(
+            self, compress_config, return_stats=True
+        )
+
+        # 在压缩后的模型上缓存原始参数量与统计
+        compressed_model._pre_compress_param_count = original_params
+        compressed_model._compression_stats_cache = stats
+        return compressed_model
+
+    def compression_stats(self) -> dict:
+        """返回压缩统计信息。
+
+        若模型经过 :meth:`compress` 压缩，返回缓存的统计 dict；否则基于当前
+        模型参数量与有效 bit 数即时计算。
+
+        Returns:
+            dict，包含字段：
+                - ``original_params``: 压缩前参数量
+                - ``compressed_params``: 压缩后等效参数量
+                - ``sparsity``: 稀疏度（0-1）
+                - ``bits``: 平均 bit/param
+                - ``compression_ratio``: 压缩比 = original_params / compressed_params
+        """
+        # 优先返回 compress() 缓存的统计
+        if self._compression_stats_cache is not None:
+            s = self._compression_stats_cache
+            original = s.get("original_params", 0)
+            compressed = s.get("compressed_params", 0)
+            sparsity = s.get("sparsity", 0.0)
+            bits = s.get("bits", 32.0)
+            ratio = s.get("compression_ratio",
+                          (original / compressed) if compressed > 0 else 1.0)
+            return {
+                "original_params": int(original),
+                "compressed_params": float(compressed),
+                "sparsity": float(sparsity),
+                "bits": float(bits),
+                "compression_ratio": float(ratio),
+            }
+
+        # 没有缓存：基于当前模型即时计算
+        from verse_torch.compress import (
+            count_parameters as _count_params,
+            count_nonzero_params as _count_nonzero,
+            compute_compressed_bits as _compute_bits,
+        )
+        original = (self._pre_compress_param_count
+                    if self._pre_compress_param_count is not None
+                    else _count_params(self))
+        compressed_params_now = _count_params(self)
+        nonzero = _count_nonzero(self)
+        bits = _compute_bits(self)
+        # 等效 fp32 参数量
+        equiv_params = bits / 32.0
+        sparsity = (1.0 - nonzero / compressed_params_now
+                    if compressed_params_now > 0 else 0.0)
+        avg_bits = (bits / compressed_params_now
+                    if compressed_params_now > 0 else 32.0)
+        ratio = (original / equiv_params) if equiv_params > 0 else 1.0
+        return {
+            "original_params": int(original),
+            "compressed_params": float(equiv_params),
+            "sparsity": float(sparsity),
+            "bits": float(avg_bits),
+            "compression_ratio": float(ratio),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -351,4 +605,64 @@ def _softmax(x: np.ndarray) -> np.ndarray:
     return e / np.sum(e, axis=-1, keepdims=True)
 
 
-__all__ = ["CometSparkLM"]
+# ---------------------------------------------------------------------------
+# Task 4.3: 预设工厂函数（CometSparkSmall / Medium / Large）
+# ---------------------------------------------------------------------------
+
+
+def CometSparkSmall() -> CometSparkLM:
+    """小配置（~131K 参数）：n_layer=2, n_embd=64, seq_len=64。
+
+    适合 3 核 CPU / 5GB 内存沙箱下快速跑通端到端流程，
+    约 30 秒可完成 200 步训练。
+    """
+    config = CometSparkConfig(
+        arch="transformer",
+        vocab_size=256,
+        n_layer=2,
+        n_head=4,
+        n_embd=64,
+        seq_len=64,
+        n_kv_head=2,
+        tie_weights=True,
+    )
+    return CometSparkLM(config)
+
+
+def CometSparkMedium() -> CometSparkLM:
+    """中配置（~853K 参数）：n_layer=4, n_embd=128, seq_len=128。
+
+    适合中等规模 CPU 训练（4-8 核），约 5-10 分钟完成 200 步。
+    """
+    config = CometSparkConfig(
+        arch="transformer",
+        vocab_size=256,
+        n_layer=4,
+        n_head=8,
+        n_embd=128,
+        seq_len=128,
+        n_kv_head=4,
+        tie_weights=True,
+    )
+    return CometSparkLM(config)
+
+
+def CometSparkLarge() -> CometSparkLM:
+    """大配置（~3M 参数）：n_layer=6, n_embd=192, seq_len=128。
+
+    适合 8+ 核 CPU 或 GPU 训练，约 15-30 分钟完成 200 步。
+    """
+    config = CometSparkConfig(
+        arch="transformer",
+        vocab_size=256,
+        n_layer=6,
+        n_head=8,
+        n_embd=192,
+        seq_len=128,
+        n_kv_head=4,
+        tie_weights=True,
+    )
+    return CometSparkLM(config)
+
+
+__all__ = ["CometSparkLM", "CometSparkSmall", "CometSparkMedium", "CometSparkLarge"]

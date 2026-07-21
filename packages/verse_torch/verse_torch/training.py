@@ -902,6 +902,115 @@ class Trainer:
         )
 
 
+# ---------------------------------------------------------------------------
+# Task 3.6: BatchLoader —— 对齐 torch.utils.data.DataLoader 接口
+# ---------------------------------------------------------------------------
+
+
+def _default_collate(batch):
+    """默认 collate 函数：把 ``[(x1, y1), (x2, y2), ...]`` 拼成 ``([X], [Y])``。
+
+    约定每个 sample 是 ``(x, y)`` 元组（或可索引对象），沿第 0 维 stack。
+    若 ``x`` / ``y`` 是 ``Tensor``，返回 stacked ``Tensor``；否则返回 ndarray。
+    """
+    if not isinstance(batch, (list, tuple)) or len(batch) == 0:
+        return batch
+
+    # 检查是否是 (x, y) 元组列表
+    first = batch[0]
+    if isinstance(first, (list, tuple)) and len(first) == 2:
+        xs = [b[0] for b in batch]
+        ys = [b[1] for b in batch]
+        # 优先用 Tensor（保持 requires_grad 信息）
+        if isinstance(xs[0], Tensor):
+            x_out = Tensor(np.stack([x.data if isinstance(x, Tensor) else x
+                                     for x in xs], axis=0),
+                           requires_grad=False)
+        else:
+            x_out = np.stack(xs, axis=0)
+        if isinstance(ys[0], Tensor):
+            y_out = Tensor(np.stack([y.data if isinstance(y, Tensor) else y
+                                     for y in ys], axis=0),
+                           requires_grad=False)
+        else:
+            y_out = np.stack(ys, axis=0)
+        return x_out, y_out
+    # 不是 (x, y) 元组：直接 stack
+    if isinstance(first, Tensor):
+        return Tensor(np.stack([b.data if isinstance(b, Tensor) else b for b in batch], axis=0),
+                      requires_grad=False)
+    return np.stack(batch, axis=0)
+
+
+class BatchLoader:
+    """对齐 ``torch.utils.data.DataLoader`` 接口的批量加载器。
+
+    CPU-only 实现：``num_workers`` / ``pin_memory`` / ``persistent_workers``
+    为占位参数（保留以匹配 PyTorch API 但忽略实际行为），实际单线程同步迭代。
+
+    Args:
+        dataset: 可索引数据集（实现 ``__getitem__`` 与 ``__len__``），
+                 或一个 ``[(x, y), ...]`` 列表
+        batch_size: 批量大小
+        shuffle: 是否每轮打乱顺序
+        collate_fn: 自定义 collate 函数，签名 ``(list[sample]) -> batch``；
+                    默认 ``_default_collate`` 处理 ``(x, y)`` 元组
+        drop_last: 是否丢弃最后不足 ``batch_size`` 的 batch
+        seed: 随机种子（默认 0；设为 None 表示不固定）
+        num_workers: 占位参数（CPU-only，默认 0，忽略）
+        pin_memory: 占位参数（CPU-only，默认 False，忽略）
+        persistent_workers: 占位参数（默认 False，忽略）
+
+    用法:
+        >>> loader = BatchLoader(dataset, batch_size=8, shuffle=True)
+        >>> for x, y in loader:
+        ...     ...
+
+    或与 ``Trainer`` 配合（``Trainer`` 期望 loader 可迭代返回 ``(x, y)``）。
+    """
+
+    def __init__(self, dataset, batch_size: int = 1, shuffle: bool = True,
+                 collate_fn=None, drop_last: bool = False, seed: int = 0,
+                 num_workers: int = 0, pin_memory: bool = False,
+                 persistent_workers: bool = False):
+        self.dataset = dataset
+        self.batch_size = int(batch_size)
+        self.shuffle = bool(shuffle)
+        self.collate_fn = collate_fn if collate_fn is not None else _default_collate
+        self.drop_last = bool(drop_last)
+        self.seed = seed
+        # 占位参数（CPU-only 实现忽略，但保留以匹配 PyTorch API）
+        self.num_workers = int(num_workers)
+        self.pin_memory = bool(pin_memory)
+        self.persistent_workers = bool(persistent_workers)
+        # 内部 RNG 状态
+        self._rng = np.random.RandomState(seed) if seed is not None else np.random.RandomState()
+
+    def __len__(self) -> int:
+        """返回一个 epoch 内的 batch 数。"""
+        n = len(self.dataset)
+        if self.drop_last:
+            return n // self.batch_size
+        return (n + self.batch_size - 1) // self.batch_size
+
+    def __iter__(self):
+        """迭代一个 epoch 的所有 batch。"""
+        n = len(self.dataset)
+        indices = np.arange(n)
+        if self.shuffle:
+            self._rng.shuffle(indices)
+
+        # 按 batch_size 切片
+        for i in range(0, n, self.batch_size):
+            batch_indices = indices[i:i + self.batch_size]
+            if self.drop_last and len(batch_indices) < self.batch_size:
+                # drop_last 且最后一个 batch 不满：丢弃
+                break
+            # 收集 batch
+            batch = [self.dataset[int(idx)] for idx in batch_indices]
+            yield self.collate_fn(batch)
+
+
 __all__ = [
     "cross_entropy_loss",
     "EarlyStopping",
@@ -910,6 +1019,7 @@ __all__ = [
     "compute_loss_rate",
     "plot_loss_curve",
     "Trainer",
+    "BatchLoader",
     "clip_grad_norm",
     # 重新导出 optim 中新增项，方便用户从 training 一次性导入
     "LambdaLR",

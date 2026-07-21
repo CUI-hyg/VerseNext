@@ -25,13 +25,7 @@ import numpy as np
 
 from .tensor import Tensor
 from . import nn
-
-# 可选 Numba 加速（不可用则降级为纯 NumPy）
-try:
-    import numba as _numba  # noqa: F401
-    _HAS_NUMBA = True
-except ImportError:
-    _HAS_NUMBA = False
+from ._numba import _HAS_NUMBA  # noqa: F401  统一入口：保留导入以备后续加速扩展
 
 
 # ---------------------------------------------------------------------------
