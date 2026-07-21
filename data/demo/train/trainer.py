@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 from verse_torch.optim import AdamW, LambdaLR, warmup_cosine_lr
-from verse_torch.training import Trainer
+from verse_torch.training import Trainer, ParallelTrainer, CheckpointManager, _default_collate
 
 from model.config import CometSparkConfig, load_full_config
 from model.model import CometSparkLM
@@ -155,6 +155,9 @@ def train(
     )
 
     # 7. Trainer
+    # Part3K2 Task 1.5: 根据 parallel_chunks 选择 Trainer 或 ParallelTrainer
+    # parallel_chunks=1（默认）→ 标准 Trainer；>1 → ParallelTrainer（chunk 拆分 + 串行重训）
+    parallel_chunks = int(train_cfg.get("parallel_chunks", 1))
     patience = int(train_cfg.get("patience", 5))
     eval_interval = int(train_cfg.get("eval_interval", 20))
     grad_accum = int(train_cfg.get("grad_accum", 1))
@@ -165,37 +168,85 @@ def train(
     realtime_plot = bool(train_cfg.get("realtime_plot", True))
     eta_window = int(train_cfg.get("eta_window", 20))
 
-    trainer_cfg = {
-        "max_steps": max_steps,
-        "eval_interval": eval_interval,
-        "patience": patience,
-        "save_dir": save_dir,
-        "grad_accum": grad_accum,
-        "log_interval": log_interval,
-        "loss_rate_window": min(50, max(10, max_steps // 4)),
-        "grad_clip": grad_clip,
-        "label_smoothing": label_smoothing,
-        "enable_progress_bar": enable_progress_bar,
-        "realtime_plot": realtime_plot,
-        "eta_window": eta_window,
-    }
-    trainer = Trainer(
-        model=model,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        optimizer=optimizer,
-        scheduler=scheduler,
-        cfg=trainer_cfg,
-    )
-    print(f"[train] 开始训练 max_steps={max_steps} batch_size={batch_size} "
-          f"lr={lr} warmup={warmup} grad_clip={grad_clip} "
-          f"label_smoothing={label_smoothing}", flush=True)
-    train_losses, val_losses = trainer.fit()
+    if parallel_chunks > 1:
+        # ParallelTrainer 分支：内部自建 BatchLoader + optimizer，仅需 dataset + cfg
+        # 注意：ParallelTrainer.fit() 返回 history dict（含 train_loss/val_loss/steps 列表）
+        parallel_cfg = {
+            "parallel_chunks": parallel_chunks,
+            "max_steps": max_steps,
+            "batch_size": batch_size,
+            "lr": lr,
+            "warmup": warmup,
+            "eval_interval": eval_interval,
+            "grad_clip": grad_clip,
+            "label_smoothing": label_smoothing,
+            "seed": seed,
+            "patience": patience,
+            "save_dir": save_dir,
+            "log_interval": log_interval,
+            "loss_rate_window": min(50, max(10, max_steps // 4)),
+            "enable_progress_bar": enable_progress_bar,
+            "realtime_plot": realtime_plot,
+            "eta_window": eta_window,
+        }
+        # optimizer_kwargs 仅接受 AdamW 标准参数（weight_decay 等）；
+        # no_decay 参数组分离由 ParallelTrainer 内部简化处理（不分离）
+        optimizer_kwargs = {"weight_decay": weight_decay}
+        checkpoint_mgr = CheckpointManager(save_dir)
+        parallel_trainer = ParallelTrainer(
+            model=model,
+            train_dataset=train_ds,
+            val_dataset=val_ds,
+            optimizer_cls=AdamW,
+            optimizer_kwargs=optimizer_kwargs,
+            cfg=parallel_cfg,
+            collate_fn=collate_fn,
+            checkpoint_mgr=checkpoint_mgr,
+        )
+        print(f"[train] 开始训练 (ParallelTrainer) chunks={parallel_chunks} "
+              f"max_steps={max_steps} batch_size={batch_size} "
+              f"lr={lr} warmup={warmup} grad_clip={grad_clip} "
+              f"label_smoothing={label_smoothing}", flush=True)
+        history = parallel_trainer.fit()
+        # 统一返回结构：把 history 的 train_loss/val_loss 列表作为 train_losses/val_losses
+        train_losses = list(history.get("train_loss", []))
+        val_losses = list(history.get("val_loss", []))
+        best_val_loss = float(parallel_trainer.best_val_loss)
+        # ParallelTrainer 不直接走 Trainer._save_history，手动补存 loss_history.json
+        _save_parallel_history(save_dir, train_losses, val_losses, max_steps, eval_interval,
+                                best_val_loss)
+    else:
+        trainer_cfg = {
+            "max_steps": max_steps,
+            "eval_interval": eval_interval,
+            "patience": patience,
+            "save_dir": save_dir,
+            "grad_accum": grad_accum,
+            "log_interval": log_interval,
+            "loss_rate_window": min(50, max(10, max_steps // 4)),
+            "grad_clip": grad_clip,
+            "label_smoothing": label_smoothing,
+            "enable_progress_bar": enable_progress_bar,
+            "realtime_plot": realtime_plot,
+            "eta_window": eta_window,
+        }
+        trainer = Trainer(
+            model=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            cfg=trainer_cfg,
+        )
+        print(f"[train] 开始训练 max_steps={max_steps} batch_size={batch_size} "
+              f"lr={lr} warmup={warmup} grad_clip={grad_clip} "
+              f"label_smoothing={label_smoothing}", flush=True)
+        train_losses, val_losses = trainer.fit()
+        best_val_loss = float(trainer.best_val_loss)
 
     wall_clock = time.time() - start_time
     initial_loss = float(train_losses[0]) if train_losses else float("nan")
     final_loss = float(train_losses[-1]) if train_losses else float("nan")
-    best_val_loss = float(trainer.best_val_loss)
 
     # 8. 保存完整模型（含 config）到 checkpoints/cometspark.pt
     full_model_path = os.path.join(save_dir, "cometspark.pt")
@@ -225,6 +276,48 @@ def train(
         "vocab_size": vocab_size,
         "config": config.to_dict(),
     }
+
+
+def _save_parallel_history(save_dir: str, train_losses, val_losses,
+                            max_steps: int, eval_interval: int,
+                            best_val_loss: float) -> None:
+    """ParallelTrainer 分支的 loss 历史持久化（对齐 Trainer._save_history）。
+
+    输出：
+    - ``loss_history.json``：JSON 格式的 loss 历史
+    - ``train_losses.txt`` / ``val_losses.txt``：纯文本每行一个值
+    - ``loss_curve.png``（或 .txt）：loss 曲线图（matplotlib 不可用时降级 ASCII）
+    """
+    import json
+    from verse_torch.training import plot_loss_curve
+
+    os.makedirs(save_dir, exist_ok=True)
+    history = {
+        "train_losses": list(train_losses),
+        "val_losses": list(val_losses),
+        "max_steps": max_steps,
+        "eval_interval": eval_interval,
+        "best_val_loss": float(best_val_loss),
+    }
+    with open(os.path.join(save_dir, "loss_history.json"), "w", encoding="utf-8") as f:
+        json.dump(history, f, ensure_ascii=False, indent=2)
+
+    with open(os.path.join(save_dir, "train_losses.txt"), "w", encoding="utf-8") as f:
+        for v in train_losses:
+            f.write(f"{float(v):.6f}\n")
+    with open(os.path.join(save_dir, "val_losses.txt"), "w", encoding="utf-8") as f:
+        for v in val_losses:
+            f.write(f"{float(v):.6f}\n")
+
+    # 画曲线图（matplotlib 不可用时自动降级 ASCII）
+    try:
+        plot_loss_curve(
+            train_losses, val_losses,
+            os.path.join(save_dir, "loss_curve.png"),
+            eval_interval=eval_interval,
+        )
+    except Exception as e:
+        print(f"[train] 警告：绘制 loss 曲线失败：{e}", flush=True)
 
 
 __all__ = ["train"]

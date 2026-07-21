@@ -546,35 +546,78 @@ def distill_only(teacher, student, train_loader, max_steps: int = 100,
 # ---------------------------------------------------------------------------
 
 
-def compress_pipeline(model, target_ratio: float = 0.1, eval_fn=None,
+def compress_pipeline(model, config=None, return_stats: bool = False,
+                      # 旧 API 向后兼容参数（任一非 None / 非 dict 时走旧 API）
+                      target_ratio: float = 0.1, eval_fn=None,
                       sparsity: float = 0.3, qtype: str = "int4",
                       lora_r: int = 8, lora_alpha: float = 16.0,
                       use_lora: bool = False):
-    """端到端压缩 pipeline：prune → quantize → (可选) lora_wrap。
+    """一键压缩管线，支持任意组合 prune/quantize/lora/ternary/distill。
 
-    默认 ``use_lora=False``（PoC 简化：LoRA 是训练阶段技术，纯推理 pipeline 不需要）。
-    若需 QLoRA 风格（量化基座 + LoRA 增量微调），设 ``use_lora=True``。
+    支持两种调用方式：
 
-    压缩比计算（bit-level 精确版）：
-        compression_ratio = original_bits / compressed_bits
-        - fp32: 32 bit/param
-        - INT4: 4 bit/param（packed 后实际字节 * 8）
-        - INT8: 8 bit/param
-        - ternary: 2 bit/param
+    **新 API（推荐）**::
+
+        compressed_model = compress_pipeline(model, config_dict)
+        compressed_model, stats = compress_pipeline(model, config_dict, return_stats=True)
+
+    其中 ``config_dict`` 的 key 是压缩方法，value 是参数::
+
+        {
+            "prune":     {"sparsity": 0.5, "method": "outlier_safe"},
+            "quantize":  {"bits": 4, "schema": "symmetric"},
+            "lora":      {"rank": 8, "alpha": 16},
+            "ternary":   {},
+            "distill":   {"teacher": teacher_model, "epochs": 10, "lr": 1e-4}
+        }
+
+    新 API **不修改原模型**：内部深拷贝 model 后再应用管线。
+
+    **旧 API（向后兼容）**::
+
+        stats = compress_pipeline(model, target_ratio=0.1, qtype="int4",
+                                   sparsity=0.3, use_lora=False)
+
+    旧 API **原地修改** model，返回统计 dict（与 v1 行为一致）。
 
     Args:
-        model: 待压缩模型（nn.Module）
-        target_ratio: 目标压缩比（默认 0.1，即压缩到 1/10 大小）
-        eval_fn: 可选，接收 model 返回 loss 的函数
-        sparsity: 剪枝稀疏度（默认 0.3）
-        qtype: 量化类型（默认 "int4"；为达到 10× 压缩比可改 "ternary"）
-        lora_r: LoRA 秩（默认 8）
-        lora_alpha: LoRA 缩放（默认 16）
-        use_lora: 是否在最后挂 LoRA 适配器（默认 False）
+        model: 待压缩模型（需是 Module 子类）
+        config: dict，新 API 的压缩配置；若为 None 则走旧 API
+        return_stats: 新 API 下是否返回 (compressed_model, stats) 元组
+            （旧 API 始终返回 stats dict，此参数被忽略）
+        target_ratio / eval_fn / sparsity / qtype / lora_r / lora_alpha / use_lora:
+            旧 API 参数，仅当 ``config`` 不是 dict 时生效
 
     Returns:
-        dict: {original_params, compressed_params, compression_ratio,
-               original_loss, compressed_loss, loss_diff_pct, steps}
+        - 新 API + ``return_stats=False``: 返回压缩后的新 model
+        - 新 API + ``return_stats=True``: 返回 ``(new_model, stats_dict)``
+        - 旧 API（``config`` 非 dict）: 返回 stats_dict（原地修改 model）
+    """
+    # ------------------------------------------------------------------
+    # 分派：新 API vs 旧 API
+    # ------------------------------------------------------------------
+    if isinstance(config, dict):
+        return _compress_pipeline_v2(model, config, return_stats=return_stats)
+    return _compress_pipeline_v1(
+        model,
+        target_ratio=target_ratio,
+        eval_fn=eval_fn,
+        sparsity=sparsity,
+        qtype=qtype,
+        lora_r=lora_r,
+        lora_alpha=lora_alpha,
+        use_lora=use_lora,
+    )
+
+
+def _compress_pipeline_v1(model, target_ratio: float = 0.1, eval_fn=None,
+                          sparsity: float = 0.3, qtype: str = "int4",
+                          lora_r: int = 8, lora_alpha: float = 16.0,
+                          use_lora: bool = False):
+    """旧版 compress_pipeline（v1，原地修改 + 返回 stats dict）。
+
+    保留此函数确保向后兼容：现有测试与下游代码（test_compression_poc.py /
+    verse_inference 等）依赖此 API。
     """
     original_params = count_parameters(model)
     original_bits = int(original_params * 32)
@@ -640,6 +683,204 @@ def compress_pipeline(model, target_ratio: float = 0.1, eval_fn=None,
         "loss_diff_pct": loss_diff_pct,
         "steps": steps,
     }
+
+
+def _deep_copy_model(model):
+    """深拷贝模型（用于 v2 pipeline 的非破坏式压缩）。
+
+    优先尝试 ``copy.deepcopy``；若失败（罕见，如某些自定义属性不可 pickle），
+    降级到 state_dict 复制路径：基于 ``model.config`` 重建同型模型并加载权重。
+    """
+    import copy as _copy
+    try:
+        return _copy.deepcopy(model)
+    except Exception:
+        # 降级：假设 model 有 .config 属性（如 CometSparkLM）
+        cfg = getattr(model, "config", None)
+        if cfg is None:
+            raise
+        cls = type(model)
+        new_model = cls(cfg)
+        sd = model.state_dict() if hasattr(model, "state_dict") else {}
+        if hasattr(new_model, "load_state_dict"):
+            new_model.load_state_dict(
+                {k: v.copy() for k, v in sd.items()}, strict=False
+            )
+        return new_model
+
+
+def _compress_pipeline_v2(model, config: dict, return_stats: bool = False):
+    """新版 compress_pipeline（v2）：dict 配置 + 不修改原模型。
+
+    按 prune → quantize → lora → ternary → distill 顺序应用，
+    每步可选；返回压缩后的新模型（深拷贝），可选附加统计 dict。
+    """
+    import copy as _copy
+
+    # 记录原始参数量与 bit 数（压缩前）
+    original_params = count_parameters(model)
+    original_bits = int(original_params * 32)
+
+    # 深拷贝模型，确保不修改原模型
+    new_model = _deep_copy_model(model)
+
+    steps = []
+    sparsity_applied = 0.0
+    # 实际稀疏度：在 prune 之后、quantize 之前测量（quantize 后 Linear 权重
+    # 被打包为 uint8，count_nonzero_params 无法正确统计稀疏度）
+    actual_sparsity = 0.0
+    qtype_applied = None
+    has_quantize = False
+
+    # ------------------------------------------------------------------
+    # 1. prune（可选）
+    # ------------------------------------------------------------------
+    if "prune" in config and config["prune"] is not None:
+        prune_cfg = dict(config["prune"])  # 浅拷贝避免污染用户输入
+        sparsity = float(prune_cfg.pop("sparsity", 0.3))
+        # method 字段当前仅支持 "outlier_safe"（OutlierSafePruner）
+        method = prune_cfg.pop("method", "outlier_safe")
+        if method not in ("outlier_safe", None):
+            raise ValueError(
+                f"prune.method 仅支持 'outlier_safe'，得到 {method!r}"
+            )
+        pruner = OutlierSafePruner(new_model, sparsity=sparsity)
+        _, prune_report = pruner.apply()
+        sparsity_applied = sparsity
+        # 在 quantize 前测量实际稀疏度（此时 Linear 仍是 fp32 Tensor）
+        nonzero_after_prune = count_nonzero_params(new_model)
+        actual_sparsity = (1.0 - nonzero_after_prune / original_params
+                           if original_params > 0 else 0.0)
+        steps.append({
+            "step": "prune",
+            "sparsity": sparsity,
+            "method": method,
+            "report": prune_report,
+            "actual_sparsity": float(actual_sparsity),
+        })
+
+    # ------------------------------------------------------------------
+    # 2. quantize（可选）：bits=4 → int4, bits=8 → int8
+    # ------------------------------------------------------------------
+    if "quantize" in config and config["quantize"] is not None:
+        q_cfg = dict(config["quantize"])
+        bits = int(q_cfg.pop("bits", 4))
+        # schema 字段当前仅支持 "symmetric"（量化模块实现）
+        schema = q_cfg.pop("schema", "symmetric")
+        if schema not in ("symmetric", None):
+            raise ValueError(
+                f"quantize.schema 仅支持 'symmetric'，得到 {schema!r}"
+            )
+        if bits == 4:
+            qtype_applied = "int4"
+        elif bits == 8:
+            qtype_applied = "int8"
+        else:
+            raise ValueError(
+                f"quantize.bits 仅支持 4 或 8，得到 {bits}"
+            )
+        quantize_only(new_model, dtype=qtype_applied)
+        has_quantize = True
+        steps.append({
+            "step": "quantize",
+            "bits": bits,
+            "qtype": qtype_applied,
+            "schema": schema,
+        })
+
+    # ------------------------------------------------------------------
+    # 3. lora（可选）：在 quantize 之后包装
+    # ------------------------------------------------------------------
+    if "lora" in config and config["lora"] is not None:
+        lora_cfg = dict(config["lora"])
+        rank = int(lora_cfg.pop("rank", 8))
+        alpha = float(lora_cfg.pop("alpha", 16.0))
+        lora_only(new_model, r=rank, alpha=alpha)
+        steps.append({
+            "step": "lora",
+            "rank": rank,
+            "alpha": alpha,
+        })
+
+    # ------------------------------------------------------------------
+    # 4. ternary（可选）：等价于 quantize_only(dtype="ternary")
+    # 若已显式 quantize，ternary 会覆盖（最后生效）
+    # ------------------------------------------------------------------
+    if "ternary" in config and config["ternary"] is not None:
+        # ternary 与 quantize 互斥：ternary 优先
+        ternary_only(new_model)
+        qtype_applied = "ternary"
+        has_quantize = True
+        steps.append({
+            "step": "ternary",
+            "qtype": "ternary",
+        })
+
+    # ------------------------------------------------------------------
+    # 5. distill（可选）：知识蒸馏，需要 teacher
+    # ------------------------------------------------------------------
+    if "distill" in config and config["distill"] is not None:
+        d_cfg = dict(config["distill"])
+        teacher = d_cfg.pop("teacher", None)
+        if teacher is None:
+            raise ValueError("distill 配置必须提供 'teacher' 字段")
+        epochs = int(d_cfg.pop("epochs", 10))
+        lr = float(d_cfg.pop("lr", 1e-4))
+        T = float(d_cfg.pop("T", 2.0))
+        alpha = float(d_cfg.pop("alpha", 0.5))
+        # 构造一个简单的 toy loader（distill_only 需要 train_loader）
+        # 若用户提供 train_loader，则优先使用
+        train_loader = d_cfg.pop("train_loader", None)
+        if train_loader is None:
+            # 无 train_loader 时跳过实际训练，仅做 teacher 冻结
+            # （下游可自行调用 KnowledgeDistiller.distill）
+            KnowledgeDistiller(teacher, new_model, T=T, alpha=alpha)
+            steps.append({
+                "step": "distill",
+                "epochs": 0,
+                "lr": lr,
+                "note": "no train_loader; teacher frozen, student ready",
+            })
+        else:
+            max_steps = int(d_cfg.pop("max_steps", epochs))
+            distill_only(
+                teacher, new_model, train_loader,
+                max_steps=max_steps, T=T, alpha=alpha, lr=lr,
+            )
+            steps.append({
+                "step": "distill",
+                "epochs": epochs,
+                "lr": lr,
+                "max_steps": max_steps,
+            })
+
+    # ------------------------------------------------------------------
+    # 计算压缩后统计
+    # ------------------------------------------------------------------
+    compressed_bits = compute_compressed_bits(new_model)
+    compressed_params = compressed_bits / 32
+    compression_ratio = (original_bits / compressed_bits
+                        if compressed_bits > 0 else float("inf"))
+    # 平均 bit / param
+    avg_bits = (compressed_bits / original_params
+                if original_params > 0 else 32.0)
+
+    stats = {
+        "original_params": int(original_params),
+        "compressed_params": float(compressed_params),
+        "compressed_bits": int(compressed_bits),
+        "original_bits": int(original_bits),
+        "compression_ratio": float(compression_ratio),
+        # sparsity 用 prune 后测得的实际稀疏度（若未 prune 则为 0）
+        "sparsity": float(actual_sparsity),
+        "bits": float(avg_bits),
+        "qtype": qtype_applied if has_quantize else None,
+        "steps": steps,
+    }
+
+    if return_stats:
+        return new_model, stats
+    return new_model
 
 
 __all__ = [

@@ -1,6 +1,12 @@
 """评估入口：加载 best.pt → 生成示例文本。
 
 5 条预设 prompt（中英混合 + 数字序列），用 greedy + top-k 生成，打印结果。
+
+Part3K2 Task 1.7: 集成 ScoringEvaluator 支持 ``--score`` 模式：
+    - 加载 references 文件（每行一个参考答案，与 prompts 一一对应）
+    - 对生成结果与参考答案计算 5 个指标（exact_match / prefix_accuracy /
+      char_f1 / bleu / rouge_l）
+    - 打印评分报告
 """
 
 from __future__ import annotations
@@ -12,6 +18,7 @@ from pathlib import Path
 import numpy as np
 
 from verse_torch import Tensor, no_grad
+from verse_torch.scoring import ScoringEvaluator
 
 from model.config import CometSparkConfig, load_full_config
 from model.model import CometSparkLM
@@ -113,7 +120,10 @@ def evaluate(
     max_new_tokens: int = 32,
     temperature: float = 1.0,
     top_k: int = None,
+    top_p: float = None,
     seed: int = 42,
+    score: bool = False,
+    references_file: str = None,
 ) -> dict:
     """加载 best.pt 生成示例文本。
 
@@ -124,9 +134,16 @@ def evaluate(
         max_new_tokens: 每条 prompt 生成 token 数
         temperature: 采样温度；1.0 等价 greedy，>1 增加随机性，<1 收敛
         top_k: top-k 采样；None 表示 greedy
+        top_p: nucleus sampling 阈值 (0,1)；None 表示不限制。
+            注意：CometSparkLM.generate 当前不支持 top_p，会自动降级为
+            temperature+top_k 采样（Trainer.inference 已用 try/except 处理）。
         seed: 随机种子
+        score: Part3K2 Task 1.7 是否对生成结果打分（需提供 references_file）
+        references_file: 参考答案文件路径，每行一个 reference（与 prompts 一一对应）；
+            仅当 score=True 时生效
     Returns:
-        dict 包含 results（list of {prompt, generated}）/ wall_clock
+        dict 包含 results（list of {prompt, generated}）/ wall_clock /
+        scores（score=True 时含 5 个指标的均值）
     """
     start_time = time.time()
     set_seed(seed)
@@ -182,7 +199,7 @@ def evaluate(
 
     results = []
     print(f"[evaluate] 开始生成 {len(prompts)} 条 prompt，每条 {max_new_tokens} tokens "
-          f"(temperature={temperature}, top_k={top_k})", flush=True)
+          f"(temperature={temperature}, top_k={top_k}, top_p={top_p})", flush=True)
     # Task 5.3: 获取 eos_id，传给 generate 以确保末尾追加 eos
     eos_id = _get_eos_id(tok)
     with no_grad():
@@ -197,13 +214,25 @@ def evaluate(
                 ids = [0]
             idx_np = np.asarray(ids, dtype=np.int64).reshape(1, -1)
             try:
-                generated = model.generate(
-                    idx_np,
-                    max_new_tokens=int(max_new_tokens),
-                    temperature=float(temperature),
-                    top_k=top_k,
-                    eos_id=eos_id,
-                )
+                # Part3K2 Task 1.7: 兼容 top_p（CometSparkLM.generate 不支持时降级）
+                try:
+                    generated = model.generate(
+                        idx_np,
+                        max_new_tokens=int(max_new_tokens),
+                        temperature=float(temperature),
+                        top_k=top_k,
+                        top_p=top_p,
+                        eos_id=eos_id,
+                    )
+                except TypeError:
+                    # 模型 generate 不支持 top_p 参数，降级调用
+                    generated = model.generate(
+                        idx_np,
+                        max_new_tokens=int(max_new_tokens),
+                        temperature=float(temperature),
+                        top_k=top_k,
+                        eos_id=eos_id,
+                    )
                 if isinstance(generated, Tensor):
                     gen_ids = generated.data.reshape(-1).tolist()
                 else:
@@ -227,13 +256,77 @@ def evaluate(
             print(f"  (tokens: {len(gen_ids)})", flush=True)
         print("-" * 60, flush=True)
 
+    # Part3K2 Task 1.7: 打分模式（--score）
+    scores = None
+    if score:
+        scores = _run_scoring(results, prompts, references_file, base_dir)
+
     wall_clock = time.time() - start_time
     print(f"[evaluate] 完成 wall_clock={wall_clock:.2f}s", flush=True)
-    return {
+    result_dict = {
         "results": results,
         "wall_clock": wall_clock,
         "vocab_size": vocab_size,
     }
+    if scores is not None:
+        result_dict["scores"] = scores
+    return result_dict
+
+
+def _run_scoring(results, prompts, references_file, base_dir):
+    """Part3K2 Task 1.7: 加载 references 文件并计算 5 个指标。
+
+    Args:
+        results: evaluate() 内生成的 results 列表，每项含 ``generated`` 字段
+        prompts: prompt 列表（用于报错时定位）
+        references_file: 参考答案文件路径（相对 base_dir 或绝对路径）
+        base_dir: 用于解析相对路径
+
+    Returns:
+        dict: 5 个指标的均值 + per_sample + n_samples；失败时返回 None
+    """
+    if references_file is None:
+        print("[evaluate] --score 已启用但未提供 --references-file，跳过打分",
+              flush=True)
+        return None
+
+    # 解析 references 文件路径
+    ref_path = references_file
+    if not os.path.isabs(ref_path):
+        ref_path = _resolve_path(base_dir, references_file)
+    if not os.path.exists(ref_path):
+        print(f"[evaluate] references 文件不存在：{ref_path}，跳过打分",
+              flush=True)
+        return None
+
+    # 读取 references（每行一个，忽略空行与 # 注释）
+    references = []
+    with open(ref_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.rstrip("\n").rstrip("\r")
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            references.append(line)
+
+    if len(references) != len(results):
+        print(
+            f"[evaluate] references 数 ({len(references)}) 与 prompts 数 "
+            f"({len(results)}) 不一致，跳过打分",
+            flush=True,
+        )
+        return None
+
+    # 提取 predictions（generated 文本）
+    predictions = [r["generated"] for r in results]
+
+    # 用 ScoringEvaluator 计算 5 个指标
+    evaluator = ScoringEvaluator()
+    scores = evaluator.evaluate(predictions, references)
+    report = evaluator.report(scores)
+    print("[evaluate] 评分报告：", flush=True)
+    print(report, flush=True)
+    return scores
 
 
 __all__ = ["evaluate"]

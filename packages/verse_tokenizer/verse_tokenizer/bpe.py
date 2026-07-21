@@ -1,4 +1,4 @@
-"""Task 5.3: 最小 BPE 分词器，可加载 HuggingFace tokenizer.json。
+"""Task 5.3 / Task 2: 最小 BPE 分词器，可加载 HuggingFace tokenizer.json。
 
 设计目标
 --------
@@ -14,9 +14,8 @@ BPE 算法步骤
 1. **Pre-tokenize**：把输入文本切分为「词」（whitespace + punctuation）。
    HuggingFace tokenizer.json 的 ``pre_tokenizer`` 字段常见有
    ``ByteLevel`` / ``Whitespace`` / ``BertPreTokenizer`` 等。
-   本实现默认采用 GPT-2 风格的 ``ByteLevel`` 预切分：
-   - 用正则把文本切成 word / space / punctuation 段；
-   - 每段字符末尾加 ``Ġ``（GPT-2 空格标记）做后续 BPE；
+   本实现默认采用 GPT-4 风格预分词（见 :mod:`verse_tokenizer.preprocess`）：
+   - 中文整字、英文单词、数字、标点、空白分别独立成块；
    - 字节级编码：用 GPT-2 的 ``bytes_to_unicode`` 把所有 256 个字节映射到可打印 unicode。
 2. **BPE merge**：对每段的字符序列，按 ``merges`` 顺序贪心合并相邻 token，
    直到不能再合并为止。
@@ -26,12 +25,14 @@ decode 步骤
 -----------
 1. 把 id 反查为 token 字符串；
 2. 拼接后用 ``bytes_to_unicode`` 的逆映射还原为字节；
-3. ``bytes.decode('utf-8', errors='replace')`` 解码为字符串。
+3. ``bytes.decode('utf-8', errors='ignore')`` 解码为字符串（避免 U+FFFD 乱码）。
 
 special tokens
 --------------
 ``<|endoftext|>`` 等 special tokens 在 encode 时如果命中会被作为单 token；
 在 decode 时直接还原为其字符串形式。
+Task 2 升级后默认注册 bos/eos/pad/unk（旧风格 ``<bos>`` 等 + 新风格 ``<|bos|>`` 等）
+以及 chat 角色标记 ``<|user|>`` / ``<|assistant|>`` / ``<|system|>``。
 """
 
 from __future__ import annotations
@@ -45,6 +46,14 @@ import urllib.request
 from abc import ABC, abstractmethod
 from collections import Counter
 from typing import Optional, List
+
+# Task 2: 引入 preprocess 与 chat_template 模块（统一 NFKC + 预分词 + UTF-8 边界修复）
+from .preprocess import (
+    nfkc_normalize,
+    pre_tokenize as _gpt4_pre_tokenize,
+    trim_byte_ids_to_utf8_boundary,
+)
+from .chat_template import render_chat as _render_chat, render_prompt as _render_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +182,9 @@ def _bpe(token_chars: list[str], merge_ranks: dict[tuple[str, str], int]) -> lis
 def _trim_to_utf8_boundary(byte_ids: List[int]) -> List[int]:
     """从末尾向前检查，丢弃不完整的 UTF-8 多字节序列。
 
+    Task 2.5: 实现已统一到 :func:`verse_tokenizer.preprocess.trim_byte_ids_to_utf8_boundary`，
+    这里保留为薄包装以兼容旧 API（:mod:`tests.test_no_garbled` 直接 import 此函数）。
+
     参考 UTF-8 编码规则：
         - 首字节 ``0xxxxxxx``：1 字节字符
         - 首字节 ``110xxxxx``：2 字节字符，需后续 1 字节
@@ -189,34 +201,21 @@ def _trim_to_utf8_boundary(byte_ids: List[int]) -> List[int]:
     Returns:
         对齐到完整 UTF-8 字符边界的字节 id 列表
     """
-    n = len(byte_ids)
-    if n == 0:
-        return byte_ids
-    last = byte_ids[-1]
-    # ASCII 范围（< 0x80）必然是完整的 1 字节字符
-    if last < 0x80:
-        return byte_ids
-    # 从末尾向前找到当前字符的首字节（跳过 continuation bytes 10xxxxxx）
-    i = n - 1
-    while i >= 0 and (byte_ids[i] & 0xC0) == 0x80:
-        i -= 1
-    if i < 0:
-        # 全是 continuation bytes，无法解码，全部丢弃
-        return []
-    first = byte_ids[i]
-    if first < 0x80:
-        expected = 1
-    elif first < 0xE0:
-        expected = 2
-    elif first < 0xF0:
-        expected = 3
-    else:
-        expected = 4
-    actual = n - i
-    if actual < expected:
-        # 末尾字符字节不完整，丢弃该字符的所有字节
-        return byte_ids[:i]
-    return byte_ids
+    return trim_byte_ids_to_utf8_boundary(byte_ids)
+
+
+# ---------------------------------------------------------------------------
+# Task 2: 默认特殊 token（train 后自动注册）
+# ---------------------------------------------------------------------------
+# 旧风格（向后兼容已有测试：test_bpe_train_vocab_size 检查 <bos>/<eos>/<pad>/<unk>）
+_DEFAULT_LEGACY_SPECIAL_TOKENS = ["<bos>", "<eos>", "<pad>", "<unk>"]
+# 新风格（chat_template 用，与 unigram.SpecialTokens 对齐）
+_DEFAULT_NEW_SPECIAL_TOKENS = [
+    "<|bos|>", "<|eos|>", "<|pad|>", "<|unk|>",
+    "<|user|>", "<|assistant|>", "<|system|>",
+]
+# 合并后的默认特殊 token 列表
+DEFAULT_SPECIAL_TOKENS = _DEFAULT_LEGACY_SPECIAL_TOKENS + _DEFAULT_NEW_SPECIAL_TOKENS
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +236,16 @@ class BaseTokenizer(ABC):
     预处理钩子：
         - ``preprocess(text) -> str``：默认做 NFKC 正规化 + 去除控制字符
           （保留 ``\\n`` / ``\\r`` / ``\\t`` 等基本空白），子类可覆盖。
+          Task 2.6: NFKC 实现统一调用 :func:`verse_tokenizer.preprocess.nfkc_normalize`。
+
+    Task 2.6 新增默认方法（子类可覆盖）：
+        - ``apply_chat_template(messages) -> List[int]``：渲染 chat 数组后 encode
+        - ``apply_prompt_template(prompt) -> List[int]``：渲染 prompt 后 encode
+
+    Task 2.6 新增属性约定：
+        - ``special_tokens``：``dict[str, int]``，特殊 token 字符串 → id
+        - ``auto_add_special_tokens``：``bool``，encode 时是否默认加 bos/eos
+          （构造参数 ``add_special_tokens`` 控制默认值）
 
     设计目标：
         - 统一三种 tokenizer（BPE / Byte / Char）的接口契约；
@@ -244,10 +253,14 @@ class BaseTokenizer(ABC):
         - 保持向后兼容（不破坏现有 API）。
     """
 
+    # 类级默认：encode 时是否自动加 bos/eos（子类可在 __init__ 中覆盖）
+    auto_add_special_tokens: bool = True
+
     def preprocess(self, text: str) -> str:
         """文本预处理钩子：默认做 NFKC 正规化 + 去除控制字符。
 
         - NFKC：全角字母数字 → 半角，组合字符 → 规范形式，兼容字符分解；
+          Task 2.6: 统一调用 :func:`verse_tokenizer.preprocess.nfkc_normalize`。
         - 去除控制字符（Cc 类），但保留 ``\\n`` / ``\\r`` / ``\\t`` 等基本空白。
 
         子类可覆盖此方法以实现自定义预处理（如 GPT-4 / Llama 风格的
@@ -255,8 +268,8 @@ class BaseTokenizer(ABC):
         """
         if not isinstance(text, str):
             text = str(text)
-        # NFKC 正规化：全角→半角、组合→规范、兼容字符分解
-        text = unicodedata.normalize("NFKC", text)
+        # NFKC 正规化：全角→半角、组合→规范、兼容字符分解（统一入口）
+        text = nfkc_normalize(text)
         # 去除控制字符（Cc 类），但保留 \n \r \t
         text = "".join(
             ch for ch in text
@@ -264,6 +277,42 @@ class BaseTokenizer(ABC):
             or unicodedata.category(ch) != "Cc"
         )
         return text
+
+    # ------------------------------------------------------------------
+    # Task 2.6: chat template 默认实现（子类可覆盖）
+    # ------------------------------------------------------------------
+
+    def apply_chat_template(self, messages: list[dict]) -> list[int]:
+        """渲染 chat 数组为字符串后 encode。
+
+        Args:
+            messages: ``[{"role": "user", "content": "..."}, ...]``
+
+        Returns:
+            token id 列表（不加首尾 bos/eos，因为 render_chat 已含 ``<|eos|>``）
+        """
+        rendered = _render_chat(messages)
+        # 子类的 encode 通常接受 add_special_tokens 参数
+        try:
+            return self.encode(rendered, add_special_tokens=False)  # type: ignore[misc]
+        except TypeError:
+            # 子类 encode 不接受 add_special_tokens 参数（如 ByteTokenizer 旧签名）
+            return self.encode(rendered)
+
+    def apply_prompt_template(self, prompt: str) -> list[int]:
+        """渲染 prompt 为推理前缀后 encode。
+
+        Args:
+            prompt: 用户输入的 prompt 文本
+
+        Returns:
+            token id 列表（不加首尾 bos/eos，prompt 模板用于推理前缀）
+        """
+        rendered = _render_prompt(prompt)
+        try:
+            return self.encode(rendered, add_special_tokens=False)  # type: ignore[misc]
+        except TypeError:
+            return self.encode(rendered)
 
     @abstractmethod
     def encode(self, text: str) -> List[int]:
@@ -303,16 +352,24 @@ class BPETokenizer(BaseTokenizer):
     Args:
         vocab: {token_str: id}
         merges: ["token_a token_b", ...] 按 rank 升序排列
-        special_tokens: 可选的 special token 字符串列表（如 ["<|endoftext|>"]）
+        special_tokens: 可选的 special token（``list[str]`` 或 ``dict[str, int]``）
         byte_level: 是否使用 GPT-2 byte-level 编码（默认 True）
+        add_special_tokens: encode 时是否默认加 bos/eos（默认 True）
+
+    Task 2.2 升级：
+        - ``special_tokens`` 内部存储为 ``dict[str, int]``（token 字符串 → id），
+          与 :class:`BaseTokenizer` 约定一致；
+        - ``encode(text, add_special_tokens=True)`` 在首尾加 ``<bos>`` / ``<eos>``；
+        - ``train`` 后自动注册 ``DEFAULT_SPECIAL_TOKENS``（11 个，含旧风格与新风格）。
     """
 
     def __init__(
         self,
         vocab: dict,
         merges: list,
-        special_tokens: Optional[list[str]] = None,
+        special_tokens: Optional = None,
         byte_level: bool = True,
+        add_special_tokens: bool = True,
     ):
         self.vocab = dict(vocab)
         self.id_to_token = {v: k for k, v in self.vocab.items()}
@@ -326,13 +383,28 @@ class BPETokenizer(BaseTokenizer):
             elif isinstance(m, (list, tuple)) and len(m) == 2:
                 self.merge_ranks[(str(m[0]), str(m[1]))] = i
         self.byte_level = byte_level
-        # special tokens：保留映射，便于 encode 时识别
-        self.special_tokens: list[str] = list(special_tokens) if special_tokens else []
-        for st in self.special_tokens:
-            if st not in self.vocab:
-                # 给 special token 分配 id（vocab 末尾）
-                self.vocab[st] = len(self.vocab)
-                self.id_to_token[self.vocab[st]] = st
+        # Task 2.2: special_tokens 统一存为 dict[str, int]（token 字符串 → id）
+        self.special_tokens: dict[str, int] = {}
+        if special_tokens is None:
+            pass
+        elif isinstance(special_tokens, dict):
+            # dict[str, int] 输入：忽略显式 id，统一追加到 vocab 末尾
+            # （保持与 list[str] 分支一致的行为，避免 id 冲突）
+            for st in special_tokens:
+                if st not in self.vocab:
+                    self.vocab[st] = len(self.vocab)
+                    self.id_to_token[self.vocab[st]] = st
+                self.special_tokens[st] = self.vocab[st]
+        else:
+            # list[str] 输入
+            for st in special_tokens:
+                if st not in self.vocab:
+                    self.vocab[st] = len(self.vocab)
+                    self.id_to_token[self.vocab[st]] = st
+                self.special_tokens[st] = self.vocab[st]
+        # Task 2.2: add_special_tokens 构造参数
+        # （属性名避开与 add_special_tokens 方法冲突，用 auto_add_special_tokens）
+        self.auto_add_special_tokens = add_special_tokens
 
     # ------------------------------------------------------------------
     # 构造方法
@@ -421,20 +493,31 @@ class BPETokenizer(BaseTokenizer):
     # encode / decode
     # ------------------------------------------------------------------
 
-    def encode(self, text: str, add_special_tokens: bool = True) -> list[int]:
+    def encode(self, text: str, add_special_tokens: Optional[bool] = None) -> list[int]:
         """把文本编码为 token id 列表。
 
         Args:
             text: 输入文本
-            add_special_tokens: 是否在末尾追加 ``<|endoftext|>``（如果存在）
+            add_special_tokens:
+                - ``True``：在首尾追加 ``<bos>`` / ``<eos>``（如果存在于 vocab）
+                - ``False``：不追加任何 special token
+                - ``None``：使用 ``self.auto_add_special_tokens`` 默认值
+
+        Task 2.2 升级：
+            - 默认通过 ``auto_add_special_tokens`` 属性控制（构造参数 ``add_special_tokens``）；
+            - ``add_special_tokens=True`` 时在首尾加 ``<bos>`` / ``<eos>``（兼容旧 ``<|endoftext|>``）。
         """
-        # Task 4.2: 前置 NFKC 正规化（全角字符与组合形式统一）
+        # Task 4.2: 前置 NFKC 正规化 + 控制字符去除（BaseTokenizer.preprocess）
         text = self.preprocess(text)
+        # 解析 add_special_tokens 参数：None 时用 auto_add_special_tokens 默认值
+        if add_special_tokens is None:
+            add_special_tokens = self.auto_add_special_tokens
+
         ids: list[int] = []
 
         # 先按 special tokens 切分（special token 直接作为单 token）
         if self.special_tokens:
-            # 构造一个匹配所有 special tokens 的正则
+            # 构造一个匹配所有 special tokens 的正则（按长度降序避免短 token 抢匹配）
             sorted_specials = sorted(self.special_tokens, key=len, reverse=True)
             pat = re.compile("(" + "|".join(re.escape(s) for s in sorted_specials) + ")")
             chunks = pat.split(text)
@@ -444,23 +527,30 @@ class BPETokenizer(BaseTokenizer):
         for chunk in chunks:
             if not chunk:
                 continue
-            if chunk in self.vocab and chunk in self.special_tokens:
+            if chunk in self.special_tokens and chunk in self.vocab:
                 ids.append(self.vocab[chunk])
                 continue
             ids.extend(self._encode_chunk(chunk))
 
         if add_special_tokens:
-            # 追加 <|endoftext|>（如果存在）
-            eot = "<|endoftext|>"
-            if eot in self.vocab and (not ids or ids[-1] != self.vocab[eot]):
-                ids.append(self.vocab[eot])
+            # Task 2.2: 在首尾加 <bos> / <eos>（向后兼容旧 <|endoftext|>）
+            bos_id = self.vocab.get("<bos>")
+            if bos_id is not None and (not ids or ids[0] != bos_id):
+                ids.insert(0, bos_id)
+            eos_id = self.vocab.get("<eos>")
+            if eos_id is not None and (not ids or ids[-1] != eos_id):
+                ids.append(eos_id)
 
         return ids
 
     def _encode_chunk(self, text: str) -> list[int]:
-        """对一段（不含 special token 的）文本做 BPE encode。"""
-        # pre-tokenize
-        pieces = _gpt2_pretokenize(text)
+        """对一段（不含 special token 的）文本做 BPE encode。
+
+        Task 2.2: 预分词统一调用 :func:`verse_tokenizer.preprocess.pre_tokenize`
+        （GPT-4 风格：中文整字、英文单词、数字、标点、空白独立成块）。
+        """
+        # Task 2.2: GPT-4 风格预分词（中文整字、英文单词、数字、标点、空白独立成块）
+        pieces = _gpt4_pre_tokenize(text)
         ids: list[int] = []
         for piece in pieces:
             if self.byte_level:
@@ -533,23 +623,33 @@ class BPETokenizer(BaseTokenizer):
         return "".join(pieces)
 
     # ------------------------------------------------------------------
-    # Task 3.2: add_special_tokens
+    # Task 3.2 / Task 2.2: add_special_tokens
     # ------------------------------------------------------------------
 
-    def add_special_tokens(self, tokens: list[str]) -> None:
+    def add_special_tokens(self, tokens) -> None:
         """将 tokens 加入 vocab 并标记为 special token。
 
         - 每个 token 分配新的 id（如果还未在 vocab 中）；
-        - 更新 ``special_tokens`` 列表；
+        - 更新 ``special_tokens`` 字典（Task 2.2: 统一存为 ``dict[str, int]``）；
         - encode 时这些 token 视为不可拆分（atomic）。
+
+        Args:
+            tokens: ``list[str]`` 或 ``dict[str, int]``（dict 时忽略显式 id，
+                    统一追加到 vocab 末尾，避免 id 冲突）
         """
+        # 统一输入为 list[str]
+        if isinstance(tokens, dict):
+            tokens = list(tokens.keys())
+        elif isinstance(tokens, str):
+            tokens = [tokens]
         for tok in tokens:
             if tok not in self.vocab:
                 new_id = len(self.vocab)
                 self.vocab[tok] = new_id
                 self.id_to_token[new_id] = tok
+            # Task 2.2: special_tokens 是 dict[str, int]，用 setdefault 避免覆盖
             if tok not in self.special_tokens:
-                self.special_tokens.append(tok)
+                self.special_tokens[tok] = self.vocab[tok]
 
     # ------------------------------------------------------------------
     # Task 3.1: train（字节级 BPE，参考 GPT-2 风格）
@@ -564,9 +664,11 @@ class BPETokenizer(BaseTokenizer):
             2. 初始化词汇表为 256 个基础字节字符；
             3. 统计相邻 token pair 频率；
             4. 选择频率最高的 pair 合并为新 token，加入词汇表；
-            5. 重复直到 vocab_size 达到或无 pair 可合并；
+            5. 重复直到 vocab_size 达到或无 pair 可合并（vocab_size 自适应：
+               数据太少时回退到最大可达 vocab 大小）；
             6. 记录 merges 列表（按合并顺序）；
-            7. 训练完成后自动 add_special_tokens(['<bos>','<eos>','<pad>','<unk>'])。
+            7. 训练完成后自动 ``add_special_tokens(DEFAULT_SPECIAL_TOKENS)``
+               （11 个：旧风格 4 + 新风格 7）。
 
         Args:
             corpus: 训练语料，``str`` 或 ``List[str]``
@@ -581,8 +683,9 @@ class BPETokenizer(BaseTokenizer):
         else:
             text = str(corpus)
 
-        # 2. pre-tokenize + byte-level 编码
-        pieces = _gpt2_pretokenize(text)
+        # 2. Task 2.2: pre-tokenize 改用 GPT-4 风格（中文整字、英文单词、
+        #    数字、标点、空白独立成块）+ byte-level 编码
+        pieces = _gpt4_pre_tokenize(text)
         # 每个 piece 转为 byte-level 字符元组（用于统计 pair）
         word_list: list[tuple[str, ...]] = []
         for p in pieces:
@@ -599,8 +702,9 @@ class BPETokenizer(BaseTokenizer):
         # 4. merges 列表（按合并顺序）
         merges: list[tuple[str, str]] = []
 
-        # 训练目标 merges 数 = vocab_size - 256(基础字节) - 4(special tokens)
-        target_merges = max(0, vocab_size - 256 - 4)
+        # Task 2.2: 训练目标 merges 数 = vocab_size - 256(基础字节) - len(DEFAULT_SPECIAL_TOKENS)
+        # （11 个 special tokens：旧风格 4 + 新风格 7）
+        target_merges = max(0, vocab_size - 256 - len(DEFAULT_SPECIAL_TOKENS))
 
         # 5. 重复合并直到达到目标或无 pair 可合并
         # 已跳过的 pair 集合：避免同一不合法 pair 反复尝试
@@ -665,9 +769,11 @@ class BPETokenizer(BaseTokenizer):
         # 6. 转换 merges 为字符串列表 ["a b", ...]（与 from_file 兼容）
         merges_str = [f"{a} {b}" for a, b in merges]
 
-        # 7. 创建实例（special_tokens 暂为空，train 后自动 add）
+        # 7. Task 2.2: 创建实例（special_tokens 暂为空，train 后自动 add）
+        #    注册 DEFAULT_SPECIAL_TOKENS（11 个：旧风格 <bos>/<eos>/<pad>/<unk>
+        #    + 新风格 <|bos|>/<|eos|>/<|pad|>/<|unk|>/<|user|>/<|assistant|>/<|system|>）
         instance = cls(vocab, merges_str, special_tokens=None, byte_level=True)
-        instance.add_special_tokens(['<bos>', '<eos>', '<pad>', '<unk>'])
+        instance.add_special_tokens(DEFAULT_SPECIAL_TOKENS)
         return instance
 
     # ------------------------------------------------------------------
@@ -744,6 +850,12 @@ class CharTokenizer(BaseTokenizer):
     当 ``BPETokenizer.from_file`` / ``from_hf`` 失败时使用。
     每个 unicode 字符对应一个 id；id 0 保留给 ``<pad>``，1 给 ``<unk>``，2 给 ``<bos>``，3 给 ``<eos>``。
 
+    Task 2.5 升级：
+        - ``special_tokens`` 内部存为 ``dict[str, int]``（与 :class:`BaseTokenizer` 约定一致）；
+        - 构造参数 ``add_special_tokens`` 控制 encode 时是否默认加 ``<eos>``；
+        - ``apply_chat_template`` / ``apply_prompt_template`` 继承自 :class:`BaseTokenizer`
+          （通过 try/except TypeError 兼容本类的 encode 签名）。
+
     用法与 ``BPETokenizer`` 一致（``encode`` / ``decode`` / ``__len__``）。
     """
 
@@ -752,7 +864,12 @@ class CharTokenizer(BaseTokenizer):
     BOS_TOKEN = "<bos>"
     EOS_TOKEN = "<eos>"
 
-    def __init__(self, vocab: Optional[dict] = None, special_tokens: Optional[list[str]] = None):
+    def __init__(
+        self,
+        vocab: Optional[dict] = None,
+        special_tokens: Optional = None,
+        add_special_tokens: bool = True,
+    ):
         if vocab is None:
             # 默认 special tokens 占据 0..3
             vocab = {
@@ -764,10 +881,25 @@ class CharTokenizer(BaseTokenizer):
             # 4.. 给所有可能的字符动态分配（懒加载，第一次 encode 时扩充）
         self.vocab = dict(vocab)
         self.id_to_token = {v: k for k, v in self.vocab.items()}
-        self.special_tokens = list(special_tokens) if special_tokens else [
+        # Task 2.5: special_tokens 统一存为 dict[str, int]
+        self.special_tokens: dict[str, int] = {}
+        default_specials = [
             self.PAD_TOKEN, self.UNK_TOKEN, self.BOS_TOKEN, self.EOS_TOKEN,
         ]
+        if special_tokens is None:
+            specials_list = default_specials
+        elif isinstance(special_tokens, dict):
+            specials_list = list(special_tokens.keys())
+        else:
+            specials_list = list(special_tokens)
+        for st in specials_list:
+            if st not in self.vocab:
+                self.vocab[st] = len(self.vocab)
+                self.id_to_token[self.vocab[st]] = st
+            self.special_tokens[st] = self.vocab[st]
         self._next_id = max(self.vocab.values()) + 1 if self.vocab else 0
+        # Task 2.5: add_special_tokens 构造参数
+        self.auto_add_special_tokens = add_special_tokens
 
     def _ensure_char(self, ch: str) -> int:
         if ch not in self.vocab:
@@ -776,9 +908,20 @@ class CharTokenizer(BaseTokenizer):
             self._next_id += 1
         return self.vocab[ch]
 
-    def encode(self, text: str, add_special_tokens: bool = True) -> list[int]:
+    def encode(self, text: str, add_special_tokens: Optional[bool] = None) -> list[int]:
+        """编码文本为字符 id 序列。
+
+        Args:
+            text: 输入文本
+            add_special_tokens:
+                - ``True``：末尾追加 ``<eos>`` id
+                - ``False``：不追加
+                - ``None``：使用 ``self.auto_add_special_tokens`` 默认值
+        """
         # Task 4.2: 前置 NFKC 正规化（全角字符与组合形式统一）
         text = self.preprocess(text)
+        if add_special_tokens is None:
+            add_special_tokens = self.auto_add_special_tokens
         ids = [self._ensure_char(ch) for ch in text]
         if add_special_tokens:
             eos = self.vocab.get(self.EOS_TOKEN)
@@ -805,7 +948,8 @@ class CharTokenizer(BaseTokenizer):
         data = {
             "type": "char",
             "vocab": self.vocab,
-            "special_tokens": list(self.special_tokens),
+            # Task 2.5: special_tokens 存为 dict[str, int]
+            "special_tokens": dict(self.special_tokens),
         }
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -840,6 +984,14 @@ class ByteTokenizer(BaseTokenizer):
     - ``encode`` 返回 UTF-8 字节序列（每个字节 0-255）；
     - ``decode`` 把字节序列还原为字符串。
 
+    Task 2.5 升级：
+        - ``special_tokens`` 内部存为 ``dict[str, int]``（与 :class:`BaseTokenizer` 约定一致）；
+        - ``encode`` 兼容新旧两套 API：
+            - 旧：``encode(text, add_bos=True, add_eos=True)``
+            - 新：``encode(text, add_special_tokens=True)``（同时控制 bos 和 eos）
+        - ``apply_chat_template`` / ``apply_prompt_template`` 显式覆盖，
+          调用 ``encode(rendered)``（不加 bos/eos，因为 chat template 已含 ``<|eos|>``）。
+
     与 :class:`BPETokenizer` 接口对齐：
         - ``encode(text)`` → ``List[int]``
         - ``decode(ids)`` → ``str``
@@ -856,6 +1008,7 @@ class ByteTokenizer(BaseTokenizer):
         eos_id: int = 257,
         pad_id: int = 258,
         unk_id: int = 255,
+        add_special_tokens: bool = False,
     ):
         self.bos_id = bos_id
         self.eos_id = eos_id
@@ -871,25 +1024,51 @@ class ByteTokenizer(BaseTokenizer):
             self.UNK_TOKEN: unk_id,
         }
         self.id_to_token = {v: k for k, v in self.vocab.items()}
-        self.special_tokens = [
-            self.BOS_TOKEN, self.EOS_TOKEN, self.PAD_TOKEN, self.UNK_TOKEN,
-        ]
+        # Task 2.5: special_tokens 统一存为 dict[str, int]
+        self.special_tokens: dict[str, int] = {
+            self.BOS_TOKEN: bos_id,
+            self.EOS_TOKEN: eos_id,
+            self.PAD_TOKEN: pad_id,
+            self.UNK_TOKEN: unk_id,
+        }
         self.byte_level = True
+        # Task 2.5: add_special_tokens 构造参数（默认 False，保持旧 API 行为）
+        # 注意：ByteTokenizer 默认不加 bos/eos，因为旧测试依赖此行为
+        self.auto_add_special_tokens = add_special_tokens
 
-    def encode(self, text: str, add_bos: bool = False, add_eos: bool = False) -> list[int]:
+    def encode(
+        self,
+        text: str,
+        add_bos: Optional[bool] = None,
+        add_eos: Optional[bool] = None,
+        add_special_tokens: Optional[bool] = None,
+    ) -> list[int]:
         """编码文本为字节 id 序列。
 
         Args:
             text: 输入文本
-            add_bos: 是否在开头加 ``bos_id``
-            add_eos: 是否在末尾加 ``eos_id``
+            add_bos: 是否在开头加 ``bos_id``（旧 API）
+            add_eos: 是否在末尾加 ``eos_id``（旧 API）
+            add_special_tokens:
+                - 新 API：``True`` 同时加 bos 和 eos，``False`` 都不加
+                - ``None``：使用 ``add_bos`` / ``add_eos`` 旧 API（默认均不加）
+
+        Task 2.5: 兼容新旧两套 API。优先使用 ``add_special_tokens``；
+        若未提供则回退到 ``add_bos`` / ``add_eos``。
         """
         # Task 4.2: 前置 NFKC 正规化（全角字符与组合形式统一）
         text = self.preprocess(text)
         ids = list(text.encode("utf-8"))
-        if add_bos:
+        # Task 2.5: 解析 add_special_tokens 与 add_bos/add_eos 的优先级
+        if add_special_tokens is not None:
+            should_add_bos = bool(add_special_tokens)
+            should_add_eos = bool(add_special_tokens)
+        else:
+            should_add_bos = bool(add_bos) if add_bos is not None else False
+            should_add_eos = bool(add_eos) if add_eos is not None else False
+        if should_add_bos:
             ids = [self.bos_id] + ids
-        if add_eos:
+        if should_add_eos:
             ids = ids + [self.eos_id]
         return ids
 
@@ -934,6 +1113,21 @@ class ByteTokenizer(BaseTokenizer):
             out_parts.append(bytes(byte_buf).decode("utf-8", errors="ignore"))
         return "".join(out_parts)
 
+    # ------------------------------------------------------------------
+    # Task 2.5: apply_chat_template / apply_prompt_template
+    # ------------------------------------------------------------------
+
+    def apply_chat_template(self, messages: list[dict]) -> list[int]:
+        """渲染 chat 数组并编码（不加 bos/eos，因为 render_chat 已含 ``<|eos|>``）。"""
+        rendered = _render_chat(messages)
+        # 显式调用 encode，不传 add_special_tokens（保持旧 API 行为，不加 bos/eos）
+        return self.encode(rendered)
+
+    def apply_prompt_template(self, prompt: str) -> list[int]:
+        """渲染 prompt 并编码（不加 bos/eos，prompt 模板用于推理前缀）。"""
+        rendered = _render_prompt(prompt)
+        return self.encode(rendered)
+
     def save(self, path: str) -> None:
         """序列化为 JSON 文件。"""
         data = {
@@ -943,7 +1137,8 @@ class ByteTokenizer(BaseTokenizer):
             "pad_id": self.pad_id,
             "unk_id": self.unk_id,
             "vocab_size": self.vocab_size,
-            "special_tokens": {tok: self.vocab[tok] for tok in self.special_tokens},
+            # Task 2.5: special_tokens 存为 dict[str, int]
+            "special_tokens": dict(self.special_tokens),
         }
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)

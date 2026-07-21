@@ -151,6 +151,41 @@ def _override_config_arch(config_path: str, arch: str | None) -> tuple[str, str 
     return tmp_path, tmp_path
 
 
+def _override_config_parallel_chunks(config_path: str, parallel_chunks: int | None) -> tuple[str, str | None]:
+    """Part3K2 Task 1.8: 若 --parallel-chunks 指定，覆盖 training.parallel_chunks 字段。
+
+    与 ``_override_config_arch`` 类似，创建临时 config 文件实现覆盖。
+
+    Args:
+        config_path: 原始 config.yml 路径
+        parallel_chunks: 覆盖的 parallel_chunks 值；None 表示不覆盖
+
+    Returns:
+        (effective_config_path, temp_path_to_cleanup)
+    """
+    if parallel_chunks is None:
+        return config_path, None
+
+    if parallel_chunks < 1:
+        raise ValueError(
+            f"--parallel-chunks 必须 >= 1，得到 {parallel_chunks!r}"
+        )
+
+    full_cfg = load_full_config(config_path)
+    train_cfg = full_cfg.setdefault("training", {})
+    train_cfg["parallel_chunks"] = int(parallel_chunks)
+
+    fd, tmp_path = tempfile.mkstemp(
+        suffix=".yml", prefix="cometspark_pchunks_override_"
+    )
+    os.close(fd)
+    save_full_config(full_cfg, tmp_path)
+    print(f"[run.py] --parallel-chunks {parallel_chunks} 已覆盖 config.yml 的 "
+          f"training.parallel_chunks 字段", flush=True)
+    print(f"[run.py] 临时 config 文件：{tmp_path}", flush=True)
+    return tmp_path, tmp_path
+
+
 def stage_build_tokenizer(config_path: str, base_dir: str, force: bool = False) -> str:
     """构建并保存 tokenizer。"""
     print("=" * 70, flush=True)
@@ -216,6 +251,9 @@ def stage_evaluate(
     max_new_tokens: int = 30,
     temperature: float = 1.0,
     top_k: int | None = None,
+    top_p: float | None = None,
+    score: bool = False,
+    references_file: str | None = None,
 ) -> dict:
     """评估阶段。
 
@@ -226,6 +264,9 @@ def stage_evaluate(
         max_new_tokens: 每条 prompt 生成 token 数（默认 30）
         temperature: 采样温度（默认 1.0，等价 greedy）
         top_k: top-k 采样；None 表示无限制
+        top_p: nucleus sampling 阈值 (0,1)；None 表示不限制
+        score: Part3K2 Task 1.7 是否启用评分模式
+        references_file: 参考答案文件路径（仅 score=True 时生效）
     """
     print("=" * 70, flush=True)
     print("[stage 3/3] 评估", flush=True)
@@ -237,6 +278,9 @@ def stage_evaluate(
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         top_k=top_k,
+        top_p=top_p,
+        score=score,
+        references_file=references_file,
     )
 
 
@@ -322,6 +366,26 @@ def main():
         "--arch", default=None, choices=["transformer", "hybrid"],
         help="覆盖 config 的 model.arch 字段（transformer / hybrid）",
     )
+    # Part3K2 Task 1.8: 新增 CLI 参数
+    parser.add_argument(
+        "--top-p", type=float, default=None,
+        help="nucleus sampling 阈值 (0,1)；None 表示不限制。"
+             "注意：CometSparkLM.generate 当前不支持 top_p，会自动降级。",
+    )
+    parser.add_argument(
+        "--parallel-chunks", type=int, default=None,
+        help="覆盖 config 的 training.parallel_chunks 字段（1=标准 Trainer，"
+             ">1=ParallelTrainer chunk 拆分训练）",
+    )
+    parser.add_argument(
+        "--score", action="store_true",
+        help="启用评分模式：对生成结果与参考答案计算 5 个指标"
+             "（exact_match/prefix_accuracy/char_f1/bleu/rouge_l）",
+    )
+    parser.add_argument(
+        "--references-file", default=None,
+        help="参考答案文件路径（每行一个，与 prompts 一一对应）；仅 --score 时生效",
+    )
     args = parser.parse_args()
 
     base_dir = _DEMO_DIR
@@ -331,31 +395,50 @@ def main():
         sys.exit(1)
 
     print(f"CometSpark-v0.1 端到端流程开始", flush=True)
-    print(f"  base_dir     = {base_dir}", flush=True)
-    print(f"  config_path  = {config_path}", flush=True)
-    print(f"  skip_build   = {args.skip_build}", flush=True)
-    print(f"  skip_train   = {args.skip_train}", flush=True)
-    print(f"  skip_eval    = {args.skip_eval}", flush=True)
-    print(f"  verbose      = {args.verbose}", flush=True)
-    print(f"  prompt       = {args.prompt!r}", flush=True)
-    print(f"  prompts_file = {args.prompts_file!r}", flush=True)
-    print(f"  max_tokens   = {args.max_tokens}", flush=True)
-    print(f"  temperature  = {args.temperature}", flush=True)
-    print(f"  top_k        = {args.top_k}", flush=True)
-    print(f"  arch         = {args.arch!r}", flush=True)
+    print(f"  base_dir       = {base_dir}", flush=True)
+    print(f"  config_path    = {config_path}", flush=True)
+    print(f"  skip_build     = {args.skip_build}", flush=True)
+    print(f"  skip_train     = {args.skip_train}", flush=True)
+    print(f"  skip_eval      = {args.skip_eval}", flush=True)
+    print(f"  verbose        = {args.verbose}", flush=True)
+    print(f"  prompt         = {args.prompt!r}", flush=True)
+    print(f"  prompts_file   = {args.prompts_file!r}", flush=True)
+    print(f"  max_tokens     = {args.max_tokens}", flush=True)
+    print(f"  temperature    = {args.temperature}", flush=True)
+    print(f"  top_k          = {args.top_k}", flush=True)
+    print(f"  top_p          = {args.top_p}", flush=True)
+    print(f"  arch           = {args.arch!r}", flush=True)
+    print(f"  parallel_chunks= {args.parallel_chunks}", flush=True)
+    print(f"  score          = {args.score}", flush=True)
+    print(f"  references_file= {args.references_file!r}", flush=True)
     print("", flush=True)
 
     overall_t0 = time.time()
     set_seed(42)
 
     # Task 9.3: 若 --arch 指定，覆盖 config 的 arch 字段（创建临时 config 文件）
-    tmp_config_to_cleanup = None
+    # Part3K2 Task 1.8: 若 --parallel-chunks 指定，覆盖 training.parallel_chunks 字段
+    # 两层覆盖可叠加：先 arch 再 parallel_chunks（第二个临时文件基于第一个生成）
+    tmp_configs_to_cleanup: list[str] = []
     try:
-        effective_config, tmp_config_to_cleanup = _override_config_arch(
+        effective_config, tmp_arch = _override_config_arch(
             config_path, args.arch
         )
+        if tmp_arch is not None:
+            tmp_configs_to_cleanup.append(tmp_arch)
+        effective_config, tmp_pchunks = _override_config_parallel_chunks(
+            effective_config, args.parallel_chunks
+        )
+        if tmp_pchunks is not None:
+            tmp_configs_to_cleanup.append(tmp_pchunks)
     except Exception as e:
-        print(f"[run.py] --arch 覆盖失败：{type(e).__name__}: {e}", file=sys.stderr)
+        print(f"[run.py] config 覆盖失败：{type(e).__name__}: {e}", file=sys.stderr)
+        # 清理已创建的临时文件
+        for tmp_path in tmp_configs_to_cleanup:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
         sys.exit(1)
 
     # 顶层 try/except：捕获任何未处理异常，打印友好错误后以非 0 退出
@@ -404,6 +487,9 @@ def main():
                     max_new_tokens=args.max_tokens,
                     temperature=args.temperature,
                     top_k=args.top_k,
+                    top_p=args.top_p,
+                    score=args.score,
+                    references_file=args.references_file,
                 )
             except Exception as e:
                 # 评估失败不应让整体流程退出码非 0，但打印友好错误
@@ -428,12 +514,13 @@ def main():
             traceback.print_exc(file=sys.stderr)
         sys.exit(1)
     finally:
-        # 清理 --arch 创建的临时 config 文件
-        if tmp_config_to_cleanup is not None and os.path.exists(tmp_config_to_cleanup):
-            try:
-                os.remove(tmp_config_to_cleanup)
-            except OSError:
-                pass
+        # 清理 --arch / --parallel-chunks 创建的临时 config 文件
+        for tmp_path in tmp_configs_to_cleanup:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
 
     # 汇总
     print("", flush=True)

@@ -116,6 +116,57 @@ data/demo/
 
 优先级：`--prompt` > `--prompts-file` > 默认 5 条（`床前明月光，` / `白日依山尽，` / `你好，` / `1+1=` / `春风`）
 
+### Part3K2: 采样增强与评分模式
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--top-p` | `None` | nucleus sampling 阈值 (0,1)；`None` 表示不限制。**注意**：当前 `CometSparkLM.generate` 尚未实现 `top_p`，传入时自动降级为不限制（仅 `verse_inference.StreamingGenerator` 支持） |
+| `--parallel-chunks` | `None` | 覆盖 config 的 `training.parallel_chunks` 字段。`1` 表示走标准 `Trainer`；`>1` 表示启用 `ParallelTrainer` 拆 chunk 训练（CPU 并行训练器） |
+| `--score` | `False` | 启用评分模式：对生成结果与参考答案计算 5 个指标（`exact_match` / `prefix_accuracy` / `char_f1` / `bleu` / `rouge_l`），基于 `verse_torch.scoring.ScoringEvaluator` |
+| `--references-file` | `None` | 参考答案文件路径（每行一个 reference，与 prompts 一一对应；忽略空行与 `#` 注释行）。**仅 `--score` 时生效**；未提供时跳过打分并打印 warning |
+
+#### 评分模式用法示例
+
+```bash
+# 1) 准备 references 文件（每行一个参考答案，顺序与 --prompt 中的多条 prompt 一一对应）
+cat > refs.txt <<EOF
+床前明月光，疑是地上霜。
+白日依山尽，黄河入海流。
+EOF
+
+# 2) 启用评分模式运行
+python run.py --skip-train \
+  --prompt "床前明月光，,白日依山尽，" \
+  --references-file refs.txt \
+  --score \
+  --max-tokens 30 --temperature 0.8 --top-k 10
+```
+
+输出会附加 5 个指标的均值与每条样本的明细（`per_sample`），格式如下：
+
+```
+==================================================
+评分报告
+==================================================
+样本数: 2
+--------------------------------------------------
+  exact_match        : 0.0000
+  prefix_accuracy    : 0.6500
+  char_f1            : 0.7200
+  bleu               : 0.3200
+  rouge_l            : 0.5500
+==================================================
+```
+
+#### ParallelTrainer 用法示例（`--parallel-chunks`）
+
+```bash
+# 启用 ParallelTrainer 把每个 batch 拆为 2 个 chunk 串行训练（CPU 友好）
+python run.py --parallel-chunks 2 --config config/config_medium.yml
+```
+
+ParallelTrainer 在不增加内存峰值的前提下，通过交替前向 / 反向提升 CPU 利用率，详见 `verse_torch.parallel.ParallelTrainer`。
+
 ### Task 9: 模型架构覆盖
 
 | 参数 | 默认值 | 说明 |
@@ -213,11 +264,27 @@ hybrid 架构在 verse_nex Mamba2 数值溢出修复后已可启用（seq_len=12
 
 ## 数据格式
 
-`train.jsonl` / `val.jsonl` 每行一个 JSON 对象，至少包含 `text` 字段：
+> **Part3K2 BREAKING 变更**：旧版 `{"text": "..."}` 格式已废弃，`TextDataset` 加载时会抛 `ValueError`。请改用下列两种格式之一（可混用）。
+
+`train.jsonl` / `val.jsonl` 每行一个 JSON 对象，支持 **两种格式混用**：
+
+### 1. chat 数组格式（多轮对话）
 
 ```json
-{"text": "床前明月光，疑是地上霜。"}
+[{"role":"user","content":"你好"},{"role":"assistant","content":"你好，很高兴见到你。"}]
 ```
+
+- 渲染为 `<|user|>你好<|assistant|>你好，很高兴见到你。<|eos|>`
+- **loss mask**：仅 assistant content + `<|eos|>` 参与 loss，user 部分屏蔽（`ignore_index=-100`）
+
+### 2. prompt-completion 格式（续写 / 单轮）
+
+```json
+{"prompt":"床前明月光，","completion":"疑是地上霜。举头望明月，低头思故乡。"}
+```
+
+- 渲染为 `<|user|>床前明月光，<|assistant|>疑是地上霜。举头望明月，低头思故乡。<|eos|>`
+- **loss mask**：仅 completion + `<|eos|>` 参与 loss，prompt 部分屏蔽
 
 详见 `data/README.md`。
 

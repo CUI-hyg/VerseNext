@@ -40,6 +40,7 @@ training:
   enable_progress_bar: true   # tqdm 进度条
   realtime_plot: true         # 训练中实时刷新 loss 曲线
   eta_window: 20              # ETA 滑动窗口
+  parallel_chunks: 1          # Part3K2: 并行训练 chunk 数（1=不并行）
 
 tokenizer:
   kind: byte

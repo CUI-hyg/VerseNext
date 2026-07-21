@@ -802,3 +802,197 @@ class TransformerLM(Module):
         x = self.norm(x)
         logits = self.head(x)
         return logits
+
+
+# ---------------------------------------------------------------------------
+# 扩展模块 (Task 3.4): SlidingWindowAttention / ALiBi / DeepNorm
+# ---------------------------------------------------------------------------
+
+
+class SlidingWindowAttention(Module):
+    """滑动窗口注意力（长上下文场景）。
+
+    与 ``GQASelfAttention`` 类似，但 attention 矩阵只计算每个 query 对前 ``window_size`` 个 key，
+    超出窗口的位置被 mask 为 ``-inf``。配合 causal mask 使用时，
+    ``mask[i, j] = 0`` 当且仅当 ``j <= i`` 且 ``i - j < window_size``。
+
+    论文参考: Longformer / Mistral（滑动窗口注意力）。
+
+    Args:
+        n_embd: 模型维度
+        n_head: query head 数量
+        window_size: 滑动窗口大小（每个 query 最多 attend 前 window_size 个 key）
+        n_kv_head: key/value head 数量（默认 = n_head，即标准 MHA；小于 n_head 时为 GQA）
+        dropout: dropout 概率
+    """
+
+    def __init__(self, n_embd: int, n_head: int, window_size: int,
+                 n_kv_head: int = None, dropout: float = 0.1):
+        super().__init__()
+        if n_kv_head is None:
+            n_kv_head = n_head
+        assert n_embd % n_head == 0, (
+            f"n_embd({n_embd}) 必须能被 n_head({n_head}) 整除"
+        )
+        assert n_head % n_kv_head == 0, (
+            f"n_head({n_head}) 必须能被 n_kv_head({n_kv_head}) 整除"
+        )
+        assert window_size >= 1, f"window_size 必须为正整数，got {window_size}"
+        self.n_embd = n_embd
+        self.n_head = n_head
+        self.n_kv_head = n_kv_head
+        self.window_size = window_size
+        self.head_dim = n_embd // n_head
+        self.n_rep = n_head // n_kv_head
+        kv_dim = n_kv_head * self.head_dim
+        # 四个投影矩阵，均 bias=False（与 GQASelfAttention 一致）
+        self.wq = Linear(n_embd, n_head * self.head_dim, bias=False)
+        self.wk = Linear(n_embd, kv_dim, bias=False)
+        self.wv = Linear(n_embd, kv_dim, bias=False)
+        self.proj = Linear(n_head * self.head_dim, n_embd, bias=False)
+        self.dropout = Dropout(dropout)
+
+    def forward(self, x: Tensor):
+        """前向计算。
+
+        Args:
+            x: (B, T, n_embd)
+
+        Returns:
+            (B, T, n_embd) 的注意力输出
+        """
+        B, T, d = x.shape
+        # 1. 投影 q/k/v，shape (B, T, n_*head, head_dim)
+        q = self.wq(x).reshape(B, T, self.n_head, self.head_dim)
+        k = self.wk(x).reshape(B, T, self.n_kv_head, self.head_dim)
+        v = self.wv(x).reshape(B, T, self.n_kv_head, self.head_dim)
+
+        # 2. repeat_kv：将 kv head 重复 n_rep 次匹配 q head 数量
+        k = repeat_kv(k, self.n_rep)
+        v = repeat_kv(v, self.n_rep)
+
+        # 3. 转置为 (B, n_head, T, head_dim)
+        q = q.permute(0, 2, 1, 3)
+        k = k.permute(0, 2, 1, 3)
+        v = v.permute(0, 2, 1, 3)
+
+        # 4. attention scores: (B, n_head, T, T)
+        scale = 1.0 / (self.head_dim ** 0.5)
+        scores = (q @ k.transpose(-1, -2)) * scale
+
+        # 5. 滑动窗口 + causal mask
+        # mask[i, j] = 0 if (j <= i) and (i - j < window_size) else -inf
+        i_idx = np.arange(T)[:, None]
+        j_idx = np.arange(T)[None, :]
+        in_window = (i_idx - j_idx) < self.window_size
+        causal = j_idx <= i_idx
+        mask_2d = np.where(in_window & causal, 0.0, -1e9).astype(np.float32)
+        mask = Tensor(mask_2d.reshape(1, 1, T, T), requires_grad=False)
+        scores = scores + mask
+
+        # 6. softmax + dropout + 加权求和
+        attn = scores.softmax(dim=-1)
+        attn = self.dropout(attn)
+        out = attn @ v  # (B, n_head, T, head_dim)
+
+        # 7. reshape 回 (B, T, n_embd) 并投影
+        out = out.transpose(1, 2).reshape(B, T, d)
+        out = self.proj(out)
+        return out
+
+
+class ALiBi(Module):
+    """ALiBi (Attention with Linear Biases) 位置偏置。
+
+    论文: https://arxiv.org/abs/2108.12409
+
+    不学习位置嵌入，直接在 attention scores 上加线性偏置::
+
+        bias[i, j] = -m_h * (i - j)   if i >= j  (causal)
+        bias[i, j] = -inf             otherwise
+
+    其中 ``m_h`` 是 head h 的斜率，按几何级数生成：``m_h = 1 / 2^(h / n_head)``，h = 1, ..., n_head。
+
+    用法: 在 attention 计算中，对 ``qk_scores`` 调用 ``alibi(qk_scores)`` 加偏置后再 softmax。
+
+    Args:
+        n_head: head 数量
+        max_seq_len: 预计算 bias 表的最大序列长度（默认 2048）
+    """
+
+    def __init__(self, n_head: int, max_seq_len: int = 2048):
+        super().__init__()
+        self.n_head = n_head
+        self.max_seq_len = max_seq_len
+        # 斜率：几何级数 m_h = 1 / 2^(h/n_head)，h=1..n_head
+        # 这样 m_1 = 1/2^(1/n_head) 接近 1，m_n = 1/2^1 = 0.5
+        slopes = 1.0 / (2.0 ** (np.arange(1, n_head + 1, dtype=np.float64) / n_head))
+        self.slopes = slopes.astype(np.float32)  # (n_head,)
+        # 预计算 bias 表
+        self._build_bias_table(max_seq_len)
+
+    def _build_bias_table(self, max_seq_len: int):
+        """预计算 (n_head, T, T) 的 bias 表。
+
+        bias[h, i, j] = -slopes[h] * (i - j)  if j <= i  else -1e9
+        """
+        i_idx = np.arange(max_seq_len, dtype=np.float32)[:, None]  # (T, 1)
+        j_idx = np.arange(max_seq_len, dtype=np.float32)[None, :]  # (1, T)
+        dist = i_idx - j_idx  # (T, T)，下三角为正
+        causal = (j_idx <= i_idx).astype(np.float32)  # (T, T)
+        # 构造 (n_head, T, T) bias
+        bias = np.zeros((self.n_head, max_seq_len, max_seq_len), dtype=np.float32)
+        for h in range(self.n_head):
+            bias[h] = np.where(
+                causal > 0,
+                -self.slopes[h] * dist,
+                np.float32(-1e9),  # 大负数近似 -inf（softmax 后为 0）
+            )
+        self._bias_table = bias
+
+    def forward(self, qk_scores: Tensor) -> Tensor:
+        """对 qk_scores 加 ALiBi 偏置。
+
+        Args:
+            qk_scores: (B, n_head, T_q, T_k) 的 attention 分数
+
+        Returns:
+            加偏置后的 scores（同形状）
+        """
+        B, H, T_q, T_k = qk_scores.shape
+        # 取对应大小的 bias（支持 T_q != T_k 的 KV cache 场景）
+        bias = self._bias_table[:, :T_q, :T_k]  # (H, T_q, T_k)
+        # 广播到 (1, H, T_q, T_k) 与 qk_scores 相加
+        bias_t = Tensor(bias.reshape(1, H, T_q, T_k), requires_grad=False)
+        return qk_scores + bias_t
+
+
+class DeepNorm(Module):
+    """DeepNorm: 深层 Transformer 用的归一化层。
+
+    论文: https://arxiv.org/abs/2203.00555
+
+    ``DeepNorm(x) = LayerNorm(x * alpha) + x``
+
+    其中 ``alpha`` 是残差分支的缩放系数，通常 ``alpha = (2 * N)^(1/4)``，N 是 Transformer 层数。
+    ``alpha`` 越大，残差分支的权重越大，训练越稳定（可训练上千层）。
+
+    Args:
+        normalized_shape: LayerNorm 的归一化形状
+        alpha: 残差缩放系数（默认 1.0，等价于普通 LayerNorm + 残差）
+        eps: LayerNorm 的数值稳定常数
+    """
+
+    def __init__(self, normalized_shape, alpha: float = 1.0, eps: float = 1e-5):
+        super().__init__()
+        if isinstance(normalized_shape, int):
+            normalized_shape = (normalized_shape,)
+        self.normalized_shape = tuple(normalized_shape)
+        self.alpha = float(alpha)
+        self.eps = eps
+        # 复用 LayerNorm 的 gamma / beta 参数
+        self.layernorm = LayerNorm(self.normalized_shape, eps=self.eps)
+
+    def forward(self, x: Tensor) -> Tensor:
+        # DeepNorm(x) = LayerNorm(x * alpha) + x
+        return self.layernorm(x * self.alpha) + x

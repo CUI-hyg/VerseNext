@@ -14,6 +14,17 @@
 - CPU 并行：基于 `multiprocessing` 的 batch 维度并行
 - 模型压缩：剪枝 + LoRA + 蒸馏 + 量化组合管线
 
+### Part3K2 新增能力
+
+- **对齐 PyTorch 的高级优化器**：`Lion` / `Adafactor`（`optim_extras`）
+- **高级学习率调度**：`OneCycleLR` / `ReduceLROnPlateau` / `CosineRestartsLR`（`scheduler_extras`）
+- **新增激活函数**：`GeGLU` / `Mish` / `SiLU`（`activations`）
+- **新型注意力与归一化**：`SlidingWindowAttention` / `ALiBi` / `DeepNorm`
+- **并行训练器 `ParallelTrainer`**：chunk 拆分 + 合并策略 + 基于 `val_loss` 的 BUG 修复
+- **生成质量打分 `ScoringEvaluator`**：`exact_match` / `prefix_accuracy` / `char_f1` / `bleu` / `rouge_l`
+- **`Trainer.inference`**：批量推理生成（支持字符串 prompt 与 token ID 序列）
+- **`focal_loss`** + `cross_entropy` 现支持 `ignore_index` / `label_smoothing` 参数
+
 ## 安装
 
 ```bash
@@ -156,6 +167,59 @@ print(a.grad.shape)    # (3, 3)
 
 **初始化辅助**（原地修改）：`kaiming_uniform_(t, a=0, mode="fan_in", nonlinearity="leaky_relu")`、`xavier_uniform_(t, gain=1.0)`、`normal_(t, mean=0, std=1)`、`zeros_(t)`、`ones_(t)`、`uniform_(t, low=0, high=1)`。
 
+#### 新型注意力与归一化（Part3K2）
+
+| 类 | 说明 |
+|---|---|
+| `SlidingWindowAttention(n_embd, n_head, window_size, n_kv_head=None, dropout=0.1)` | 滑动窗口注意力。每个 query 仅 attend 前 `window_size` 个 key，配合 causal mask：`mask[i,j]=0` 当且仅当 `j<=i` 且 `i-j<window_size`，其余位置 mask 为 `-inf`。支持 GQA（`n_kv_head < n_head`）。参考 Longformer / Mistral。 |
+| `ALiBi(n_head, max_seq_len=2048)` | Attention with Linear Biases 位置偏置。不学习位置嵌入，直接在 attention scores 上加线性偏置 `bias[i,j] = -m_h*(i-j)`（causal），斜率 `m_h = 1/2^(h/n_head)` 按几何级数生成。`forward(qk_scores)` 接受 `(B, n_head, T_q, T_k)` 返回加偏置后的 scores；预计算 `(n_head, max_seq_len, max_seq_len)` bias 表，支持 KV cache 场景（`T_q != T_k`）。论文: https://arxiv.org/abs/2108.12409 |
+| `DeepNorm(normalized_shape, alpha=1.0, eps=1e-5)` | DeepNorm 归一化：`DeepNorm(x) = LayerNorm(x * alpha) + x`。`alpha` 通常取 `(2*N)^(1/4)`（N 为 Transformer 层数），`alpha` 越大残差分支权重越大、训练越稳定（可训练上千层）。内部复用 `LayerNorm` 的 `gamma` / `beta` 参数。论文: https://arxiv.org/abs/2203.00555 |
+
+```python
+from verse_torch import nn, Tensor
+import numpy as np
+
+# 滑动窗口注意力（长上下文场景）
+swa = nn.SlidingWindowAttention(n_embd=64, n_head=8, window_size=128, n_kv_head=4)
+x = Tensor(np.random.randn(2, 32, 64).astype(np.float32))
+out = swa(x)            # (2, 32, 64)
+
+# ALiBi 位置偏置（在已有 attention scores 上叠加）
+alibi = nn.ALiBi(n_head=8, max_seq_len=512)
+scores = Tensor(np.random.randn(2, 8, 32, 32).astype(np.float32))
+scores = alibi(scores)  # 同形状，已加 ALiBi 偏置
+
+# DeepNorm：深层 Transformer 残差归一化
+dn = nn.DeepNorm(normalized_shape=64, alpha=(2 * 12) ** 0.25)  # 12 层
+out = dn(x)             # LayerNorm(x * alpha) + x
+```
+
+#### 扩展激活函数（activations）
+
+`activations` 子模块提供 3 个 `nn.Module` 子类，可直接用于 `Sequential` / `ModuleList`，底层算子复用 `Tensor` 的可微方法（`exp` / `log` / `tanh` / `sigmoid` / `__mul__`），自动获得 autograd 支持。
+
+| 类 | 公式 | 说明 |
+|---|---|---|
+| `SiLU()` | `x * sigmoid(x)` | SiLU / Swish 激活，与 `Tensor.silu()` 等价但封装为 Module |
+| `Mish()` | `x * tanh(softplus(x))` | Mish 激活，`softplus(x) = log(1 + exp(x))`，数值稳定 |
+| `GeGLU()` | `a * gelu(b)`（沿最后一维 split `(a, b)`） | GeGLU 激活，输入 `(..., 2*d)` 输出 `(..., d)`，GELU 用 `x * sigmoid(1.702 * x)` 近似（误差 < 0.001），与 SwiGLU 类似但用 GELU 代替 SiLU |
+
+```python
+from verse_torch import nn, activations, Tensor
+import numpy as np
+
+mlp = nn.Sequential(
+    nn.Linear(64, 128),
+    activations.GeGLU(),    # 输入 128 → 输出 64（沿最后一维 split 后 a * gelu(b)）
+)
+x = Tensor(np.random.randn(4, 64).astype(np.float32))
+out = mlp(x)               # (4, 64)
+
+# 单独使用
+silu = activations.SiLU()
+mish = activations.Mish()
+```
+
 ```python
 from verse_torch import nn
 
@@ -198,19 +262,95 @@ for step in range(1000):
     sched.step()                 # 自动更新 opt.lr
 ```
 
+#### 高级优化器（optim_extras，Part3K2）
+
+`optim_extras` 子模块对齐 PyTorch 生态，提供两个高级优化器，均继承 `optim.Optimizer` 基类，复用 `zero_grad` / `param_groups` / `state` 机制，并通过 `self.lr` 与 `LRScheduler` 兼容。
+
+| 优化器 | 签名 | 说明 |
+|---|---|---|
+| `Lion` | `Lion(params, lr=1e-4, betas=(0.9, 0.99), weight_decay=0.1)` | Lion-eats-AdamW。**无二阶矩**（节省约 50% 优化器状态内存），用 `sign(m·β1 + g·(1-β1))` 作为更新方向，解耦 weight decay。`lr` 通常比 AdamW 小 3-10x。论文: https://arxiv.org/abs/2302.06675 |
+| `Adafactor` | `Adafactor(params, lr=None, beta1=0.9, beta2=0.999, eps1=1e-30, eps2=1e-3, weight_decay=0.0)` | Factored 二阶矩：2D+ 参数用行/列统计近似二阶矩，把 `W (m,n)` 的二阶矩内存从 `O(mn)` 降到 `O(m+n)`；1D 参数（bias/norm）走 AdaGrad 风格。含 trust ratio clipping。`lr=None` 时默认 `1e-3`。论文: https://arxiv.org/abs/1804.04235 |
+
+更新规则（Lion）：
+
+```
+update = m * β1 + g * (1 - β1)
+p = p - lr * sign(update)
+if weight_decay != 0:
+    p = p - lr * weight_decay * p
+m = m * β2 + g * (1 - β2)
+```
+
+```python
+from verse_torch import nn, optim_extras
+
+model = nn.TransformerLM(vocab_size=128, n_layer=2, n_head=4, n_embd=64)
+
+# Lion：省内存、lr 比 AdamW 小 3-10x
+opt_lion = optim_extras.Lion(model.parameters(), lr=1e-4, betas=(0.9, 0.99), weight_decay=0.1)
+
+# Adafactor：factored 二阶矩，适合大模型
+opt_adafactor = optim_extras.Adafactor(model.parameters(), lr=1e-3, beta1=0.9, beta2=0.999)
+
+for step in range(100):
+    opt_lion.zero_grad()
+    loss = ...           # 你的 loss
+    loss.backward()
+    opt_lion.step()
+```
+
+#### 高级学习率调度器（scheduler_extras，Part3K2）
+
+`scheduler_extras` 子模块提供 3 个高级调度器。`OneCycleLR` / `CosineRestartsLR` 继承 `optim.LRScheduler` 基类（无参 `step()`）；`ReduceLROnPlateau` 不继承基类（需外部传入 metric）。
+
+| 调度器 | 签名 | 说明 |
+|---|---|---|
+| `OneCycleLR` | `OneCycleLR(optimizer, max_lr, total_steps, pct_start=0.25, div_factor=25.0, final_div_factor=1e4)` | 1cycle super-convergence。前 `pct_start` 比例步从 `max_lr/div_factor` 线性升到 `max_lr`，后段从 `max_lr` 余弦退火到 `max_lr/(div_factor*final_div_factor)`。论文: https://arxiv.org/abs/1708.07120 |
+| `ReduceLROnPlateau` | `ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=10, min_lr=0, threshold=1e-4)` | 按 metric 自适应降 lr。监控指标连续 `patience` 次 epoch 无显著改善时，每个 param_group 的 lr 乘以 `factor`（不低于 `min_lr`）。`step(metric)` 接受当前 epoch 的 metric（如 `val_loss`）。 |
+| `CosineRestartsLR` | `CosineRestartsLR(optimizer, T_0, T_mult=1, eta_min=0)` | SGDR 带热重启。每个周期内 lr 从 `base_lr` 余弦退火到 `eta_min`，周期结束后重新升温到 `base_lr`；周期长度按 `T_mult` 倍增：第 k 个周期长度 = `T_0 * T_mult^k`。论文: https://arxiv.org/abs/1608.03983 |
+
+```python
+from verse_torch import nn, optim, optim_extras, scheduler_extras
+
+model = nn.TransformerLM(vocab_size=128, n_layer=2, n_head=4, n_embd=64)
+
+# 1) OneCycleLR：super-convergence
+opt = optim.AdamW(model.parameters(), lr=3e-4)
+sched = scheduler_extras.OneCycleLR(opt, max_lr=3e-3, total_steps=1000, pct_start=0.3)
+for step in range(1000):
+    train_step()
+    sched.step()
+
+# 2) ReduceLROnPlateau：按 val_loss 自适应降 lr（注意要传 metric）
+opt2 = optim.AdamW(model.parameters(), lr=1e-3)
+sched2 = scheduler_extras.ReduceLROnPlateau(opt2, mode='min', factor=0.1, patience=5)
+for epoch in range(n_epochs):
+    train_one_epoch()
+    val_loss = evaluate()
+    sched2.step(val_loss)        # 传入当前 metric
+
+# 3) CosineRestartsLR：SGDR 热重启
+opt3 = optim.AdamW(model.parameters(), lr=1e-3)
+sched3 = scheduler_extras.CosineRestartsLR(opt3, T_0=100, T_mult=2, eta_min=0.0)
+for step in range(1000):
+    train_step()
+    sched3.step()
+```
+
 ### losses — 损失函数
 
 所有损失返回**标量 `Tensor`**，`requires_grad` 自动传播，可直接 `backward()`。
 
 | 函数 | 公式 / 用途 |
 |---|---|
-| `cross_entropy(logits, targets)` | softmax 交叉熵，`logits: (N, C)`，`targets: (N,)` int |
+| `cross_entropy(logits, targets, ignore_index=-100, label_smoothing=0.0)` | softmax 交叉熵，`logits: (N, C)` 或 `(B, T, V)`（自动 reshape），`targets: (N,)` 或 `(B, T)` int。**Part3K2**：新增 `ignore_index`（屏蔽 padding，默认 -100，`None` 表示不屏蔽）与 `label_smoothing`（标签平滑系数，`>0` 时 `loss = (1-ε)·CE_hard + ε·CE_uniform`）。与 PyTorch / HF 行为对齐 |
 | `nll_loss(log_probs, targets)` | 负对数似然，输入已是 `log_softmax` 结果 |
 | `binary_cross_entropy(pred, target)` | BCE，输入为概率（已 sigmoid） |
 | `binary_cross_entropy_with_logits(logits, target)` | BCE，输入为 logits（数值稳定版） |
 | `mse_loss(pred, target)` | 均方误差 |
 | `l1_loss(pred, target)` | 平均绝对误差 |
 | `kl_div_loss(log_probs, target_probs)` | KL 散度 `sum(t*(log t - log_probs))` |
+| `focal_loss(logits, targets, gamma=2.0, alpha=0.25, ignore_index=-100, label_smoothing=0.0)` | **Part3K2**。Focal Loss `FL(p_t) = -alpha * (1 - p_t)^gamma * log(p_t)`，类别不均衡场景使用。`gamma` 越大对易分样本抑制越强；`alpha` 是类别平衡因子（`alpha=1.0` 退化为无加权）。支持 `ignore_index` mask 与 `label_smoothing`。论文: https://arxiv.org/abs/1708.02002 |
 
 ```python
 from verse_torch import Tensor, losses
@@ -221,6 +361,27 @@ targets = [0, 1]
 loss = losses.cross_entropy(logits, targets)
 loss.backward()
 print(logits.grad.shape)   # (2, 3)
+```
+
+**Part3K2：`ignore_index` + `label_smoothing` + `focal_loss` 用法**
+
+```python
+from verse_torch import Tensor, losses
+import numpy as np
+
+# (B=2, T=4, V=5) 的 logits，targets 含 padding（-100）
+logits = Tensor(np.random.randn(2, 4, 5).astype(np.float32), requires_grad=True)
+targets = np.array([[1, 2, -100, -100],   # 后两位是 padding
+                    [0, 3, 2, -100]])
+
+# 1) cross_entropy：ignore_index 屏蔽 padding + label_smoothing=0.1
+loss = losses.cross_entropy(logits, targets, ignore_index=-100, label_smoothing=0.1)
+loss.backward()
+
+# 2) focal_loss：类别不均衡场景，gamma=2.0 alpha=0.25（原论文默认）
+loss_fl = losses.focal_loss(logits, targets, gamma=2.0, alpha=0.25,
+                            ignore_index=-100)
+loss_fl.backward()
 ```
 
 ### training — 训练基础设施
@@ -273,6 +434,132 @@ trainer = training.Trainer(
 train_losses, val_losses = trainer.fit()
 best = trainer.checkpoint.load_best()        # 加载最佳权重
 model.load_state_dict(best["model_state_dict"])
+```
+
+#### ParallelTrainer — 并行训练器（Part3K2）
+
+`ParallelTrainer(model, train_dataset, val_dataset, optimizer_cls=None, optimizer_kwargs=None, cfg=None, loss_fn=None, collate_fn=None, checkpoint_mgr=None)`：把 `max_steps` 拆成 N 个 chunk 并行训练（CPU 串行实现，接口对齐并行），训练完后按 `train_loss + val_loss` 排序（**差的前、好的后**）串行重训，最后整体 fine-tune 若干步。
+
+**关键设计**：
+- `parallel_chunks` 拆分步数：`max_steps` 均分到 N 个 chunk（余数均摊到前几个），每个 chunk 用独立 `Trainer` 实例从同一初始状态训练。
+- **合并策略**：chunk 训练完后按 `train_loss + val_loss` 排序，loss 大的（效果差）放前面、loss 小的（效果好）放后面，串行重训（每个 chunk 再训练 `chunk_steps // 4` 步）。
+- **`_eval_full_val(model)`**：基于**完整** val 数据集更新 `val_loss`（修复旧实现只用单 batch 估算的漏洞——不同 chunk batch 不可比、单 batch 方差大）。chunk 内 `Trainer` 用 `BatchLoader` 包装 dataset。
+- `merge_finetune_steps`：最后整体 fine-tune 若干步（默认 `max_steps // 10`）。
+- 训练完成后加载最佳 `state_dict` 到 `self.model`，若提供 `checkpoint_mgr` 则保存 best。
+
+**`cfg` 字段**（在 `Trainer.cfg` 基础上新增）：
+
+| 字段 | 默认值 | 说明 |
+|---|---|---|
+| `parallel_chunks` | 4 | chunk 数量 N |
+| `batch_size` | 8 | batch 大小 |
+| `lr` | 0.003 | 学习率 |
+| `warmup` | 20 | warmup 步数 |
+| `grad_clip` | 0.0 | 梯度裁剪阈值 |
+| `label_smoothing` | 0.0 | 标签平滑系数 |
+| `merge_finetune_steps` | `max_steps // 10` | 整体 fine-tune 步数 |
+| `seed` | 42 | 随机种子 |
+
+```python
+import numpy as np
+from verse_torch import nn, training
+
+model = nn.TransformerLM(vocab_size=128, n_layer=2, n_head=4, n_embd=64)
+
+# 简易 dataset：实现 __getitem__ 与 __len__
+class ToyDataset:
+    def __init__(self, n):
+        self.x = np.random.randint(0, 128, size=(n, 16))
+        self.y = np.roll(self.x, -1, axis=1)
+    def __len__(self):
+        return len(self.x)
+    def __getitem__(self, i):
+        return self.x[i], self.y[i]
+
+trainer = training.ParallelTrainer(
+    model=model,
+    train_dataset=ToyDataset(200),
+    val_dataset=ToyDataset(40),          # 必须传完整 val 数据集
+    cfg=dict(parallel_chunks=4, max_steps=200, batch_size=8,
+             lr=3e-3, warmup=20, eval_interval=20,
+             merge_finetune_steps=20, seed=42),
+)
+history = trainer.fit()                   # {"train_loss": [...], "val_loss": [...], "steps": [...]}
+print("best_val_loss:", trainer.best_val_loss)
+```
+
+#### Trainer.inference — 批量推理生成（Part3K2）
+
+`Trainer.inference(prompts, temperature=1.0, top_k=None, top_p=None, max_tokens=30)`：批量推理生成，支持三种输入模式：
+
+1. **字符串 prompt + tokenizer**：先用 `tokenizer.encode` 转 token ID，调用 `model.generate` 生成，再用 `tokenizer.decode` 转回字符串（返回 `list[str]`）。需要 `trainer.tokenizer = tok` 挂载 tokenizer。
+2. **字符串 prompt + 无 tokenizer**：原样传给 `model.generate`，返回 `list[str]`。
+3. **token ID 序列**（list / np.ndarray / Tensor）：直接传给 `model.generate`，返回 `list[list[int]]`（每条 prompt 对应的完整 ID 序列，含原始 prompt + 新生成部分）。
+
+要求模型实现 `generate` 方法，否则抛 `NotImplementedError`。内部用 `no_grad()` 包裹，自动切到 `eval` 模式。
+
+```python
+from verse_torch import nn, optim, training
+
+model = nn.TransformerLM(vocab_size=128, n_layer=2, n_head=4, n_embd=64)
+# ... 训练 model ...
+
+trainer = training.Trainer(
+    model=model, train_loader=..., val_loader=...,
+    optimizer=optim.AdamW(model.parameters(), lr=1e-3), cfg=dict(max_steps=1),
+)
+# 可选：挂载 tokenizer（字符串 prompt 模式需要）
+# trainer.tokenizer = my_tokenizer
+
+# token ID 序列模式（向后兼容）
+import numpy as np
+prompts = [np.random.randint(0, 128, size=(8,))]   # 每条 8 个 token
+results = trainer.inference(prompts, temperature=1.0, top_k=5, max_tokens=30)
+# results: list[list[int]]，每条是完整 ID 序列
+```
+
+### scoring — 生成质量打分（Part3K2）
+
+`scoring` 子模块提供生成文本质量打分，包含 5 个独立指标函数与一个聚合打分器 `ScoringEvaluator`，仅依赖 NumPy + 标准库（`collections.Counter` / `math`）。
+
+| 函数 | 说明 |
+|---|---|
+| `exact_match(prediction, reference)` | 精确匹配率：1.0 完全相等（strip 后），0.0 不等 |
+| `prefix_accuracy(prediction, reference)` | 前缀匹配率：prediction 前缀与 reference 重合比例（`common_len / len(ref)`），适合续写任务 |
+| `char_f1(prediction, reference)` | 字符级 F1：把文本看作字符多重集，计算 precision / recall / F1 |
+| `bleu(prediction, reference, max_n=4)` | BLEU-4（简化版，无 smoothing）：1-gram 到 4-gram precision 的几何平均 + brevity penalty |
+| `rouge_l(prediction, reference)` | ROUGE-L：基于最长公共子序列（LCS）计算 F1 |
+
+**`ScoringEvaluator(metrics=None)`**：聚合打分器。
+- `metrics`：`list[str]`，要计算的指标名（默认全部 5 个）；传入未知指标名抛 `ValueError`。
+- `evaluate(predictions, references) -> dict`：批量计算，返回 `{metric: avg_score, "n_samples": int, "per_sample": list[dict]}`。
+- `report(score_dict) -> str`：生成可读报告字符串。
+- `score_pair(prediction, reference) -> dict`：计算单个样本的所有指标。
+
+```python
+from verse_torch import scoring
+
+evaluator = scoring.ScoringEvaluator()   # 默认计算全部 5 个指标
+scores = evaluator.evaluate(
+    predictions=["你好世界", "床前明月光"],
+    references=["你好世界", "床前明月光，疑是地上霜"],
+)
+# scores: {"exact_match": 0.5, "prefix_accuracy": ..., "char_f1": ...,
+#          "bleu": ..., "rouge_l": ..., "n_samples": 2, "per_sample": [...]}
+
+print(evaluator.report(scores))
+# ==================================================
+# 评分报告
+# ==================================================
+# 样本数: 2
+# --------------------------------------------------
+#   exact_match         : 0.5000
+#   prefix_accuracy     : 0.xxxx
+#   ...
+
+# 单独使用某个指标函数
+f1 = scoring.char_f1("hello world", "hello werld")
+em = scoring.exact_match("abc", "abc")     # 1.0
 ```
 
 ### quantize — 量化
@@ -385,12 +672,20 @@ print(f"loss 差异: {report['loss_diff_pct']:.2f}%")
 | [test_parallel.py](../../tests/test_parallel.py) | 并行 matmul 数值一致性 |
 | [test_compression_poc.py](../../tests/test_compression_poc.py) | 压缩 PoC 端到端验证 |
 | [test_unit_operators.py](../../tests/test_unit_operators.py) | 基础算子 + 有限差分梯度检查 |
+| [test_optim_extras.py](../../tests/test_optim_extras.py) | **Part3K2** Lion / Adafactor 优化器 |
+| [test_scheduler_extras.py](../../tests/test_scheduler_extras.py) | **Part3K2** OneCycleLR / ReduceLROnPlateau / CosineRestartsLR 调度器 |
+| [test_parallel_trainer.py](../../tests/test_parallel_trainer.py) | **Part3K2** ParallelTrainer 端到端（chunk 拆分 / 合并 / val_loss 修复） |
+| [test_scoring.py](../../tests/test_scoring.py) | **Part3K2** 5 个指标（exact_match / prefix_accuracy / char_f1 / bleu / rouge_l） |
 
 运行：
 
 ```bash
 python -m pytest tests/test_nn_advanced.py tests/test_training.py \
     tests/test_parallel.py tests/test_compression_poc.py -v
+
+# Part3K2 新增测试
+python -m pytest tests/test_optim_extras.py tests/test_scheduler_extras.py \
+    tests/test_parallel_trainer.py tests/test_scoring.py -v
 ```
 
 ## 相关文档

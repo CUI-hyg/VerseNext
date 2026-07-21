@@ -61,20 +61,35 @@ print(x.grad)            # [2. 4. 6.]  与 PyTorch 一致
 
 ## 2. 数据准备
 
-### 2.1 JSONL 格式
+### 2.1 JSONL 格式（Part3K2 双格式）
 
-Verse 训练流程使用 JSONL 文件，每行一个 JSON 对象，至少包含 `text` 字段：
+> **Part3K2 BREAKING 变更**：旧版 `{"text": "..."}` 格式已废弃，`TextDataset` 加载时会抛 `ValueError`。请改用下列两种格式之一（同一文件可混用）。
+
+Verse 训练流程使用 JSONL 文件，每行一个 JSON 对象，支持 **两种格式**：
+
+#### 1. chat 数组格式（多轮对话）
 
 ```json
-{"text": "床前明月光，疑是地上霜。举头望明月，低头思故乡。"}
-{"text": "问：你好 答：你好，很高兴见到你。"}
-{"text": "1,2,3,4,5,6,7,8,9,10"}
-{"text": "Hello, world!"}
+[{"role":"user","content":"你好"},{"role":"assistant","content":"你好，很高兴见到你。"}]
+[{"role":"user","content":"你叫什么名字"},{"role":"assistant","content":"我叫 CometSpark。"}]
 ```
+
+- 渲染为 `<|user|>你好<|assistant|>你好，很高兴见到你。<|eos|>`
+- **loss mask**：仅 assistant content + `<|eos|>` 参与 loss，user 部分屏蔽（target 设为 `-100`）
+
+#### 2. prompt-completion 格式（续写 / 单轮）
+
+```json
+{"prompt":"床前明月光，","completion":"疑是地上霜。举头望明月，低头思故乡。"}
+{"prompt":"2,4,6,","completion":"8,10,12,14,16"}
+```
+
+- 渲染为 `<|user|>床前明月光，<|assistant|>疑是地上霜。<|eos|>`
+- **loss mask**：仅 completion + `<|eos|>` 参与 loss，prompt 部分屏蔽
 
 - 文件编码：UTF-8
 - 换行符：`\n`
-- 其他字段会被忽略（如 `{"text": "...", "meta": {...}}` 仍可加载）
+- 两种格式可在同一文件混用，`TextDataset` 自动检测每行格式
 
 ### 2.2 数据集划分
 
@@ -86,7 +101,7 @@ data/
 └── val.jsonl     # 验证集
 ```
 
-参考示例：[`data/demo/data/train.jsonl`](../data/demo/data/train.jsonl)（200 行，覆盖唐诗 / 问答 / 数字序列 / 英文短句 4 类），数据格式说明见 [`data/demo/data/README.md`](../data/demo/data/README.md)。
+参考示例：[`data/demo/data/train.jsonl`](../data/demo/data/train.jsonl)（127 行，chat 数组 + prompt-completion 混用，覆盖唐诗续写 / 问答对话 / 数字序列三类），数据格式说明见 [`data/demo/data/README.md`](../data/demo/data/README.md)。
 
 ### 2.3 加载与切分
 
@@ -106,6 +121,8 @@ val_loader = BatchLoader(val_ds, batch_size=8, shuffle=False, collate_fn=collate
 ```
 
 每个 batch 返回 `(x, y)`，其中 `x.shape = (B, T)`、`y.shape = (B, T)` 是 `x` 向左移一位的目标序列（next-token prediction）。
+
+**loss mask（Part3K2）**：`TextDataset` 自动屏蔽 prompt 部分——`y` 中对应 prompt/user 的位置被设为 `-100`（`ignore_index`），`cross_entropy_loss` 会跳过这些位置不计入 loss 与梯度，仅 completion/assistant 部分参与训练。这是指令微调的标准做法，避免模型学习"复述 prompt"。
 
 ---
 
@@ -173,6 +190,66 @@ tok = build_tokenizer(kind="byte", save_path="checkpoints/tokenizer.json")
 # 后续：tok = load_tokenizer("checkpoints/tokenizer.json", kind="byte")
 ```
 
+### 3.5 Part3K2 新增：预处理、Chat 模板与 Unigram
+
+Part3K2 对 `verse_tokenizer` 做了全面升级，新增预处理模块、chat 模板系统与 SentencePiece Unigram 分词器，详见 [`packages/verse_tokenizer/README.md`](../packages/verse_tokenizer/README.md)。
+
+#### 预处理（preprocess）
+
+```python
+from verse_tokenizer import nfkc_normalize, pre_tokenize, trim_to_utf8_boundary
+
+# NFKC 归一化（全角→半角等）
+nfkc_normalize("１２３ＡＢＣ")   # "123ABC"
+
+# GPT-4 风格正则预分词：中文整字、英文单词、数字、标点、空白分别成块
+pre_tokenize("床前明月光hello123")
+# ['床', '前', '明', '月', '光', 'hello', '123']
+
+# UTF-8 边界修复：防止字节序列在多字节字符中间截断导致 U+FFFD 乱码
+trim_to_utf8_boundary(b"\xe4\xbd\xa0\xe5")  # b'\xe4\xbd\xa0'（"你"）
+```
+
+#### Chat 模板（chat_template）
+
+```python
+from verse_tokenizer import render_chat, render_prompt, split_prompt_completion
+
+# chat 数组 → 渲染字符串
+render_chat([{"role":"user","content":"你好"},{"role":"assistant","content":"你好！"}])
+# '<|user|>你好<|assistant|>你好！<|eos|>'
+
+# prompt → 推理前缀
+render_prompt("床前明月光，")   # '<|user|>床前明月光，<|assistant|>'
+
+# 拆分 prompt / completion（用于 loss mask）
+prompt_part, completion_part = split_prompt_completion(rendered_str)
+```
+
+所有 tokenizer（BPE / Byte / Char / Unigram）通过 `apply_chat_template(messages)` / `apply_prompt_template(prompt)` 直接生成 token 序列，无需手动拼接。
+
+#### SentencePieceUnigramTokenizer
+
+基于 unigram 语言模型 + Viterbi 解码（EM 训练）：
+
+```python
+from verse_tokenizer import SentencePieceUnigramTokenizer
+
+tok = SentencePieceUnigramTokenizer(vocab_size=1000)
+tok.train(corpus_iter, vocab_size=1000)   # 5 轮 EM
+ids = tok.encode("床前明月光", add_special_tokens=True)
+text = tok.decode(ids)
+chat_ids = tok.apply_chat_template([{"role":"user","content":"你好"}])
+```
+
+#### BPETokenizer 升级要点
+
+- 接入 GPT-4 正则预分词（中文整字独立成块）
+- `vocab_size` 自适应：数据不足时回退到最大可达
+- 默认注册 11 个特殊 token：`<bos>`/`<eos>`/`<pad>`/`<unk>` + `<|bos|>`/`<|eos|>`/`<|pad|>`/`<|unk|>`/`<|user|>`/`<|assistant|>`/`<|system|>`
+- `encode(text, add_special_tokens=True/False)` 编码开关
+- `apply_chat_template(messages)` / `apply_prompt_template(prompt)` 方法
+
 ---
 
 ## 4. 模型配置与构建
@@ -218,6 +295,13 @@ model:
 | `ssm_kind` | str | `mamba2` | hybrid 下的 SSM 种类 |
 | `sparse_ratio` | float | `0.5` | hybrid block 中 sparse attention 比例 |
 | `tie_weights` | bool | `true` | embedding / head 权重共享 |
+| `rope_theta` | float | `10000.0` | RoPE 基础频率（Part3K2，与 Llama/Mistral 一致） |
+| `max_position_embeddings` | int | `2048` | RoPE 预计算缓存上限（Part3K2，与 seq_len 分离） |
+| `attention_dropout` | float | `0.0` | attention softmax 后的 dropout（Part3K2，独立于 dropout） |
+| `hidden_dropout` | float | `0.0` | MLP 中间层 dropout（Part3K2，独立于 dropout） |
+| `embedding_dropout` | float | `0.0` | embedding 后 dropout（Part3K2，独立于 dropout） |
+
+Part3K2 还为 `CometSparkConfig` 新增 `from_pretrained(dir)` / `save_pretrained(dir)` 类方法，支持目录式持久化（config.json + 可扩展）。
 
 ### 4.3 构建 CometSparkLM
 
@@ -240,7 +324,20 @@ logits = model(input_ids)
 
 - `model.save(path)`：保存 `config + state_dict` 到 pickle 文件
 - `CometSparkLM.from_pretrained(path)`：从 pickle 文件重建模型
-- `model.generate(idx, max_new_tokens, temperature, top_k)`：便捷生成接口
+- `model.save_pretrained(dir)` / `CometSparkLM.from_pretrained(dir)`（Part3K2）：目录式持久化
+- `model.generate(idx, max_new_tokens=32, temperature=1.0, top_k=None, eos_id=None)`：便捷生成接口（注意：当前不支持 `top_p`，需 top_p 请用 `verse_inference.StreamingGenerator`）
+- `model.compress(compress_config) -> CometSparkLM`（Part3K2）：一键压缩，返回新模型实例，不修改原模型
+- `model.compression_stats() -> dict`（Part3K2）：返回 `{original_params, compressed_params, sparsity, bits, compression_ratio}`
+
+Part3K2 还提供三个工厂函数（[`data/demo/model/model.py`](../data/demo/model/model.py)）：
+
+```python
+from model.model import CometSparkSmall, CometSparkMedium, CometSparkLarge
+
+small  = CometSparkSmall()    # ~131K 参数，PoC 验证
+medium = CometSparkMedium()   # ~853K 参数，容量提升
+large  = CometSparkLarge()    # ~3M 参数，需大内存或量化
+```
 
 ### 4.4 纯 verse_torch 构建（不用 CometSpark）
 
@@ -372,6 +469,65 @@ checkpoints/
 └── loss_curve.png       # 或 loss_curve.txt（ASCII fallback）
 ```
 
+### 5.4 ParallelTrainer — 并行训练器（Part3K2）
+
+`verse_torch.training.ParallelTrainer` 把 `max_steps` 拆成 N 个 chunk，每个 chunk 独立训练，再按「差前好后」串行重训 + 整体 fine-tune。CPU 友好（串行执行，避免 GIL 竞争）。
+
+**关键设计**：
+- **chunk 拆分**：`max_steps` 拆为 `parallel_chunks` 份，每份独立 `Trainer` 实例
+- **合并策略**：按 `train_loss + val_loss` 排序，效果差放前面、好的放后面串行重训
+- **val_loss 漏洞修复**：`_eval_full_val()` 基于完整 val 数据集更新 `best_val_loss`（旧实现只用单 batch，不可比且方差大）
+- **整体 fine-tune**：`merge_finetune_steps = max_steps // 10`，在最佳状态上微调
+
+```python
+from verse_torch import ParallelTrainer
+
+cfg = {
+    "parallel_chunks": 4,          # 拆 4 个 chunk
+    "max_steps": 200,
+    "batch_size": 8,
+    "lr": 3e-3,
+    "warmup": 20,
+    "eval_interval": 20,
+    "grad_clip": 1.0,
+    "label_smoothing": 0.1,
+    "seed": 42,
+    # merge_finetune_steps 默认 max_steps // 10
+}
+trainer = ParallelTrainer(
+    model=model,
+    train_dataset=train_ds,
+    val_dataset=val_ds,
+    cfg=cfg,
+)
+trainer.fit()
+print(f"best_val_loss={trainer.best_val_loss:.4f}")
+```
+
+CometSpark demo 通过 `training.parallel_chunks` 配置或 `--parallel-chunks` CLI 参数切换 `Trainer` / `ParallelTrainer`（`1` = 标准 Trainer，`>1` = ParallelTrainer）。
+
+### 5.5 高级优化器与调度器（Part3K2）
+
+Part3K2 对齐 PyTorch / HuggingFace 补齐了高级优化器与调度器（[`verse_torch.optim_extras`](../packages/verse_torch/verse_torch/optim_extras.py) / [`scheduler_extras`](../packages/verse_torch/verse_torch/scheduler_extras.py)）：
+
+| 优化器 | 签名 | 特点 |
+|---|---|---|
+| `Lion` | `Lion(params, lr=1e-4, betas=(0.9, 0.99), weight_decay=0.1)` | sign-based 更新，无二阶矩，内存省 |
+| `Adafactor` | `Adafactor(params, lr=None, beta1=0.9, beta2=0.999, eps1=1e-30, eps2=1e-3, weight_decay=0.0)` | factored 二阶矩，省显存 |
+
+| 调度器 | 签名 | 特点 |
+|---|---|---|
+| `OneCycleLR` | `OneCycleLR(opt, max_lr, total_steps, pct_start=0.25, div_factor=25.0, final_div_factor=1e4)` | super-convergence |
+| `ReduceLROnPlateau` | `ReduceLROnPlateau(opt, mode='min', factor=0.1, patience=10, min_lr=0, threshold=1e-4)` | val 不降时降 lr |
+| `CosineRestartsLR` | `CosineRestartsLR(opt, T_0, T_mult=1, eta_min=0)` | SGDR 带热重启 |
+
+```python
+from verse_torch import Lion, OneCycleLR
+
+opt = Lion(model.parameters(), lr=1e-4, weight_decay=0.1)
+sched = OneCycleLR(opt, max_lr=1e-4, total_steps=200)
+```
+
 ---
 
 ## 6. 评估与生成
@@ -422,12 +578,66 @@ with no_grad():
 | Greedy | `temperature=0` 或 `top_k=None` | 每步取 argmax |
 | Temperature | `temperature > 0` | logits / T 后采样，T 越大越随机 |
 | Top-k | `top_k=k` | 仅在 logits 最大的 k 个 token 上采样 |
+| Top-p（nucleus） | `top_p=p` | 仅在累积概率 ≥ p 的最小 token 集上采样。**注意**：`CometSparkLM.generate` 当前不支持 `top_p`，需用 `verse_inference.StreamingGenerator` 或 `Trainer.inference`（Part3K2） |
 
 5 条预设 prompt（CometSpark demo 默认）：
 
 ```python
 prompts = ["床前明月光，", "白日依山尽，", "你好，", "1+1=", "春风"]
 ```
+
+### 6.3 ScoringEvaluator — 生成质量打分（Part3K2）
+
+`verse_torch.scoring.ScoringEvaluator` 对模型生成结果与参考答案计算 5 个指标：
+
+| 指标 | 说明 |
+|---|---|
+| `exact_match` | 精确匹配率（完全相等 1.0） |
+| `prefix_accuracy` | 前缀匹配率（适合续写任务） |
+| `char_f1` | 字符级 F1 |
+| `bleu` | BLEU-4 简化版 |
+| `rouge_l` | ROUGE-L（基于最长公共子序列的 F1） |
+
+```python
+from verse_torch import ScoringEvaluator
+
+evaluator = ScoringEvaluator()
+scores = evaluator.evaluate(
+    predictions=["疑是地上霜。举头望明月"],
+    references=["疑是地上霜。举头望明月，低头思故乡。"],
+)
+print(evaluator.report(scores))
+# ==================================================
+# 评分报告
+# ==================================================
+# 样本数: 1
+# --------------------------------------------------
+#   exact_match        : 0.0000
+#   prefix_accuracy    : 0.7333
+#   char_f1            : 0.8462
+#   bleu               : 0.0000
+#   rouge_l            : 0.8462
+# ==================================================
+```
+
+CometSpark demo 通过 `--score --references-file refs.txt` 启用打分模式（详见 [`data/demo/README.md`](../data/demo/README.md)）。
+
+### 6.4 Trainer.inference — 批量推理生成（Part3K2）
+
+`Trainer.inference(prompts, temperature, top_k, top_p, max_tokens)` 提供批量生成入口，支持字符串 prompt（配合 tokenizer）或 token ID 序列：
+
+```python
+from verse_torch.training import Trainer
+
+# trainer 已训练完成
+outputs = trainer.inference(
+    prompts=["床前明月光，", "你好，"],
+    temperature=0.8, top_k=10, max_tokens=30,
+)
+# outputs: list[str]（有 tokenizer 时）或 list[list[int]]（无 tokenizer 时）
+```
+
+`Trainer.inference` 内部优先委托 `model.generate`，若模型未实现 `generate` 则手动循环 forward + 采样，完整支持 `temperature` / `top_k` / `top_p`。
 
 ---
 
@@ -515,6 +725,46 @@ lora_only(model, r=8, alpha=16.0)
 # 3. 后续训练只更新 A/B（节省显存 / 加速）
 ```
 
+### 7.5 CometSparkLM.compress / compression_stats（Part3K2）
+
+`CometSparkLM` 内置一键压缩入口，返回压缩后的新模型实例（不修改原模型）：
+
+```python
+from model.model import CometSparkSmall
+
+model = CometSparkSmall()
+
+# 一键压缩：50% 稀疏 + INT4 量化
+compress_config = {
+    "prune":    {"sparsity": 0.5, "method": "outlier_safe"},
+    "quantize": {"bits": 4, "schema": "symmetric"},
+    # 可选：任意组合 lora / ternary / distill
+    # "lora":    {"rank": 8, "alpha": 16},
+    # "ternary": {},
+    # "distill": {"teacher": teacher_model, "epochs": 10, "lr": 1e-4},
+}
+compressed = model.compress(compress_config)
+
+# 查看压缩统计
+stats = compressed.compression_stats()
+# {'original_params': 131776, 'compressed_params': 32700.0,
+#  'sparsity': 0.5, 'bits': 4.0, 'compression_ratio': 4.03}
+print(f"压缩比: {stats['compression_ratio']:.2f}x")
+```
+
+### 7.6 压缩训练演示脚本
+
+[`examples/compress_train_demo.py`](../examples/compress_train_demo.py) 演示完整流程：创建基准模型 → 压缩 → 统计 → forward 验证：
+
+```bash
+cd /workspace
+python examples/compress_train_demo.py
+# [1] 创建基准模型 CometSparkSmall... 参数量: 131776
+# [2] 压缩：50% 通道稀疏 + INT4 量化...
+# [3] 压缩统计: 压缩比 4.03x
+# [4] Forward 验证（输入随机 token）... 输出 shape 正确
+```
+
 ---
 
 ## 8. 推理部署
@@ -598,7 +848,14 @@ python run.py --skip-build       # 跳过 tokenizer 构建
 python run.py --skip-train       # 跳过训练，直接加载 best.pt 评估
 python run.py --skip-eval        # 跳过评估
 python run.py --config path/to/config.yml
+
+# Part3K2 新增
+python run.py --parallel-chunks 4 # 启用 ParallelTrainer（4 chunk 拆分）
+python run.py --top-p 0.9         # nucleus sampling（降级为不限制，见 6.2）
+python run.py --score --references-file refs.txt  # 启用 ScoringEvaluator 打分
 ```
+
+完整 CLI 参数说明见 [`data/demo/README.md`](../data/demo/README.md)。
 
 `run.py` 串联四步：`build_tokenizer → train → evaluate → visualize`。
 
