@@ -290,7 +290,10 @@ def stage_visualize(loss_history_path: str, save_dir: str) -> str:
     print("[extra] 可视化 loss 曲线", flush=True)
     print("=" * 70, flush=True)
     curve_path = os.path.join(save_dir, "loss_curve.png")
-    return visualize_fn(loss_history_path, save_path=curve_path)
+    actual_path = visualize_fn(loss_history_path, save_path=curve_path)
+    if actual_path and not os.path.exists(actual_path):
+        print(f"[visualize] 警告：期望的曲线文件不存在: {actual_path}", flush=True)
+    return actual_path or curve_path
 
 
 def _print_stage_error(stage_name: str, exc: BaseException, verbose: bool) -> None:

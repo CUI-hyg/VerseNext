@@ -490,7 +490,14 @@ def plot_loss_curve(
         import matplotlib  # noqa: F401
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-    except Exception:
+    except ImportError:
+        # 仅捕获 ImportError，其他异常向上抛
+        # 降级为 ASCII，但明确告知用户
+        print(
+            "[plot_loss_curve] 警告：matplotlib 未安装，降级为 ASCII 文本图。"
+            "安装 matplotlib 可获得 PNG 图：pip install matplotlib",
+            flush=True,
+        )
         # 降级 ASCII
         if save_path.lower().endswith(".png"):
             txt_path = save_path[:-4] + ".txt"
@@ -508,6 +515,7 @@ def plot_loss_curve(
         if val_x_ascii and val_x_ascii[-1] >= len(train_losses):
             val_x_ascii = [min(x, len(train_losses) - 1) for x in val_x_ascii]
         _print_val_info(val_losses, val_x_ascii)
+        print(f"[plot_loss_curve] loss 曲线已保存到: {txt_path}", flush=True)
         return txt_path
 
     # matplotlib 可用分支
@@ -547,6 +555,7 @@ def plot_loss_curve(
     fig.savefig(save_path, dpi=100)
     plt.close(fig)
     _print_val_info(val_losses, val_x)
+    print(f"[plot_loss_curve] loss 曲线已保存到: {save_path}", flush=True)
     return save_path
 
 
@@ -855,12 +864,17 @@ class Trainer:
 
         # 画曲线图
         curve_path = os.path.join(self.save_dir, "loss_curve.png")
-        plot_loss_curve(
+        actual_curve_path = plot_loss_curve(
             self.train_losses,
             self.val_losses,
             curve_path,
             eval_interval=self.eval_interval,
         )
+        if actual_curve_path != curve_path:
+            print(
+                f"[Trainer] 注意：loss 曲线降级保存到 {actual_curve_path}",
+                flush=True,
+            )
 
     # ------------------------------------------------------------------
     # Task 6.2: inference —— 批量推理生成

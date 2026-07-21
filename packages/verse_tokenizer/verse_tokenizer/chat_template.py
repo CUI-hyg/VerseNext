@@ -103,6 +103,121 @@ def split_prompt_completion(rendered: str) -> tuple[str, str]:
     return rendered[:end], rendered[end:]
 
 
+# ---------------------------------------------------------------------------
+# Qwen3 ChatML 格式
+# ---------------------------------------------------------------------------
+# Qwen3 系列模型使用 ChatML 格式，与上面的 ``<|user|>`` / ``<|assistant|>``
+# 风格不同，采用 ``<|im_start|>{role}\n{content}<|im_end|>\n`` 结构。
+
+QWEN_IM_START = "<|im_start|>"
+QWEN_IM_END = "<|im_end|>"
+QWEN_ENDOFTEXT = "<|endoftext|>"
+
+# ChatML 角色标记前缀（``<|im_start|>{role}\n``）
+_QWEN_ROLE_PREFIX = "<|im_start|>{role}\n"
+_QWEN_ROLE_SUFFIX = "<|im_end|>\n"
+
+
+def render_chat_qwen(
+    messages: list[dict],
+    add_generation_prompt: bool = False,
+) -> str:
+    """Qwen3 ChatML 格式渲染。
+
+    Args:
+        messages: ``[{"role": "user", "content": "..."}, ...]``，role 支持
+            ``system`` / ``user`` / ``assistant`` / ``tool`` 等。
+        add_generation_prompt: ``True`` 时在末尾追加
+            ``<|im_start|>assistant\\n``，用于推理前缀。
+
+    Returns:
+        ChatML 格式字符串，例如::
+
+            <|im_start|>system\n{system}<|im_end|>\n
+            <|im_start|>user\n{user}<|im_end|>\n
+            <|im_start|>assistant\n{assistant}<|im_end|>\n
+
+    Examples:
+        >>> render_chat_qwen([
+        ...     {"role": "user", "content": "你好"},
+        ...     {"role": "assistant", "content": "你好！"},
+        ... ])
+        '<|im_start|>user\n你好<|im_end|>\n<|im_start|>assistant\n你好！<|im_end|>\n'
+        >>> render_chat_qwen(
+        ...     [{"role": "user", "content": "你好"}],
+        ...     add_generation_prompt=True,
+        ... )
+        '<|im_start|>user\n你好<|im_end|>\n<|im_start|>assistant\n'
+    """
+    parts: list[str] = []
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        parts.append(f"{_QWEN_ROLE_PREFIX.format(role=role)}{content}{_QWEN_ROLE_SUFFIX}")
+    if add_generation_prompt:
+        parts.append(f"{_QWEN_ROLE_PREFIX.format(role='assistant')}")
+    return "".join(parts)
+
+
+def render_prompt_qwen(prompt: str, system: str = None) -> str:
+    """Qwen3 prompt 模板（推理前缀）。
+
+    Args:
+        prompt: 用户输入的 prompt 文本
+        system: 可选的 system prompt；为 ``None`` 时不输出 system 段
+
+    Returns:
+        拼接到 ``<|im_start|>assistant\\n`` 为止的字符串（不含 assistant 的
+        内容，等待模型生成）。
+
+    Examples:
+        >>> render_prompt_qwen("你好")
+        '<|im_start|>user\n你好<|im_end|>\n<|im_start|>assistant\n'
+        >>> render_prompt_qwen("你好", system="你是助手")
+        '<|im_start|>system\n你是助手<|im_end|>\n<|im_start|>user\n你好<|im_end|>\n<|im_start|>assistant\n'
+    """
+    parts: list[str] = []
+    if system:
+        parts.append(f"{_QWEN_ROLE_PREFIX.format(role='system')}{system}{_QWEN_ROLE_SUFFIX}")
+    parts.append(f"{_QWEN_ROLE_PREFIX.format(role='user')}{prompt}{_QWEN_ROLE_SUFFIX}")
+    parts.append(f"{_QWEN_ROLE_PREFIX.format(role='assistant')}")
+    return "".join(parts)
+
+
+def split_prompt_completion_qwen(text: str) -> tuple[str, str]:
+    """按 Qwen3 ChatML 的 ``<|im_start|>assistant\\n`` 分割。
+
+    用于 loss mask：prompt 部分屏蔽（``ignore_index=-100``），completion
+    部分参与 loss。
+
+    规则：找最后一个 ``<|im_start|>assistant\\n`` 的位置，其后的内容为
+    completion。
+
+    Args:
+        text: 渲染后的字符串（来自 :func:`render_chat_qwen` 或
+            :func:`render_prompt_qwen`）
+
+    Returns:
+        (prompt_part, completion_part)：
+        - prompt_part 包含到 ``<|im_start|>assistant\\n``（含）
+        - completion_part 是其后的内容（可能为空）
+
+    Examples:
+        >>> split_prompt_completion_qwen(
+        ...     '<|im_start|>user\n你好<|im_end|>\n<|im_start|>assistant\n你好！<|im_end|>\n'
+        ... )
+        ('<|im_start|>user\\n你好<|im_end|>\\n<|im_start|>assistant\\n', '你好！<|im_end|>\\n')
+        >>> split_prompt_completion_qwen("no marker here")
+        ('no marker here', '')
+    """
+    marker = "<|im_start|>assistant\n"
+    idx = text.rfind(marker)
+    if idx < 0:
+        return text, ""
+    end = idx + len(marker)
+    return text[:end], text[end:]
+
+
 __all__ = [
     "USER_TOKEN",
     "ASSISTANT_TOKEN",
@@ -114,4 +229,11 @@ __all__ = [
     "render_chat",
     "render_prompt",
     "split_prompt_completion",
+    # Qwen3 ChatML（Task: QwenTokenizer）
+    "QWEN_IM_START",
+    "QWEN_IM_END",
+    "QWEN_ENDOFTEXT",
+    "render_chat_qwen",
+    "render_prompt_qwen",
+    "split_prompt_completion_qwen",
 ]

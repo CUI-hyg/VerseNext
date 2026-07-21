@@ -309,15 +309,13 @@ def _save_parallel_history(save_dir: str, train_losses, val_losses,
         for v in val_losses:
             f.write(f"{float(v):.6f}\n")
 
-    # 画曲线图（matplotlib 不可用时自动降级 ASCII）
-    try:
-        plot_loss_curve(
-            train_losses, val_losses,
-            os.path.join(save_dir, "loss_curve.png"),
-            eval_interval=eval_interval,
-        )
-    except Exception as e:
-        print(f"[train] 警告：绘制 loss 曲线失败：{e}", flush=True)
+    # 画曲线图（matplotlib 不可用时 plot_loss_curve 内部已自处理 ImportError）
+    actual_path = plot_loss_curve(
+        train_losses, val_losses,
+        os.path.join(save_dir, "loss_curve.png"),
+        eval_interval=eval_interval,
+    )
+    print(f"[train] loss 曲线已保存到: {actual_path}", flush=True)
 
 
 __all__ = ["train"]
