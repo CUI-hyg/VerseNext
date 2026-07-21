@@ -1188,7 +1188,12 @@ class Tensor:
                 stack.pop()
 
         # 逆序调用 _backward
+        # 注意：稀疏激活（如 MoD Top-K）中，未被选中的 Expert/Part 的输出
+        # 仍在计算图中（_children 包含它们），但不会收到梯度（out.grad=None）。
+        # 这些节点的 _backward 会被安全跳过，避免 None 崩溃。
         for v in reversed(topo):
+            if v.grad is None:
+                continue
             v._backward()
 
     def zero_grad(self) -> None:
@@ -1233,3 +1238,86 @@ class Tensor:
 
     def bool(self) -> "Tensor":
         return Tensor(self.data.astype(bool), requires_grad=False)
+
+    # -----------------------------------------------------------------
+    # 静态方法：concat / stack（Part4 新增，用于 chunkwise SSD 分块拼接）
+    # -----------------------------------------------------------------
+
+    @staticmethod
+    def concat(tensors: list, dim: int = 0) -> "Tensor":
+        """沿指定维度拼接 Tensor 列表（可微）。
+
+        Args:
+            tensors: Tensor 列表（非空，所有 Tensor 形状除 dim 维外必须一致）
+            dim: 拼接维度
+
+        Returns:
+            拼接后的 Tensor，梯度按切片回传到各输入。
+        """
+        if not tensors:
+            raise ValueError("concat: tensors 列表不能为空")
+        if len(tensors) == 1:
+            return tensors[0]
+
+        # 用 _result 统一构造（自动判断 requires_grad）
+        first = tensors[0]
+        out_data = np.concatenate([t.data for t in tensors], axis=dim)
+        # _result 需要在一个实例上调用；这里复用第一个 tensor 的 _result
+        out = first._result(out_data, tuple(tensors), "concat")
+
+        if out.requires_grad:
+            # 记录每个输入在 dim 维的切片范围，backward 时切片回传
+            sizes = [int(t.data.shape[dim]) for t in tensors]
+
+            def _backward():
+                if not out.requires_grad or out.grad is None:
+                    return
+                start = 0
+                for t, sz in zip(tensors, sizes):
+                    if not t.requires_grad:
+                        start += sz
+                        continue
+                    # 沿 dim 切片 [start : start+sz]
+                    index = [slice(None)] * out.grad.ndim
+                    index[dim] = slice(start, start + sz)
+                    t._accumulate_grad(out.grad[tuple(index)])
+                    start += sz
+
+            out._backward = _backward
+        return out
+
+    @staticmethod
+    def stack(tensors: list, dim: int = 0) -> "Tensor":
+        """沿新维度堆叠 Tensor 列表（可微）。
+
+        Args:
+            tensors: Tensor 列表（非空，所有 Tensor 形状必须一致）
+            dim: 新维度的插入位置
+
+        Returns:
+            堆叠后的 Tensor，形状在 dim 处多一维 = len(tensors)。
+        """
+        if not tensors:
+            raise ValueError("stack: tensors 列表不能为空")
+        if len(tensors) == 1:
+            return tensors[0].unsqueeze(dim)
+
+        first = tensors[0]
+        out_data = np.stack([t.data for t in tensors], axis=dim)
+        out = first._result(out_data, tuple(tensors), "stack")
+
+        if out.requires_grad:
+            n = len(tensors)
+
+            def _backward():
+                if not out.requires_grad or out.grad is None:
+                    return
+                for i, t in enumerate(tensors):
+                    if not t.requires_grad:
+                        continue
+                    index = [slice(None)] * out.grad.ndim
+                    index[dim] = i
+                    t._accumulate_grad(out.grad[tuple(index)])
+
+            out._backward = _backward
+        return out

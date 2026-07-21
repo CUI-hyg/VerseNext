@@ -2,16 +2,24 @@
 # 字段类型：int / float / bool / str / null
 # 注意：本环境无 PyYAML，使用 model/config.py 中的极简解析器
 
-# 注：arch="hybrid" 在当前 verse_nex Mamba2 实现下，seq_len >= 64 时会
-# 出现 np.exp(log_decay) 数值溢出（NaN）。PoC 阶段先用 transformer
-# 跑通端到端流程；hybrid 代码路径已保留，待 verse_nex 修复后可切换。
+# Part4 升级：
+# 1. arch="hybrid" 已修复 Mamba2 chunkwise SSD 数值溢出 + OOM 问题，
+#    现已可在 seq_len=64+ 下稳定训练。hybrid 与 transformer 两种架构均可使用。
+# 2. tokenizer 切换到 Qwen2.5-32B-Instruct 的优质 BPE（vocab=151665），
+#    彻底停用旧版自训练 byte/bpe tokenizer。中文 1 字 ≈ 1-2 token，
+#    序列利用率提升 3 倍以上。
+# 3. PoC 模型规模保持极小（n_layer=2, n_embd=64）用于回归验证；
+#    CometSpark-V0.2（0.5B）使用独立配置（见 P3.1）。
+# 4. Part4 P3.3: 新增 arch="versenex" 原生架构（UltraSparse + MoD + Medusa），
+#    完全无需依赖 Transformer。d_model / attn_top_k / mod_* 字段仅在 versenex 生效。
 #
 # 模型规模针对 3 核 CPU / 5GB 内存沙箱调优：
 # - n_layer=2, n_embd=64, seq_len=64, batch_size=8
 # - 200 步约 30-60 秒可完成，内存占用 < 1GB
+# - 注意：vocab_size=151665 由 Qwen tokenizer 决定，embedding 占 ~9.7M 参数
 model:
-  arch: transformer
-  vocab_size: 256
+  arch: transformer           # hybrid / transformer / versenex
+  vocab_size: 151665
   n_layer: 2
   n_head: 4
   n_embd: 64
@@ -21,6 +29,18 @@ model:
   ssm_kind: mamba2
   sparse_ratio: 0.5
   tie_weights: true
+  # Part4 P3.3: VerseNex 原生架构字段（仅 arch=versenex 时生效）
+  d_model: null               # null = 使用 n_embd
+  attn_top_k: 64              # UltraSparse 注意力 Top-K
+  mod_n_parts: 4              # MoD DensePart 数量
+  mod_n_experts: 4            # 每个 DensePart 内的 Expert 数
+  mod_top_k_parts: 2          # 每个 token 激活的 DensePart 数
+  mod_top_k_experts: 2        # 每个 DensePart 内激活的 Expert 数
+  mod_d_ff: null              # null = 4 * n_embd
+  mod_aux_loss_weight: 0.01   # MoD load balancing loss 权重
+  medusa_n_heads: 0           # Medusa 副头数量（0 = 关闭）
+  medusa_aux_weight: 0.5      # Medusa 副头 loss 权重
+  use_position_embed: false   # 仅 RoPE（true = 加位置 embedding）
 
 training:
   batch_size: 8
@@ -43,8 +63,8 @@ training:
   parallel_chunks: 1          # Part3K2: 并行训练 chunk 数（1=不并行）
 
 tokenizer:
-  kind: byte
-  vocab_size: 259
+  kind: qwen
+  vocab_size: 151665
 
 data:
   train_path: data/train.jsonl

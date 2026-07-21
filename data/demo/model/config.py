@@ -144,13 +144,13 @@ class CometSparkConfig:
 
     字段说明：
         vocab_size: 词表大小（实际由 tokenizer 决定，会覆盖）
-        n_layer: 总层数（Transformer 或 Hybrid 均适用）
-        n_head: 注意力头数（仅 arch="transformer" 时使用）
-        n_embd: 模型隐藏维度
+        n_layer: 总层数（Transformer / Hybrid / VerseNex 均适用）
+        n_head: 注意力头数（transformer / versenex 时使用）
+        n_embd: 模型隐藏维度（transformer / hybrid 使用；versenex 见 d_model）
         seq_len: 训练序列长度
         dropout: dropout 概率（通用，向后兼容）
         n_kv_head: GQA 的 kv head 数；None 表示 = n_head
-        arch: 架构选择，"hybrid" 或 "transformer"
+        arch: 架构选择，"hybrid" / "transformer" / "versenex"
         ssm_kind: 仅 arch="hybrid" 时生效，"mamba2" 或 "rwkv7"
         sparse_ratio: 仅 arch="hybrid" 时生效，Sparse Attention 层占比
         tie_weights: 是否共享 embedding 与 lm_head 权重
@@ -161,6 +161,19 @@ class CometSparkConfig:
         attention_dropout: attention softmax 后的 dropout（独立于 dropout）
         hidden_dropout: MLP 中间层的 dropout（独立于 dropout）
         embedding_dropout: embedding 后的 dropout（独立于 dropout）
+
+    Part4 P3.3 新增（仅 arch="versenex" 生效）：
+        d_model: VerseNex 隐藏维度（默认与 n_embd 同步）
+        attn_top_k: UltraSparse 注意力的 Top-K（0 = 全注意力，默认 64）
+        mod_n_parts: MoD DensePart 数量（默认 4）
+        mod_n_experts: 每个 DensePart 内的 Expert 数（默认 4）
+        mod_top_k_parts: 每个 token 激活的 DensePart 数（默认 2）
+        mod_top_k_experts: 每个 DensePart 内激活的 Expert 数（默认 2）
+        mod_d_ff: Expert MLP 中间维度（默认 4 * n_embd）
+        mod_aux_loss_weight: MoD load balancing loss 权重（默认 0.01）
+        medusa_n_heads: Medusa 副头数量（0 = 不使用，默认 0）
+        medusa_aux_weight: Medusa 副头 loss 权重（默认 0.5）
+        use_position_embed: 是否使用可学习位置 embedding（默认 False 仅 RoPE）
     """
 
     vocab_size: int = 256
@@ -180,6 +193,18 @@ class CometSparkConfig:
     attention_dropout: float = 0.0
     hidden_dropout: float = 0.0
     embedding_dropout: float = 0.0
+    # Part4 P3.3: VerseNex 原生架构字段
+    d_model: Optional[int] = None  # None 时使用 n_embd
+    attn_top_k: int = 64
+    mod_n_parts: int = 4
+    mod_n_experts: int = 4
+    mod_top_k_parts: int = 2
+    mod_top_k_experts: int = 2
+    mod_d_ff: Optional[int] = None  # None 时使用 4 * n_embd
+    mod_aux_loss_weight: float = 0.01
+    medusa_n_heads: int = 0
+    medusa_aux_weight: float = 0.5
+    use_position_embed: bool = False
 
     # ------------------------------------------------------------------
     # YAML 持久化

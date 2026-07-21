@@ -658,6 +658,31 @@ class Trainer:
             "train_loss": float(self.train_losses[-1]) if self.train_losses else float("nan"),
         }
 
+    def _forward_loss(self, x: Tensor, y: Tensor) -> Tensor:
+        """统一前向 + loss 计算，兼容 dict 返回的模型（VerseNex）。
+
+        - 若 ``model.forward(x, targets=y)`` 返回 dict（含 ``total_loss``），
+          直接使用内置 loss（含 MoD aux + Medusa 副头 loss）。
+        - 否则用 ``cross_entropy_loss(model(x), y, label_smoothing)`` 计算。
+
+        Part4 P3.3: 支持 VerseNexLM 原生架构（forward 返回 dict）。
+        """
+        # 优先尝试带 targets 的 forward（VerseNexLM 支持）
+        try:
+            out = self.model(x, targets=y)
+        except TypeError:
+            # 不接受 targets 参数的模型（transformer / hybrid）
+            out = None
+        if isinstance(out, dict) and "total_loss" in out:
+            return out["total_loss"]
+        if isinstance(out, dict) and "loss" in out:
+            return out["loss"]
+        # 标准路径：model(x) 返回 logits，用 cross_entropy 计算
+        logits = out if out is not None else self.model(x)
+        return cross_entropy_loss(
+            logits, y, label_smoothing=self.label_smoothing
+        )
+
     def evaluate(self) -> float:
         """在 val_loader 上计算平均 loss（no_grad 上下文）。"""
         total_loss = 0.0
@@ -669,8 +694,7 @@ class Trainer:
                 x, y = batch
                 x = _as_tensor(x)
                 y = _as_tensor(y)
-                logits = self.model(x)
-                loss = cross_entropy_loss(logits, y)
+                loss = self._forward_loss(x, y)
                 total_loss += _scalar(loss)
                 n_batches += 1
         if n_batches == 0:
@@ -721,10 +745,8 @@ class Trainer:
             x = _as_tensor(x)
             y = _as_tensor(y)
 
-            logits = self.model(x)
-            loss = cross_entropy_loss(
-                logits, y, label_smoothing=self.label_smoothing
-            )
+            # Part4 P3.3: 统一用 _forward_loss 兼容 VerseNexLM 的 dict 返回
+            loss = self._forward_loss(x, y)
             loss.backward()
 
             self.grad_accum.step()
@@ -770,8 +792,12 @@ class Trainer:
                             curve_path,
                             eval_interval=self.eval_interval,
                         )
-                    except Exception:
-                        pass  # 实时绘图失败不影响训练
+                    except Exception as e:
+                        # Part4 修复：原 `except: pass` 会静默吞异常，导致用户
+                        # 不知道为何 loss 曲线未生成。改为打印 warning 到 stderr。
+                        import sys
+                        print(f"[Trainer] warning: 实时 loss 曲线刷新失败: {e}",
+                              file=sys.stderr, flush=True)
 
                 if self.early_stopping.should_stop:
                     last_log_step = step
@@ -1287,6 +1313,9 @@ class ParallelTrainer:
 
         本方法跑完整 val 数据集，返回平均 val_loss。
         若 ``val_dataset`` 为空，返回 ``inf``。
+
+        Part4 P3.3: 兼容 VerseNexLM 的 dict 返回（forward 含 targets 时返回
+        ``{"total_loss": ...}``，自动用内置 loss）。
         """
         if self.val_dataset is None or len(self.val_dataset) == 0:
             return float("inf")
@@ -1307,8 +1336,24 @@ class ParallelTrainer:
                 x_batch, y_batch = batch
                 x = _as_tensor(x_batch)
                 y = _as_tensor(y_batch)
-                logits = model(x)
-                loss = loss_fn(logits, y, label_smoothing=self.label_smoothing)
+                # Part4 P3.3: 优先尝试 forward(x, targets=y)，支持 VerseNexLM
+                out = None
+                try:
+                    out = model(x, targets=y)
+                except TypeError:
+                    out = None
+                if isinstance(out, dict):
+                    # 注意：不能用 `or`，因为 Tensor 的 __bool__ 会触发 __len__
+                    loss = out.get("total_loss")
+                    if loss is None:
+                        loss = out.get("loss")
+                    if loss is None:
+                        # dict 但无 loss：取出 logits 用 loss_fn
+                        logits = out.get("logits")
+                        loss = loss_fn(logits, y, label_smoothing=self.label_smoothing)
+                else:
+                    logits = out if out is not None else model(x)
+                    loss = loss_fn(logits, y, label_smoothing=self.label_smoothing)
                 total_loss += _scalar(loss)
                 n_batches += 1
         if n_batches == 0:

@@ -465,6 +465,10 @@ class Mamba2Block(Module):
     def forward_parallel(self, x: Tensor) -> Tensor:
         """整序列并行 SSD 计算（可微，用于训练）。
 
+        Part4 修复：chunkwise SSD，按 T_i 维度分块，避免一次性物化
+        (B, T, T, H) float64 大张量导致 OOM。中间张量统一用 float32，
+        峰值内存从 O(B·T²·H·d) float64 降到 O(B·chunk·T·H·d) float32。
+
         SSD 公式:
             Y[h, i, c] = sum_{j<=i} decay[i, j] * (C[i] . B_bar[j]) * X[h, j, c]
                         + D[h] * X[h, i, c]
@@ -472,6 +476,13 @@ class Mamba2Block(Module):
                         = exp(cumsum_logA_bar[i] - cumsum_logA_bar[j])   for i >= j
             A_bar[t] = exp(dt[t] * A)       # (B, T, H) ∈ (0, 1]
             B_bar[t] = dt[t] * B[t]         # (B, T, H, N) (dt per-head, B shared)
+
+        分块策略:
+            - T_i 维度切成 chunk_size 大小的块（默认 32）
+            - 每块单独计算 L[:, i0:i1, :, :] * CB[:, i0:i1, :, :] * X
+            - 每块输出 Y_chunk (B, chunk_size, H, d)，最后沿 T 维 concat
+            - 峰值张量: (B, chunk_size, T, H, d) float32，比原 (B, T, T, H, d) float64
+              减少 (T/chunk_size) × 2 倍内存
         """
         B, T, D = x.shape
         H, d = self.n_heads, self.d_head
@@ -479,54 +490,85 @@ class Mamba2Block(Module):
         X, z_branch, dt, B_mat, C_mat, A = self._prepare_parallel(x)
 
         # ----- 计算 log_A_bar = dt * A -----
-        # 用 float64 算 cumsum 提升数值精度
-        A_b = A.reshape(1, 1, H).astype(np.float64)
-        log_A_bar_data = dt.data.astype(np.float64) * A_b  # (B, T, H)
+        # Part4: 统一用 float32（原 float64 内存翻倍，且 float32 精度足够）
+        A_b = A.reshape(1, 1, H).astype(np.float32)
+        log_A_bar_data = dt.data.astype(np.float32) * A_b  # (B, T, H)
 
         cumsum_log = np.cumsum(log_A_bar_data, axis=1)  # (B, T, H)
-        zero_prefix = np.zeros((B, 1, H), dtype=np.float64)
+        zero_prefix = np.zeros((B, 1, H), dtype=np.float32)
         cs = np.concatenate([zero_prefix, cumsum_log], axis=1)  # (B, T+1, H)
         # decay[i, j] = exp(cs[i+1] - cs[j+1]) for i >= j else 0
         # cs_i[k] = cs[k+1] (k from 0 to T-1) -> shape (B, T, H)
-        cs_i = cs[:, 1:, :]
-        cs_j = cs[:, 1:, :]
-        log_decay = cs_i[:, :, None, :] - cs_j[:, None, :, :]  # (B, T_i, T_j, H)
-        # 数值稳定性修复：clip log_decay 到 [-50, 0]
-        # 理论上 log_decay <= 0（i >= j 时 cumsum 不减），但训练中 A_log 异常可能
-        # 导致 cumsum 出现极正值，使 log_decay > 0 触发 exp 溢出为 inf
-        # exp(-50) ≈ 1.9e-22 足够小但不 NaN；exp(0) = 1 上界安全
-        log_decay = np.clip(log_decay, -50.0, 0.0)
+        cs_i = cs[:, 1:, :]  # (B, T, H) — 对应 i 位置的 cumsum
+        # cs_j 同 cs_i（j 从 0 到 T-1）
         idx = np.arange(T)
-        mask = (idx[:, None] >= idx[None, :]).astype(np.float64)
-        L_data = np.exp(log_decay) * mask[None, :, :, None]  # (B, T, T, H) float64
-        # L 是 requires_grad=False 的常量；保持 float64 以提升 SSD 求和的数值精度
-        # (NumPy 在 float64 * float32 时会自动提升到 float64，梯度仍按参数 dtype 累积)
-        L_t = Tensor(L_data, requires_grad=False)
+        mask = (idx[:, None] >= idx[None, :]).astype(np.float32)  # (T, T) 因果 mask
 
         # ----- B_bar[b, t, h, n] = dt[b, t, h] * B[b, t, n] -----
         dt_t = dt.unsqueeze(-1)              # (B, T, H, 1)
         B_t = B_mat.unsqueeze(2)             # (B, T, 1, N)
         B_bar_t = dt_t * B_t                 # (B, T, H, N)
 
-        # CB[b, i, j, h] = sum_n C[b, i, n] * B_bar[b, j, h, n]
-        # C_mat: (B, T, N) -> (B, T_i, 1, 1, N) via unsqueeze(2).unsqueeze(3)
-        C_t = C_mat.unsqueeze(2).unsqueeze(3)  # (B, T_i, 1, 1, N)
-        BB_t = B_bar_t.unsqueeze(1)            # (B, 1, T_j, H, N)
-        CB_t = (C_t * BB_t).sum(-1)            # (B, T_i, T_j, H)
+        # ----- chunkwise SSD：按 T_i 维度分块计算 -----
+        # 选择 chunk_size 使峰值张量 (B, chunk_size, T, H, d) float32 <= 16 MB
+        # 16 MB / (4 bytes) = 4M elements
+        # B * T * H * d 通常已知，chunk_size = max(1, 4M // (B * T * H * d))
+        peak_budget = 4_000_000  # 4M elements ≈ 16 MB float32
+        per_elem = max(B * T * H * d, 1)
+        chunk_size = max(1, peak_budget // per_elem)
+        chunk_size = min(chunk_size, T, 32)  # 上限 32，避免单块过大
+        # 保证 chunk_size >= 1
+        chunk_size = max(1, chunk_size)
 
-        # M = L ⊙ CB （L 为 float64 常量，CB 为 float32；NumPy 提升到 float64）
-        M_t = L_t * CB_t  # (B, T_i, T_j, H) float64
-
-        # Y[b, i, h, c] = sum_j M[b, i, j, h] * X[b, j, h, c]
-        M_exp = M_t.unsqueeze(-1)  # (B, T_i, T_j, H, 1)
-        X_exp = X.unsqueeze(1)     # (B, 1, T_j, H, d)
-        Y_t = (M_exp * X_exp).sum(dim=2)  # (B, T_i, H, d) float64
-
-        # skip: D * X
         D_t = self.D.reshape(1, 1, H, 1)
-        Y_t = Y_t + D_t * X
+        Y_chunks: list = []
 
-        # reshape -> (B, T, d_inner)；转回 float32 与 recurrent 路径对齐
+        for i0 in range(0, T, chunk_size):
+            i1 = min(i0 + chunk_size, T)
+            ci = i1 - i0  # 当前块的 T_i 长度
+
+            # L_chunk: (B, ci, T, H) float32
+            # log_decay[b, i, j, h] = cs_i[b, i, h] - cs_i[b, j, h] for i in [i0, i1)
+            cs_i_chunk = cs_i[:, i0:i1, :]  # (B, ci, H)
+            log_decay_chunk = (
+                cs_i_chunk[:, :, None, :] - cs_i[:, None, :, :]
+            )  # (B, ci, T, H) float32
+            log_decay_chunk = np.clip(log_decay_chunk, -50.0, 0.0)
+            L_chunk_data = (
+                np.exp(log_decay_chunk) * mask[None, i0:i1, :, None]
+            )  # (B, ci, T, H) float32
+            L_chunk_t = Tensor(L_chunk_data, requires_grad=False)
+
+            # CB_chunk[b, i, j, h] = sum_n C[b, i, n] * B_bar[b, j, h, n]
+            # C_mat[:, i0:i1] -> (B, ci, N) -> (B, ci, 1, 1, N)
+            # B_bar_t -> (B, T, H, N) -> (B, 1, T, H, N)
+            C_chunk = C_mat[:, i0:i1]                       # (B, ci, N)
+            C_chunk_t = C_chunk.unsqueeze(2).unsqueeze(3)   # (B, ci, 1, 1, N)
+            BB_t_exp = B_bar_t.unsqueeze(1)                 # (B, 1, T, H, N)
+            CB_chunk_t = (C_chunk_t * BB_t_exp).sum(-1)     # (B, ci, T, H)
+
+            # M_chunk = L_chunk ⊙ CB_chunk → (B, ci, T, H)
+            M_chunk_t = L_chunk_t * CB_chunk_t
+
+            # Y_chunk[b, i, h, c] = sum_j M_chunk[b, i, j, h] * X[b, j, h, c]
+            M_chunk_exp = M_chunk_t.unsqueeze(-1)  # (B, ci, T, H, 1)
+            X_exp = X.unsqueeze(1)                 # (B, 1, T, H, d)
+            Y_chunk_t = (M_chunk_exp * X_exp).sum(dim=2)  # (B, ci, H, d)
+
+            # skip: D * X[:, i0:i1]
+            X_chunk = X[:, i0:i1]  # (B, ci, H, d)
+            Y_chunk_t = Y_chunk_t + D_t * X_chunk
+
+            Y_chunks.append(Y_chunk_t)
+
+            # 显式释放本块的大张量，降低峰值内存
+            del L_chunk_data, L_chunk_t, C_chunk_t, BB_t_exp, CB_chunk_t
+            del M_chunk_t, M_chunk_exp, X_exp, Y_chunk_t
+
+        # 沿 T 维 concat 所有块 → (B, T, H, d)
+        Y_t = Tensor.concat(Y_chunks, dim=1)
+
+        # reshape -> (B, T, d_inner)
         Y_t = Y_t.reshape(B, T, H * d).cast(np.float32)
 
         # gating: y = silu(z) * Y

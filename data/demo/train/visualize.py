@@ -23,6 +23,11 @@ def visualize(
     Returns:
         实际写入的文件路径
     """
+    # Part4 修复：兜底创建 save_path 的父目录，避免独立调用时 FileNotFoundError
+    parent = os.path.dirname(os.path.abspath(save_path))
+    if parent and not os.path.exists(parent):
+        os.makedirs(parent, exist_ok=True)
+
     with open(loss_history_path, "r", encoding="utf-8") as f:
         hist = json.load(f)
 

@@ -104,12 +104,26 @@ except re.error:
     _GPT2_SPLIT_RE = None  # 标准库 re 不支持，使用 fallback
 
 
-def _gpt2_pretokenize(text: str) -> list[str]:
+def _gpt2_pretokenize(text: str, pattern: str | None = None) -> list[str]:
     """GPT-2 风格 pre-tokenize：把文本切成 word / number / punctuation / space 段。
 
     每段前导空格保留在 token 内（如 " hello"），后续 byte-level 编码时
     空格变成 ``Ġ``。
+
+    Part4 新增 ``pattern`` 参数：若提供（从 HF tokenizer.json 的 Split
+    pre_tokenizer 提取的 Qwen/GPT-2 正则），优先使用该正则。Qwen 正则含
+    ``\\p{L}`` / ``\\p{N}`` Unicode 属性，标准库 re 不支持，需用 ``regex``
+    库（可选依赖）；未安装时回退到 GPT-2 fallback 正则。
     """
+    if pattern is not None:
+        # 尝试用 regex 库（支持 \p{L} \p{N}）
+        try:
+            import regex as _regex_mod
+            pat = _regex_mod.compile(pattern)
+            return pat.findall(text)
+        except ImportError:
+            # 无 regex 库，回退到 GPT-2 fallback（行为接近但不完全等价）
+            pass
     pat = _GPT2_SPLIT_RE if _GPT2_SPLIT_RE is not None else _GPT2_SPLIT_RE_FALLBACK
     return pat.findall(text)
 
@@ -405,6 +419,38 @@ class BPETokenizer(BaseTokenizer):
         # Task 2.2: add_special_tokens 构造参数
         # （属性名避开与 add_special_tokens 方法冲突，用 auto_add_special_tokens）
         self.auto_add_special_tokens = add_special_tokens
+        # Part4: Qwen/GPT-2 风格 Split 正则（从 HF tokenizer.json 的 Split pre_tokenizer 提取）
+        # None 时回退到 GPT-2 标准正则（_gpt2_pretokenize 内部）
+        self._split_regex: str | None = None
+        # Part4: normalizer 类型（"NFC" / "NFKC" / None）
+        # 从 HF tokenizer.json 的 normalizer 字段提取；Qwen2.5 用 NFC（不转全角→半角）
+        # 默认 None 时回退到 NFKC（BaseTokenizer.preprocess 的行为）
+        self._normalizer: str | None = None
+
+    def preprocess(self, text: str) -> str:
+        """文本预处理钩子。
+
+        Part4 修复: 根据 ``self._normalizer`` 选择正规化方式：
+        - ``"NFC"``: 仅组合正规化（Qwen2.5 等用此，保留全角标点）
+        - ``"NFKC"`` 或 ``None``: 兼容性分解+组合（全角→半角，BaseTokenizer 默认）
+
+        去除控制字符（Cc 类）的逻辑保留。
+        """
+        if not isinstance(text, str):
+            text = str(text)
+        # Part4: 根据 normalizer 类型选择正规化
+        if self._normalizer == "NFC":
+            text = unicodedata.normalize("NFC", text)
+        else:
+            # 默认 NFKC（全角→半角、组合→规范、兼容字符分解）
+            text = nfkc_normalize(text)
+        # 去除控制字符（Cc 类），但保留 \n \r \t
+        text = "".join(
+            ch for ch in text
+            if ch in ("\n", "\r", "\t")
+            or unicodedata.category(ch) != "Cc"
+        )
+        return text
 
     # ------------------------------------------------------------------
     # 构造方法
@@ -447,15 +493,39 @@ class BPETokenizer(BaseTokenizer):
                     vocab[content] = int(at.get("id", len(vocab)))
 
         # 判断是否 byte-level
+        # Part4 修复: 支持 Sequence 类型 pre_tokenizer（Qwen2.5 等用这种结构）
+        # Sequence 包含多个子 pre_tokenizer，遍历检查是否有 ByteLevel
         pre_tok = data.get("pre_tokenizer", {})
         byte_level = False
-        if isinstance(pre_tok, dict) and pre_tok.get("type") == "ByteLevel":
-            byte_level = True
+        # 提取 Split 正则（Qwen 用 Split+Regex 做预分词，再 ByteLevel 编码）
+        split_regex: str | None = None
+        if isinstance(pre_tok, dict):
+            if pre_tok.get("type") == "ByteLevel":
+                byte_level = True
+            elif pre_tok.get("type") == "Sequence":
+                for sub in pre_tok.get("pretokenizers", []):
+                    if sub.get("type") == "ByteLevel":
+                        byte_level = True
+                    elif sub.get("type") == "Split":
+                        pat = sub.get("pattern", {})
+                        if "Regex" in pat:
+                            split_regex = pat["Regex"]
         # 如果 model 配置里有 byte_fallback 等也认为是 byte_level
         if model.get("byte_fallback"):
             byte_level = True
 
-        return cls(vocab, merges, special_tokens=special_tokens, byte_level=byte_level)
+        inst = cls(vocab, merges, special_tokens=special_tokens, byte_level=byte_level)
+        # Part4: 保存 Qwen/GPT-2 风格 Split 正则，供 _encode_chunk 使用
+        # 若未提供，则回退到 GPT-2 标准正则
+        if split_regex:
+            inst._split_regex = split_regex
+        # Part4: 提取 normalizer 类型（Qwen2.5 用 NFC，保留全角标点）
+        norm = data.get("normalizer", {})
+        if isinstance(norm, dict):
+            norm_type = norm.get("type")
+            if norm_type in ("NFC", "NFKC", "NFD", "NFKD"):
+                inst._normalizer = norm_type
+        return inst
 
     @classmethod
     def from_hf(cls, repo_id: str, revision: str = "main") -> "BPETokenizer":
@@ -548,9 +618,20 @@ class BPETokenizer(BaseTokenizer):
 
         Task 2.2: 预分词统一调用 :func:`verse_tokenizer.preprocess.pre_tokenize`
         （GPT-4 风格：中文整字、英文单词、数字、标点、空白独立成块）。
+
+        Part4 修复: 当 ``byte_level=True``（从 HuggingFace 加载 GPT-2/Qwen 风格
+        tokenizer.json）时，改用 GPT-2 ByteLevel 预分词正则，避免 GPT-4 风格
+        把中文按单字切分导致 Qwen BPE merges 无法正确合并（中文全变 <unk>）。
+        若 ``self._split_regex`` 非 None（从 HF tokenizer.json 的 Split
+        pre_tokenizer 提取），优先使用该正则（Qwen2.5 等用此配置）。
         """
-        # Task 2.2: GPT-4 风格预分词（中文整字、英文单词、数字、标点、空白独立成块）
-        pieces = _gpt4_pre_tokenize(text)
+        # Part4: byte_level=True 时用 GPT-2 ByteLevel 预分词
+        # （Qwen/GPT-2 的 BPE merges 是基于这个预分词训练的）
+        if self.byte_level:
+            pieces = _gpt2_pretokenize(text, pattern=self._split_regex)
+        else:
+            # 非 byte_level：用 GPT-4 风格预分词（中文整字独立成块）
+            pieces = _gpt4_pre_tokenize(text)
         ids: list[int] = []
         for piece in pieces:
             if self.byte_level:
@@ -1175,7 +1256,12 @@ def load_tokenizer(kind: str = "byte", path: Optional[str] = None):
         kind: tokenizer 类型
             - ``"hf"``：尝试用 ``tokenizers`` 包加载 HF ``tokenizer.json``，
               失败 fallback 到 :class:`ByteTokenizer`
-            - ``"bpe"``：调用 :meth:`BPETokenizer.load`；无 path 返回空 BPETokenizer
+            - ``"bpe"``：调用 :meth:`BPETokenizer.load`（自动识别 HF 格式 / 自有格式）；
+              无 path 返回空 BPETokenizer
+            - ``"qwen"``：Part4 新增，强制用 :meth:`BPETokenizer.from_file`
+              解析 HuggingFace ``tokenizer.json``（Qwen2.5 等），完整保留
+              Sequence pre_tokenizer 中的 Split 正则与 normalizer 类型（NFC/NFKC）。
+              无 path 抛错。
             - ``"byte"``：返回 :class:`ByteTokenizer`（path 可选）
         path: 文件路径（可选）
 
@@ -1214,6 +1300,14 @@ def load_tokenizer(kind: str = "byte", path: Optional[str] = None):
                 pass
         return ByteTokenizer()
 
+    if kind == "qwen":
+        # Part4: 强制走 HF tokenizer.json 路径，保留 Split 正则 + normalizer
+        if not path or not os.path.exists(path):
+            raise FileNotFoundError(
+                f"kind='qwen' 需指定有效的 tokenizer.json 路径，得到 {path!r}"
+            )
+        return BPETokenizer.from_file(path)
+
     if kind == "bpe":
         if path and os.path.exists(path):
             return BPETokenizer.load(path)
@@ -1229,7 +1323,7 @@ def load_tokenizer(kind: str = "byte", path: Optional[str] = None):
         return ByteTokenizer()
 
     raise ValueError(
-        f"Unknown tokenizer kind: {kind!r} (expected 'hf'/'bpe'/'byte')"
+        f"Unknown tokenizer kind: {kind!r} (expected 'hf'/'bpe'/'qwen'/'byte')"
     )
 
 
