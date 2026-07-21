@@ -25,6 +25,17 @@
 - **`Trainer.inference`**：批量推理生成（支持字符串 prompt 与 token ID 序列）
 - **`focal_loss`** + `cross_entropy` 现支持 `ignore_index` / `label_smoothing` 参数
 
+### Part4 新增能力
+
+- **VerseNex 训练工具链（`training_nex.py`）**：4 个训练器 + 2 个数据集，专为 VerseNex 原生架构设计：
+  - `VerseNexTrainer`：aux_loss-aware 训练器，自动检测 `forward_with_aux`，`loss = cross_entropy + aux_loss_weight * aux`
+  - `LoRATrainer`：LoRA-aware 训练器，自动 `lora_only` 包装 + `merge_lora` 合并回 base
+  - `SFTTrainer`：监督微调训练器，chat 数据格式，`ignore_index=-100` 屏蔽非 assistant token
+  - `DPOTrainer`：Direct Preference Optimization 训练器，reference model 冻结 + DPO loss
+  - `SFTDataset` / `DPODataset`：jsonl 加载 + chat template 渲染
+- **`ParallelTrainer` 升级**：自动检测 `forward_with_aux`，启用 aux_loss 路径与 `VerseNexTrainer` 协同
+- **MoD Expert 压缩**：`compress_mod_experts` 函数，按 Expert 参数 L2 范数排序，丢弃低利用率 Expert，同步修改 router 权重与 `top_k`
+
 ## 安装
 
 ```bash

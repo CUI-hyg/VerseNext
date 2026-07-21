@@ -1,6 +1,6 @@
 # VerseNex
 
-> 中文定位：Transformer 替代架构库，主推线性复杂度（SSM/Mamba/RWKV/Linear Attention）+ Hybrid 混合架构，O(1) 推理状态 + O(N) 训练并行。
+> 中文定位：Transformer 替代架构库，主推线性复杂度（SSM/Mamba/RWKV/Linear Attention）+ Hybrid 混合架构 + VerseNex 原生架构（TriSparse + MoD），O(1) 推理状态 + O(N) 训练并行。
 
 [返回主 README](../../README.md)
 
@@ -8,7 +8,8 @@
 
 - 线性复杂度：O(N) 训练 + O(1) 推理状态，适配长上下文。
 - parallel / recurrent 双模式，float32 下输出吻合到 1e-3。
-- 多种架构：Mamba-2 / RWKV-7 / RetNet / Sparse Attention / Hybrid。
+- 多种架构：Mamba-2 / RWKV-7 / RetNet / Sparse Attention / Hybrid / VerseNex 原生架构。
+- **Part4 新增：VerseNex 原生架构**：TriSparseAttention（三路并行稀疏注意力）+ MoD（多稠密分区）+ CometSparkNexLM（顶层 LM）。
 - 位置编码：RoPE / ALiBi / NoPE，统一接口。
 - 纯 Python + NumPy 友好，无重型深度学习框架硬依赖。
 
@@ -48,6 +49,76 @@ pip install -e packages/verse_nex
 - `HybridBlock`：SSM（mamba2 / rwkv7）+ Sparse Attention 混合 block。
 - `HybridLM`：完整 LM（Embedding → N × HybridBlock → LayerNorm → Head）。
 - 支持 `forward_parallel` / `forward_recurrent` / `forward(mode=)` / `generate`。
+
+### VerseNex 原生架构（Part4 新增）
+
+Part4 在 Hybrid 基础上引入 **VerseNex 原生架构**——不依赖 SSM，纯注意力 + MoE 路线，专为 CPU 训练优化。
+
+#### TriSparseAttention（三路并行稀疏注意力）
+
+`TriSparseAttention` 是 VerseNex 的核心注意力机制，将注意力拆分为三路并行计算后用 sigmoid gate 融合：
+
+- **SWA（Sliding Window Attention）**：chunk-wise 实现，不在内存中构造 T² 矩阵，复杂度 O(T·W)
+- **Global Attention**：可学习的 sink token（默认 64 个），承载长程依赖，复杂度 O(T·N_global)
+- **ALiBi（Attention with Linear Biases）**：基于位置的线性偏置，T ≤ 1024 直接构造，T > 1024 降级为 SWA-only
+- **Gate 融合**：三路输出通过 sigmoid gate 加权融合：`out = σ(g_swa)·swa + σ(g_global)·global + σ(g_alibi)·alibi`
+- **GQA 支持**：`n_kv_head < n_head` 时自动启用 Grouped Query Attention
+
+适用场景：长上下文（T > 4096）、CPU 训练、低内存环境。
+
+#### MoDLayer（Mixture of Dense Parts）
+
+`MoDLayer` 灵感来源于人大脑的功能分区，将 FFN 拆分为多个 DensePart，每个 DensePart 下还有多个 Experts：
+
+- **5 DensePart**：`general`（通用）/ `language`（语言）/ `math`（数理）/ `biochem`（生化）/ `code`（代码）
+- **双层门控**：
+  - `part_router`（soft routing）：所有 DensePart 都参与计算，权重通过 softmax 归一化
+  - `expert_router`（hard routing，top-k）：每个 DensePart 内仅 top-k 个 Expert 被激活（默认 top-3）
+- **Switch Transformer 风格 aux loss**：负载均衡损失，避免 Expert 坍缩
+- **参数预算**：每个 Expert 是独立的 SwiGLU MLP（w_gate + w_up + w_down）
+
+数学形式：
+
+```
+part_logits = part_router(x)                # (B, T, num_parts)
+part_weights = softmax(part_logits / τ)     # soft routing
+for each part p:
+    expert_logits = expert_router[p](x)     # (B, T, num_experts)
+    topk_idx, topk_w = topk(expert_logits, k=top_k)
+    expert_out = sum(topk_w[i] * experts[p][topk_idx[i]](x) for i in range(k))
+    out += part_weights[p] * expert_out
+aux_loss = switch_transformer_aux_loss(part_logits, expert_logits)
+```
+
+#### CometSparkNexLM（顶层 LM）
+
+`CometSparkNexLM` 是 VerseNex 原生架构的顶层语言模型，将 TriSparseAttention 与 MoDLayer 组合为完整 LM：
+
+- **layer_pattern 驱动**：每层类型显式指定，例如 `["trisparse", "trisparse", "mod", "trisparse"]`
+- **Pre-Norm + 残差**：`x = x + attn(norm1(x)); x = x + ffn(norm2(x))`
+- **残差缩放**：`1/sqrt(2*n_layer)`，应用于 attn.proj 与 SwiGLU.w_down
+- **三种前向模式**：
+  - `forward(idx)` → logits：标准前向，推理用
+  - `forward_with_aux(idx)` → `(logits, aux_loss)`：训练用，累加所有 MoD 层的 aux_loss
+  - `forward_recurrent(input_ids, states)` → `(logits, new_states)`：流式生成用
+- **generate**：支持 greedy + recurrent（temperature=1.0）与采样（temperature/top_k）两条路径
+- **持久化**：`save(path)` / `load(path)` / `from_pretrained(path)` / `save_pretrained(dir_path)`
+
+#### CometSpark-V0.2 工厂
+
+`CometSparkV02()` 工厂函数一键构建 CometSpark-V0.2 模型：
+
+```python
+from verse_nex import CometSparkV02
+
+model = CometSparkV02(vocab_size=151936)
+# 32 层 VerseNex（8 MoD + 24 trisparse）
+# d_model=384, n_head=8, n_kv_head=4
+# 约 0.5B 参数
+print(model.count_parameters())  # ≈ 537,591,264
+```
+
+层模式生成：`_build_v02_pattern(n_layer=32, mod_every=4)` → `["mod", "trisparse", "trisparse", "trisparse"] × 8`（共 8 MoD + 24 trisparse）。
 
 ### 位置编码
 

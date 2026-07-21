@@ -254,14 +254,22 @@ chat_ids = tok.apply_chat_template([{"role":"user","content":"你好"}])
 
 ## 4. 模型配置与构建
 
-### 4.1 两种架构
+### 4.1 三种架构
 
-CometSpark 支持 `arch="transformer"` 与 `arch="hybrid"` 两种：
+CometSpark 支持 `arch="transformer"` / `arch="hybrid"` / `arch="verse_nex"` 三种：
 
 | 架构 | 主干 | 适用场景 |
 |---|---|---|
 | `transformer` | `GQASelfAttention` + `SwiGLUMLP`（GQA + RoPE） | PoC 与稳定性优先 |
 | `hybrid` | Mamba-2 + Sparse Attention 混合块（线性复杂度） | 长上下文 / 显存敏感（待 verse_nex Mamba2 数值修复后推荐） |
+| `verse_nex`（Part4） | `TriSparseAttention` + `MoDLayer`（VerseNex 原生架构） | CometSpark-V0.2 默认，0.5B 参数级训练 |
+
+Part4 新增的 `arch="verse_nex"` 是纯 VerseNex 原生架构，**不依赖 Transformer 或 SSM**：
+
+- **TriSparseAttention**：SWA + Global sink + ALiBi 三路并行稀疏注意力，sigmoid gate 融合
+- **MoDLayer**：5 DensePart（通用/语言/数理/生化/代码）× 8 Experts × top-3，双层门控
+- **layer_pattern**：显式指定每层类型，例如 `["mod", "trisparse", "trisparse", "trisparse"]`
+- **forward_with_aux**：返回 `(logits, aux_loss)`，专为训练设计（aux_loss 用于 MoD 负载均衡）
 
 ### 4.2 CometSparkConfig 字段
 
@@ -269,7 +277,7 @@ CometSpark 支持 `arch="transformer"` 与 `arch="hybrid"` 两种：
 
 ```yaml
 model:
-  arch: transformer        # transformer / hybrid
+  arch: transformer        # transformer / hybrid / verse_nex（Part4）
   vocab_size: 256          # 由 tokenizer 自动覆盖
   n_layer: 2               # Transformer block 数
   n_head: 4                # 注意力头数
@@ -280,6 +288,17 @@ model:
   ssm_kind: mamba2         # hybrid 下的 SSM 种类
   sparse_ratio: 0.5        # hybrid block 中 sparse attention 比例
   tie_weights: true        # 是否共享 embedding 与 head 权重
+  # Part4 verse_nex 专用字段（arch=verse_nex 时生效，其他 arch 忽略）
+  layer_pattern: null      # null → 按 mod_every 自动生成；list → 显式指定每层类型
+  mod_every: 4             # 每 mod_every 层中第 0 层为 mod，其余为 trisparse
+  num_dense_parts: 5       # MoD DensePart 数量（通用/语言/数理/生化/代码）
+  num_experts_per_part: 8  # 每个 DensePart 的 Expert 数量
+  top_k: 3                 # 每个 token 激活的 Expert 数
+  window_size: 512         # TriSparse SWA 窗口
+  num_global_tokens: 64    # TriSparse Global sink token 数
+  use_alibi: true          # 启用 ALiBi 路径
+  use_rope: false          # 启用 RoPE（与 ALiBi 互斥）
+  aux_loss_weight: 0.01    # MoD aux loss 权重
 ```
 
 | 字段 | 类型 | 默认值 | 说明 |
@@ -300,6 +319,16 @@ model:
 | `attention_dropout` | float | `0.0` | attention softmax 后的 dropout（Part3K2，独立于 dropout） |
 | `hidden_dropout` | float | `0.0` | MLP 中间层 dropout（Part3K2，独立于 dropout） |
 | `embedding_dropout` | float | `0.0` | embedding 后 dropout（Part3K2，独立于 dropout） |
+| `layer_pattern` | list | `null` | 每层类型（`"trisparse"` / `"mod"`），null 按 mod_every 自动生成（Part4） |
+| `mod_every` | int | `4` | 每 mod_every 层中第 0 层为 mod（Part4） |
+| `num_dense_parts` | int | `5` | MoD DensePart 数量（Part4） |
+| `num_experts_per_part` | int | `8` | 每个 DensePart 的 Expert 数（Part4） |
+| `top_k` | int | `3` | 每个 token 激活的 Expert 数（Part4） |
+| `window_size` | int | `512` | TriSparse SWA 窗口（Part4） |
+| `num_global_tokens` | int | `64` | TriSparse Global sink token 数（Part4） |
+| `use_alibi` | bool | `true` | 启用 ALiBi 路径（Part4） |
+| `use_rope` | bool | `false` | 启用 RoPE（与 ALiBi 互斥，Part4） |
+| `aux_loss_weight` | float | `0.01` | MoD aux loss 权重（Part4） |
 
 Part3K2 还为 `CometSparkConfig` 新增 `from_pretrained(dir)` / `save_pretrained(dir)` 类方法，支持目录式持久化（config.json + 可扩展）。
 
@@ -338,6 +367,23 @@ small  = CometSparkSmall()    # ~131K 参数，PoC 验证
 medium = CometSparkMedium()   # ~853K 参数，容量提升
 large  = CometSparkLarge()    # ~3M 参数，需大内存或量化
 ```
+
+Part4 新增 verse_nex 工厂函数：
+
+```python
+from model.model import CometSparkV02Small, CometSparkV02
+
+# 沙箱验证用（~0.5M 参数）
+small_v02 = CometSparkV02Small(vocab_size=256, seq_len=128)
+# 4 层 VerseNex（1 MoD + 3 trisparse），d_model=64
+
+# CometSpark-V0.2（~0.5B 参数，需大内存）
+v02 = CometSparkV02(vocab_size=151936)
+# 32 层 VerseNex（8 MoD + 24 trisparse），d_model=384
+print(v02.count_parameters())  # ≈ 537,591,264
+```
+
+verse_nex 配置样例见 [`data/demo/config/config_verse_nex.yml`](../data/demo/config/config_verse_nex.yml)（0.5B 参数）与 [`config_verse_nex_small.yml`](../data/demo/config/config_verse_nex_small.yml)（沙箱验证）。
 
 ### 4.4 纯 verse_torch 构建（不用 CometSpark）
 
@@ -394,7 +440,119 @@ train_losses, val_losses = trainer.fit()
 | `log_interval` | int | `10` | 日志打印间隔 |
 | `loss_rate_window` | int | `50` | loss 下降率滑动窗口大小 |
 
-### 5.2 完整训练流程
+### 5.2 VerseNexTrainer（Part4 新增）
+
+`verse_torch.training_nex.VerseNexTrainer` 是专为 VerseNex 原生架构设计的训练器，关键区别在于 **aux_loss-aware**：
+
+```python
+from verse_torch.training_nex import VerseNexTrainer
+
+trainer = VerseNexTrainer(
+    model=model,                  # CometSparkLM(arch="verse_nex") 或 CometSparkNexLM
+    train_loader=train_loader,
+    val_loader=val_loader,
+    optimizer=optimizer,
+    scheduler=scheduler,
+    cfg={
+        "max_steps": 200,
+        "eval_interval": 20,
+        "patience": 5,
+        "save_dir": "checkpoints_verse_nex",
+        "grad_accum": 8,           # 梯度累积 8 步 → 有效 batch = batch_size * 8
+        "grad_clip": 1.0,
+        "label_smoothing": 0.1,
+        "aux_loss_weight": 0.01,   # MoD aux loss 权重（None 时从 model.config 读取）
+        "enable_progress_bar": True,
+        "realtime_plot": True,
+    },
+)
+train_losses, val_losses = trainer.fit()
+```
+
+**工作原理**：
+
+- 初始化时自动检测 `model.forward_with_aux` 或 `model.net.forward_with_aux`
+- 启用 aux 路径时：`loss = cross_entropy(logits, y) + aux_loss_weight * aux`
+  - `aux` 来自 MoD 层的 Switch Transformer 风格负载均衡损失
+  - `aux_loss_weight` 默认从 `model.config.aux_loss_weight` 读取，也可在 cfg 中显式覆盖
+- 未启用 aux 路径时（如 `arch="transformer"`）：退化为标准 `cross_entropy` 训练
+- evaluate() 不计入 aux_loss（仅用于训练时的负载均衡）
+
+`VerseNexTrainer` 与 `Trainer` 完全兼容（相同的 cfg 字段、相同的 EarlyStopping / CheckpointManager / plot_loss_curve），但额外保存 `aux_losses.txt` 与 `aux_losses` 字段到 `loss_history.json`。
+
+### 5.3 LoRATrainer / SFTTrainer / DPOTrainer（Part4 新增）
+
+Part4 还提供 3 个专用训练器，均继承自 `VerseNexTrainer`：
+
+#### LoRATrainer（LoRA 微调）
+
+```python
+from verse_torch.training_nex import LoRATrainer
+
+trainer = LoRATrainer(
+    model=model,                  # 已加载预训练权重的模型
+    train_loader=train_loader,
+    val_loader=val_loader,
+    cfg={"max_steps": 100, "save_dir": "checkpoints_lora"},
+    lora_r=8,                     # LoRA 秩
+    lora_alpha=16.0,              # LoRA 缩放因子
+    merge_after=True,             # fit 结束后自动 merge LoRA 到 base
+)
+trainer.fit()
+# merge_after=True 时，fit 后模型恢复为标准 Linear 结构，可直接推理 / 保存
+```
+
+- `__init__` 时自动调用 `lora_only(model, r, alpha)` 包装所有 `Linear` 为 `LoRALinear`
+- 自动冻结 base 参数，仅训练 A/B 矩阵
+- `optimizer=None` 时自动基于 LoRA 参数构建 AdamW
+- `merge_lora()` 方法把 ΔW 合并回 base，替换回标准 `Linear`
+
+#### SFTTrainer（监督微调）
+
+```python
+from verse_torch.training_nex import SFTTrainer, SFTDataset, sft_collate
+from verse_torch.training import BatchLoader
+
+# 数据格式：{"messages": [{"role":"user","content":"..."},{"role":"assistant","content":"..."}]}
+dataset = SFTDataset(tokenizer, "data/sft.jsonl", seq_len=512, ignore_index=-100)
+loader = BatchLoader(dataset, batch_size=4, shuffle=True, collate_fn=sft_collate)
+
+trainer = SFTTrainer(
+    model=model, train_loader=loader, val_loader=val_loader,
+    optimizer=optimizer, cfg={"max_steps": 200}, ignore_index=-100,
+)
+trainer.fit()
+```
+
+- 仅 assistant 回复 token 参与 loss（user/system token 被 `ignore_index=-100` 屏蔽）
+- 渲染格式：`<|system|>...<|user|>...<|assistant|>...<|endoftext|>`
+- 兼容 `forward_with_aux`（若模型支持，aux_loss 仍会合并入总 loss）
+
+#### DPOTrainer（Direct Preference Optimization）
+
+```python
+from verse_torch.training_nex import DPOTrainer, DPODataset, dpo_collate
+
+# 数据格式：{"prompt":"...","chosen":"...","rejected":"..."}
+dataset = DPODataset(tokenizer, "data/dpo.jsonl", seq_len=256)
+loader = BatchLoader(dataset, batch_size=2, shuffle=True, collate_fn=dpo_collate)
+
+trainer = DPOTrainer(
+    model=model,                  # policy 模型（可训练）
+    ref_model=None,               # None → 深拷贝 policy 作为 reference
+    train_loader=loader,
+    val_loader=val_loader,
+    cfg={"max_steps": 100, "beta": 0.1, "save_dir": "checkpoints_dpo"},
+)
+train_losses, val_losses, val_accuracies = trainer.fit()
+```
+
+- DPO loss = `-mean(log σ(β·((π_chosen - π_rejected) - (ref_chosen - ref_rejected))))`
+- reference model 自动冻结（`requires_grad=False`）
+- 自动计算 accuracy = mean(π_chosen > π_rejected)
+- 保存 `dpo_history.json` + `dpo_curve.png`（含 loss 与 accuracy 双曲线）
+
+### 5.4 完整训练流程
 
 参考 [`data/demo/train/trainer.py`](../data/demo/train/trainer.py)：
 
@@ -434,7 +592,7 @@ trainer = Trainer(
 train_losses, val_losses = trainer.fit()
 ```
 
-### 5.3 训练循环内部组件
+### 5.5 训练循环内部组件
 
 `Trainer.fit()` 内部依次调用以下组件（均可在 `verse_torch.training` 中单独导入）：
 
@@ -469,7 +627,7 @@ checkpoints/
 └── loss_curve.png       # 或 loss_curve.txt（ASCII fallback）
 ```
 
-### 5.4 ParallelTrainer — 并行训练器（Part3K2）
+### 5.6 ParallelTrainer — 并行训练器（Part3K2，Part4 增强 aux_loss）
 
 `verse_torch.training.ParallelTrainer` 把 `max_steps` 拆成 N 个 chunk，每个 chunk 独立训练，再按「差前好后」串行重训 + 整体 fine-tune。CPU 友好（串行执行，避免 GIL 竞争）。
 
@@ -506,7 +664,12 @@ print(f"best_val_loss={trainer.best_val_loss:.4f}")
 
 CometSpark demo 通过 `training.parallel_chunks` 配置或 `--parallel-chunks` CLI 参数切换 `Trainer` / `ParallelTrainer`（`1` = 标准 Trainer，`>1` = ParallelTrainer）。
 
-### 5.5 高级优化器与调度器（Part3K2）
+**Part4 增强**：`ParallelTrainer` 现在自动检测 `forward_with_aux`，启用 aux_loss 路径时：
+- `_train_chunk` 内部使用 `VerseNexTrainer` 而非 `Trainer`，正确处理 MoD aux_loss
+- `_eval_full_val` 调用 `forward_with_aux` 取 logits，避免 (logits, aux) tuple 破坏 loss_fn
+- `chunk_cfg` 自动写入 `aux_loss_weight`，与 `VerseNexTrainer` 配置一致
+
+### 5.7 高级优化器与调度器（Part3K2）
 
 Part3K2 对齐 PyTorch / HuggingFace 补齐了高级优化器与调度器（[`verse_torch.optim_extras`](../packages/verse_torch/verse_torch/optim_extras.py) / [`scheduler_extras`](../packages/verse_torch/verse_torch/scheduler_extras.py)）：
 
@@ -752,7 +915,42 @@ stats = compressed.compression_stats()
 print(f"压缩比: {stats['compression_ratio']:.2f}x")
 ```
 
-### 7.6 压缩训练演示脚本
+### 7.6 MoD Expert 结构化剪枝（Part4 新增）
+
+`verse_torch.compress.compress_mod_experts` 针对 VerseNex 原生架构的 MoD 层进行结构化剪枝：
+
+```python
+from verse_torch.compress import compress_mod_experts
+from model.model import CometSparkV02Small
+
+model = CometSparkV02Small()
+
+# 保留 50% 的 Experts（按参数 L2 范数排序，丢弃低利用率的）
+stats = compress_mod_experts(
+    model,
+    keep_ratio=0.5,              # 保留比例
+    min_experts_per_part=1,      # 每个 DensePart 至少保留 1 个 Expert
+    return_stats=True,
+)
+print(stats)
+# {
+#   'original_experts': 4,       # 2 DensePart × 2 Experts = 4
+#   'kept_experts': 2,           # 保留 2 个
+#   'compression_ratio': 0.5,    # 压缩率 50%
+# }
+```
+
+**工作原理**：
+
+1. 遍历模型中所有 `MoDLayer` 实例
+2. 对每个 DensePart 内的 Experts，按参数 L2 范数排序
+3. 保留范数最高的 `max(min_experts_per_part, int(num_experts * keep_ratio))` 个
+4. 删除被裁 Expert 后，同步修改 `expert_router` 权重矩阵的对应行
+5. 修改 `top_k = min(self.top_k, remaining_experts)`
+
+适用场景：MoD 模型部署前的体积压缩，特别适合 CPU 推理（减少 Expert 加载开销）。
+
+### 7.7 压缩训练演示脚本
 
 [`examples/compress_train_demo.py`](../examples/compress_train_demo.py) 演示完整流程：创建基准模型 → 压缩 → 统计 → forward 验证：
 
