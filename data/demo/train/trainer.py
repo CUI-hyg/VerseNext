@@ -15,6 +15,7 @@ from pathlib import Path
 
 from verse_torch.optim import AdamW, LambdaLR, warmup_cosine_lr
 from verse_torch.training import Trainer, ParallelTrainer, CheckpointManager, _default_collate
+from verse_torch.training_nex import VerseNexTrainer
 
 from model.config import CometSparkConfig, load_full_config
 from model.model import CometSparkLM
@@ -215,6 +216,39 @@ def train(
         # ParallelTrainer 不直接走 Trainer._save_history，手动补存 loss_history.json
         _save_parallel_history(save_dir, train_losses, val_losses, max_steps, eval_interval,
                                 best_val_loss)
+    elif config.arch == "verse_nex":
+        # Part4: arch="verse_nex" → 使用 VerseNexTrainer（aux_loss-aware）
+        # 自动检测 model.net.forward_with_aux，启用 aux_loss 路径
+        # （loss = cross_entropy + aux_loss_weight * aux）
+        trainer_cfg = {
+            "max_steps": max_steps,
+            "eval_interval": eval_interval,
+            "patience": patience,
+            "save_dir": save_dir,
+            "grad_accum": grad_accum,
+            "log_interval": log_interval,
+            "loss_rate_window": min(50, max(10, max_steps // 4)),
+            "grad_clip": grad_clip,
+            "label_smoothing": label_smoothing,
+            "enable_progress_bar": enable_progress_bar,
+            "realtime_plot": realtime_plot,
+            "eta_window": eta_window,
+            "aux_loss_weight": config.aux_loss_weight,
+        }
+        nex_trainer = VerseNexTrainer(
+            model=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            cfg=trainer_cfg,
+        )
+        print(f"[train] 开始训练 (VerseNexTrainer) max_steps={max_steps} "
+              f"batch_size={batch_size} lr={lr} warmup={warmup} "
+              f"grad_clip={grad_clip} label_smoothing={label_smoothing} "
+              f"aux_loss_weight={config.aux_loss_weight}", flush=True)
+        train_losses, val_losses = nex_trainer.fit()
+        best_val_loss = float(nex_trainer.best_val_loss)
     else:
         trainer_cfg = {
             "max_steps": max_steps,

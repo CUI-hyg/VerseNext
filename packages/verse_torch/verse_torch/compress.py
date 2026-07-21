@@ -883,6 +883,136 @@ def _compress_pipeline_v2(model, config: dict, return_stats: bool = False):
     return new_model
 
 
+# ---------------------------------------------------------------------------
+# Part4 P10: MoD Expert 结构化剪枝（MoD-Aware 压缩）
+# ---------------------------------------------------------------------------
+
+
+def _iter_module_tensors(module):
+    """递归生成 module 内所有 Tensor 参数（含 requires_grad=False 的）。"""
+    for p in module._parameters.values():
+        yield p
+    for m in module._modules.values():
+        yield from _iter_module_tensors(m)
+
+
+def compress_mod_experts(model, keep_ratio: float = 0.5,
+                         min_experts_per_part: int = 1,
+                         return_stats: bool = False):
+    """MoD Expert 结构化剪枝。
+
+    对模型中所有 :class:`verse_nex.moe.MoDLayer` 实例：
+
+    1. 收集每个 Expert 的参数 L2 范数（``sqrt(sum(p.data**2 for p in
+       expert.parameters()))``）；
+    2. 按 ``keep_ratio`` 在每个 ``DensePart`` 内保留范数最高的 Expert
+       （保留 ``max(min_experts_per_part, int(num_experts * keep_ratio))`` 个）；
+    3. 原地替换 ``DensePart.experts`` ModuleList（仅保留 kept Expert）；
+    4. 修改 ``DensePart.router.gate`` 的权重矩阵（删除被裁 Expert 对应的行）；
+    5. 修改 ``DensePart.router.num_routes`` 与 ``DensePart.top_k``，
+       后者 ``top_k = min(top_k, remaining_experts)``。
+
+    剪枝后 MoD 的前向路径（``MoDLayer.forward``）仍可正常工作：
+    ``DensePart.router`` 的输出维度变为新 Expert 数，``_dispatch_and_combine``
+    按 ``len(experts)`` 遍历，自动适配。
+
+    Args:
+        model: 含 :class:`MoDLayer` 的模型（任意 ``nn.Module``）
+        keep_ratio: 保留比例（0.5 = 保留一半 Experts）
+        min_experts_per_part: 每个 ``DensePart`` 最少保留 Expert 数（默认 1）
+        return_stats: 是否返回压缩统计
+
+    Returns:
+        - ``return_stats=False``: 返回剪枝后的 ``model``（原地修改）
+        - ``return_stats=True``: 返回 ``(model, stats)``，其中 stats::
+
+              {
+                "original_experts": int,   # 剪枝前 Expert 总数
+                "kept_experts": int,       # 剪枝后 Expert 总数
+                "compression_ratio": float,  # 1 - kept / original
+              }
+    """
+    # 延迟导入 MoDLayer（避免顶层 import 时 verse_nex 不可用）
+    try:
+        from verse_nex.moe import MoDLayer
+    except ImportError:  # pragma: no cover - 环境无 verse_nex 时无可剪枝对象
+        MoDLayer = None
+
+    total_before = 0
+    total_after = 0
+
+    if MoDLayer is not None:
+        for m in model.modules():
+            if not isinstance(m, MoDLayer):
+                continue
+            # 遍历每个 DensePart（MoDLayer.parts 是 ModuleList）
+            for part in m.parts:
+                n_experts = part.num_experts
+                if n_experts <= 1:
+                    # 已是最小，跳过（不剪）
+                    total_before += n_experts
+                    total_after += n_experts
+                    continue
+
+                # --- 1. 计算每个 Expert 的参数 L2 范数 ---
+                # Expert 内部参数都在子 Linear 中（w_gate / w_up / w_down），
+                # 因此用递归遍历 _parameters + _modules。
+                norms = []
+                for expert in part.experts:
+                    sum_sq = 0.0
+                    for p in _iter_module_tensors(expert):
+                        sum_sq += float(np.sum(p.data ** 2))
+                    norms.append(float(np.sqrt(sum_sq)))
+
+                # --- 2. 计算保留数量并选取 kept 索引（范数最大的）---
+                keep_n = max(int(min_experts_per_part),
+                             int(n_experts * float(keep_ratio)))
+                keep_n = min(keep_n, n_experts)  # 不能超过原数
+                # argsort 降序取前 keep_n，再按原顺序排序（保证可复现性）
+                sorted_idx = np.argsort(np.asarray(norms))[::-1][:keep_n]
+                kept_indices = sorted(sorted_idx.tolist())
+
+                # --- 3. 替换 experts ModuleList（仅保留 kept Expert） ---
+                new_experts = nn.ModuleList(
+                    [part.experts[i] for i in kept_indices]
+                )
+                setattr(part, "experts", new_experts)
+
+                # --- 4. 修改 expert router 的 gate 权重矩阵行 ---
+                # Router.gate 是 nn.Linear，weight shape (num_routes, dim)
+                gate = part.router.gate
+                kept_arr = np.asarray(kept_indices, dtype=np.int64)
+                new_w = gate.weight.data[kept_arr]
+                gate.weight.data = new_w
+                gate.out_features = int(len(kept_indices))
+
+                # --- 5. 更新 router 元数据 + top_k 调整 ---
+                new_num_routes = int(len(kept_indices))
+                part.router.num_routes = new_num_routes
+                new_top_k = min(int(part.router.top_k), new_num_routes)
+                if new_top_k < 1:
+                    new_top_k = 1
+                part.router.top_k = new_top_k
+
+                # --- 6. 同步 DensePart 元数据 ---
+                part.num_experts = new_num_routes
+                part.top_k = new_top_k
+
+                total_before += n_experts
+                total_after += new_num_routes
+
+    if return_stats:
+        ratio = (1.0 - total_after / total_before
+                 if total_before > 0 else 0.0)
+        stats = {
+            "original_experts": int(total_before),
+            "kept_experts": int(total_after),
+            "compression_ratio": float(ratio),
+        }
+        return model, stats
+    return model
+
+
 __all__ = [
     # 类
     "OutlierSafePruner",
@@ -891,6 +1021,7 @@ __all__ = [
     "QLinear",
     # 函数
     "compress_pipeline",
+    "compress_mod_experts",
     "prune_only",
     "quantize_only",
     "lora_only",

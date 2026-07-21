@@ -1,0 +1,62 @@
+# CometSpark-V0.2 verse_nex 配置（~0.5B 参数）
+# 用途：32 层 VerseNex 原生架构（TriSparseAttention + MoD 多稠密分区）
+# - 8 MoD 层（每 4 层 1 个）+ 24 trisparse 层
+# - d_model=384, n_head=8, n_kv_head=4 (GQA)
+# - TriSparse: SWA(window=512) + Global(64 sink) + ALiBi
+# - MoD: 5 DensePart(通用/语言/数理/生化/代码) × 8 Experts × top-3
+#
+# 注意：实际训练需要 32 核 CPU / 32GB+ 内存；CPU 单步约 5-30s。
+#       在沙箱环境（4 核 5GB）下请使用 config_verse_nex_small.yml。
+
+model:
+  arch: verse_nex
+  vocab_size: 151936              # Qwen3-32B tokenizer 词表大小
+  n_layer: 32                     # 32 层 VerseNex
+  n_head: 8                       # 8 个注意力头
+  n_embd: 384                     # d_model = 384
+  seq_len: 2048                   # 训练序列长度
+  dropout: 0.0                    # 预训练阶段关闭 dropout
+  n_kv_head: 4                    # GQA：4 个 KV 头
+  tie_weights: true               # 共享 embedding 与 lm_head
+  # VerseNex 专用字段
+  layer_pattern: null             # null → 按 mod_every 自动生成
+  mod_every: 4                    # 每 4 层 1 个 MoD（共 8 MoD + 24 trisparse）
+  num_dense_parts: 5              # 5 DensePart：通用/语言/数理/生化/代码
+  num_experts_per_part: 8         # 每个 DensePart 8 个 Expert
+  top_k: 3                        # 每个 token 激活 top-3 Expert
+  window_size: 512                # TriSparse 滑动窗口
+  num_global_tokens: 64           # TriSparse 全局 sink token 数
+  use_alibi: true                 # 启用 ALiBi 路径
+  use_rope: false                 # 关闭 RoPE（与 ALiBi 互斥）
+  aux_loss_weight: 0.01           # MoD aux loss 权重
+
+training:
+  batch_size: 4                   # 单步 batch_size（CPU 友好）
+  micro_batch: 1
+  lr: 3.0e-4                      # 预训练学习率
+  weight_decay: 0.01
+  no_decay: true                  # bias / norm 不衰减
+  grad_clip: 1.0
+  label_smoothing: 0.1
+  max_steps: 100000               # 预训练总步数（按需调整）
+  warmup: 1000                    # warmup 步数
+  eval_interval: 500
+  patience: 20
+  grad_accum: 8                   # 梯度累积 8 步 → 有效 batch = 4*8 = 32
+  log_interval: 50
+  seed: 42
+  enable_progress_bar: true
+  realtime_plot: true
+  eta_window: 20
+  parallel_chunks: 1              # 1=标准 VerseNexTrainer；>1=并行训练
+
+tokenizer:
+  kind: qwen                      # 使用 Qwen3-32B tokenizer
+  vocab_size: 151936
+
+data:
+  train_path: data/train.jsonl
+  val_path: data/val.jsonl
+
+checkpoint:
+  save_dir: checkpoints_verse_nex

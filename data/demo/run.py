@@ -121,7 +121,7 @@ def _override_config_arch(config_path: str, arch: str | None) -> tuple[str, str 
 
     Args:
         config_path: 原始 config.yml 路径
-        arch: 覆盖的 arch 值（"transformer" / "hybrid"）；None 表示不覆盖
+        arch: 覆盖的 arch 值（"transformer" / "hybrid" / "verse_nex"）；None 表示不覆盖
 
     Returns:
         (effective_config_path, temp_path_to_cleanup)
@@ -131,9 +131,9 @@ def _override_config_arch(config_path: str, arch: str | None) -> tuple[str, str 
     if arch is None:
         return config_path, None
 
-    if arch not in ("transformer", "hybrid"):
+    if arch not in ("transformer", "hybrid", "verse_nex"):
         raise ValueError(
-            f"--arch 必须为 'transformer' 或 'hybrid'，得到 {arch!r}"
+            f"--arch 必须为 'transformer' / 'hybrid' / 'verse_nex'，得到 {arch!r}"
         )
 
     # 读取原始 config，覆盖 arch 字段，写入临时文件
@@ -366,8 +366,8 @@ def main():
     )
     # Task 9: --arch 覆盖 config 的 arch 字段
     parser.add_argument(
-        "--arch", default=None, choices=["transformer", "hybrid"],
-        help="覆盖 config 的 model.arch 字段（transformer / hybrid）",
+        "--arch", default=None, choices=["transformer", "hybrid", "verse_nex"],
+        help="覆盖 config 的 model.arch 字段（transformer / hybrid / verse_nex）",
     )
     # Part3K2 Task 1.8: 新增 CLI 参数
     parser.add_argument(
