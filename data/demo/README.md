@@ -264,11 +264,27 @@ hybrid 架构在 verse_nex Mamba2 数值溢出修复后已可启用（seq_len=12
 
 ## 数据格式
 
-`train.jsonl` / `val.jsonl` 每行一个 JSON 对象，至少包含 `text` 字段：
+> **Part3K2 BREAKING 变更**：旧版 `{"text": "..."}` 格式已废弃，`TextDataset` 加载时会抛 `ValueError`。请改用下列两种格式之一（可混用）。
+
+`train.jsonl` / `val.jsonl` 每行一个 JSON 对象，支持 **两种格式混用**：
+
+### 1. chat 数组格式（多轮对话）
 
 ```json
-{"text": "床前明月光，疑是地上霜。"}
+[{"role":"user","content":"你好"},{"role":"assistant","content":"你好，很高兴见到你。"}]
 ```
+
+- 渲染为 `<|user|>你好<|assistant|>你好，很高兴见到你。<|eos|>`
+- **loss mask**：仅 assistant content + `<|eos|>` 参与 loss，user 部分屏蔽（`ignore_index=-100`）
+
+### 2. prompt-completion 格式（续写 / 单轮）
+
+```json
+{"prompt":"床前明月光，","completion":"疑是地上霜。举头望明月，低头思故乡。"}
+```
+
+- 渲染为 `<|user|>床前明月光，<|assistant|>疑是地上霜。举头望明月，低头思故乡。<|eos|>`
+- **loss mask**：仅 completion + `<|eos|>` 参与 loss，prompt 部分屏蔽
 
 详见 `data/README.md`。
 
