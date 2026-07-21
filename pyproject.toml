@@ -3,6 +3,7 @@ name = "verse-framework"
 version = "0.1.0"
 description = "Verse: Pure-Python/CPU deep learning & LM framework (VerseTorch + VerseNex + VerseAWM)"
 requires-python = ">=3.10"
+dependencies = ["matplotlib>=3.7"]
 
 [tool.uv.workspace]
 members = [

@@ -54,7 +54,7 @@ print(y)                 # 5.0
 print(x.grad)            # [2. 4.]  与 PyTorch 一致
 ```
 
-实测：上述代码与 PyTorch 数值一致到 1e-6（已通过 377 项单元测试 + 有限差分梯度检查）。
+实测：上述代码与 PyTorch 数值一致到 1e-6（已通过 462 项单元测试 + 有限差分梯度检查）。
 
 更多示例见 [`examples/`](examples/)：
 
@@ -69,7 +69,9 @@ print(x.grad)            # [2. 4.]  与 PyTorch 一致
 |---|---|---|
 | 张量后端 | **NumPy** + 可选 Numba/Cython | CPU 优先、零重型依赖、用户已可安装、跨平台 |
 | Autograd | 反向模式 VJP、动态计算图 | 与 PyTorch API 一致、易于审计与调试 |
-| 主推架构 | **Mamba-2 + RWKV-7 + Hybrid**（SSM + Sparse Attention） | 已公开、工业验证（MiniMax-01、混元 T1、Nemotron-H、RWKV-X） |
+| 主推架构 | **Mamba-2 + RWKV-7 + Hybrid + VerseNex**（SSM + Sparse Attention + TriSparse + MoD） | 已公开、工业验证（MiniMax-01、混元 T1、Nemotron-H、RWKV-X） |
+| 原生注意力 | **TriSparseAttention**（SWA + Global sink + ALiBi 三路并行稀疏，sigmoid gate 融合） | 线性/亚二次复杂度 + 长程依赖兼顾，CPU 友好 |
+| 原生 FFN | **MoD（Mixture of Dense Parts）**：5 DensePart × N Experts × top-k | 灵感来源于大脑分区，结构化稀疏 + 双层门控 |
 | 量化默认 | **INT4 (W4A16) + 1.58-bit ternary** | BitNet.cpp 在 CPU 上已验证 6.17× 提速；端侧友好 |
 | 兼容策略 | 初期可读 PyTorch `state_dict`，运行时无 PyTorch 依赖 | 生态友好但运行时零依赖 |
 | 世界模型主线 | **JEPA（非生成式）+ RSSM（生成式）** | 兼顾 LeCun 路线与 Dreamer 路线 |
@@ -145,6 +147,22 @@ Part3K2 在第二次进化基础上完成 7 大升级，详见 [审计报告](au
 - **并行训练 `ParallelTrainer`**：步数拆分为 N 个 chunk，合并策略「差前好后」串行重训 + 整体 fine-tune；**修复 val_loss 漏洞**（`_eval_full_val` 基于完整 val 数据集而非单 batch 更新）。
 - **推理 + 自由温度 + 打分**：`Trainer.inference(prompts, temperature, top_k, top_p, max_tokens)` 批量生成；`ScoringEvaluator` 实现 `exact_match` / `prefix_accuracy` / `char_f1` / `bleu` / `rouge_l` 五指标；`run.py` 新增 `--score` / `--references-file` / `--top-p` / `--parallel-chunks` 参数。
 - **全项目 check-loop 审计**：修复 sigmoid/silu/BCE overflow、硬编码路径等 6 项问题，全量测试 377 passed。
+
+### Part4 重大升级摘要
+
+Part4 在 Part3K2 基础上完成 11 大升级，正式推出 **CometSpark-V0.2（0.5B 参数）** 与 **VerseNex 原生架构**，详见 [Part4 升级报告](docs/part4_upgrade_report.md)：
+
+- **VerseNex 原生架构**：新增 `TriSparseAttention`（SWA + Global sink + ALiBi 三路并行稀疏注意力，sigmoid gate 融合，T≤1024 直接构造、T>1024 降级）与 `MoDLayer`（Mixture of Dense Parts：5 DensePart × 8 Experts × top-3，双层门控 soft + hard routing，Switch Transformer 风格 aux loss）。
+- **CometSparkNexLM**：VerseNex 原生顶层架构，`layer_pattern` 驱动每层类型（`"trisparse"` / `"mod"`），Pre-Norm + 残差结构，`forward_with_aux` 返回 `(logits, aux_loss)` 专为训练设计，`generate` 支持 greedy + recurrent 双路径。
+- **CometSpark-V0.2**：32 层 VerseNex（8 MoD + 24 trisparse），d_model=384，n_head=8，n_kv_head=4，约 0.5B 参数；`CometSparkV02()` 工厂函数一键构建。
+- **CometSparkLM 三架构统一**：`arch="hybrid"` / `"transformer"` / `"verse_nex"` 三选一，对外接口完全一致（`forward` / `generate` / `save` / `load` / `from_pretrained` / `save_pretrained`）。
+- **VerseTokenizer**：原 QwenTokenizer 改名为 VerseTokenizer，9 项 Qwen 优化（高效 BPE merge、特殊 token 管理、UTF-8 边界修复、chat template 等），替代旧版 `tokenizer.json`。
+- **训练体系全面升级**：新增 `training_nex.py` 模块——`VerseNexTrainer`（aux_loss-aware）/ `LoRATrainer`（LoRA 包装 + `merge_lora` 合并）/ `SFTTrainer`（chat 数据 + ignore_index）/ `DPOTrainer`（DPO loss + reference model 冻结 + 偏好对数据），共 4 个训练器 + 2 个数据集。
+- **并行训练支持原生 VerseNex**：`ParallelTrainer` 自动检测 `forward_with_aux`，启用 aux_loss 路径（`loss = cross_entropy + aux_loss_weight * aux`），与 `VerseNexTrainer` 协同工作。
+- **MoD Expert 压缩**：新增 `compress_mod_experts` 函数，按 Expert 参数 L2 范数排序，丢弃低利用率 Expert，同步修改 router 权重与 `top_k`，实现 MoD 结构化剪枝。
+- **数据下载与处理脚本**：`data/demo/scripts/` 下 3 个脚本——`download_datasets.py`（7 个数据源，3 种下载方式回退）/ `process_datasets.py`（统一 schema + chat template + 过滤去重）/ `build_tokenizer.py`（Qwen3-32B tokenizer 下载）。
+- **verse_nex 专用 config**：`config_verse_nex.yml`（0.5B 参数预训练配置）+ `config_verse_nex_small.yml`（沙箱验证用）；`run.py --arch verse_nex` 一键启动。
+- **全项目 check-loop 审计**：462 passed + 1 skipped，16 个关键文件语法检查 OK，端到端 verse_nex_small 训练验证（loss 5.54 → 3.08 持续下降），LoRA + merge / DPO 数值稳定性 / 0.5B 参数预算全部验证通过。
 
 ## 仓库结构
 

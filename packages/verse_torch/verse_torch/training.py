@@ -490,7 +490,14 @@ def plot_loss_curve(
         import matplotlib  # noqa: F401
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-    except Exception:
+    except ImportError:
+        # 仅捕获 ImportError，其他异常向上抛
+        # 降级为 ASCII，但明确告知用户
+        print(
+            "[plot_loss_curve] 警告：matplotlib 未安装，降级为 ASCII 文本图。"
+            "安装 matplotlib 可获得 PNG 图：pip install matplotlib",
+            flush=True,
+        )
         # 降级 ASCII
         if save_path.lower().endswith(".png"):
             txt_path = save_path[:-4] + ".txt"
@@ -508,6 +515,7 @@ def plot_loss_curve(
         if val_x_ascii and val_x_ascii[-1] >= len(train_losses):
             val_x_ascii = [min(x, len(train_losses) - 1) for x in val_x_ascii]
         _print_val_info(val_losses, val_x_ascii)
+        print(f"[plot_loss_curve] loss 曲线已保存到: {txt_path}", flush=True)
         return txt_path
 
     # matplotlib 可用分支
@@ -547,6 +555,7 @@ def plot_loss_curve(
     fig.savefig(save_path, dpi=100)
     plt.close(fig)
     _print_val_info(val_losses, val_x)
+    print(f"[plot_loss_curve] loss 曲线已保存到: {save_path}", flush=True)
     return save_path
 
 
@@ -855,12 +864,17 @@ class Trainer:
 
         # 画曲线图
         curve_path = os.path.join(self.save_dir, "loss_curve.png")
-        plot_loss_curve(
+        actual_curve_path = plot_loss_curve(
             self.train_losses,
             self.val_losses,
             curve_path,
             eval_interval=self.eval_interval,
         )
+        if actual_curve_path != curve_path:
+            print(
+                f"[Trainer] 注意：loss 曲线降级保存到 {actual_curve_path}",
+                flush=True,
+            )
 
     # ------------------------------------------------------------------
     # Task 6.2: inference —— 批量推理生成
@@ -1255,6 +1269,22 @@ class ParallelTrainer:
         self.best_val_loss = float("inf")
         self.best_state_dict = None
 
+        # Part4 P10: 检测模型是否支持 forward_with_aux，启用 aux_loss 路径
+        # use_aux=True 时 _train_chunk 会用 VerseNexTrainer 而非 Trainer，
+        # _eval_full_val 会调用 forward_with_aux 取 logits 避免 (logits, aux)
+        # tuple 破坏 loss_fn。
+        from .training_nex import _model_has_aux, _get_aux_loss_weight
+        self.use_aux = _model_has_aux(model)
+        if self.use_aux:
+            self.aux_loss_weight = _get_aux_loss_weight(model, default=0.01)
+            print(
+                f"[ParallelTrainer] 检测到 forward_with_aux，启用 aux_loss 路径 "
+                f"(aux_loss_weight={self.aux_loss_weight})",
+                flush=True,
+            )
+        else:
+            self.aux_loss_weight = 0.0
+
     # ------------------------------------------------------------------
     # 公开辅助：步数拆分（便于测试验证）
     # ------------------------------------------------------------------
@@ -1287,11 +1317,18 @@ class ParallelTrainer:
 
         本方法跑完整 val 数据集，返回平均 val_loss。
         若 ``val_dataset`` 为空，返回 ``inf``。
+
+        Part4 P10: 当 ``self.use_aux=True`` 时调用 ``forward_with_aux`` 取
+        logits，避免 ``model(x)`` 返回 ``(logits, aux)`` tuple 破坏 loss_fn。
         """
         if self.val_dataset is None or len(self.val_dataset) == 0:
             return float("inf")
 
         loss_fn = self.loss_fn if self.loss_fn is not None else cross_entropy_loss
+
+        # 延迟导入 aux 辅助函数（仅 use_aux 时）
+        if self.use_aux:
+            from .training_nex import _call_forward_with_aux
 
         total_loss = 0.0
         n_batches = 0
@@ -1307,7 +1344,10 @@ class ParallelTrainer:
                 x_batch, y_batch = batch
                 x = _as_tensor(x_batch)
                 y = _as_tensor(y_batch)
-                logits = model(x)
+                if self.use_aux:
+                    logits, _ = _call_forward_with_aux(model, x)
+                else:
+                    logits = model(x)
                 loss = loss_fn(logits, y, label_smoothing=self.label_smoothing)
                 total_loss += _scalar(loss)
                 n_batches += 1
@@ -1347,6 +1387,11 @@ class ParallelTrainer:
         chunk_cfg["log_interval"] = max(chunk_steps + 1, 1000)  # 静默
         chunk_cfg["loss_rate_window"] = min(50, max(10, chunk_steps // 4))
 
+        # Part4 P10: use_aux 时把 aux_loss_weight 写入 chunk_cfg，
+        # VerseNexTrainer 会从 cfg 读取以覆盖模型默认值（保持一致）
+        if self.use_aux:
+            chunk_cfg["aux_loss_weight"] = self.aux_loss_weight
+
         optimizer_cls = self.optimizer_cls
         if optimizer_cls is None:
             from .optim import AdamW
@@ -1373,14 +1418,27 @@ class ParallelTrainer:
         import tempfile
         with tempfile.TemporaryDirectory(prefix=f"verse_chunk_{chunk_id}_") as tmp_dir:
             chunk_cfg["save_dir"] = tmp_dir
-            chunk_trainer = Trainer(
-                model=model,
-                train_loader=train_loader,
-                val_loader=val_loader,
-                optimizer=optimizer,
-                scheduler=None,
-                cfg=chunk_cfg,
-            )
+            # Part4 P10: use_aux 时使用 VerseNexTrainer（aux_loss-aware），
+            # 否则保持原 Trainer 行为（transformer arch）
+            if self.use_aux:
+                from .training_nex import VerseNexTrainer
+                chunk_trainer = VerseNexTrainer(
+                    model=model,
+                    train_loader=train_loader,
+                    val_loader=val_loader,
+                    optimizer=optimizer,
+                    scheduler=None,
+                    cfg=chunk_cfg,
+                )
+            else:
+                chunk_trainer = Trainer(
+                    model=model,
+                    train_loader=train_loader,
+                    val_loader=val_loader,
+                    optimizer=optimizer,
+                    scheduler=None,
+                    cfg=chunk_cfg,
+                )
             chunk_trainer.fit()
             # 关键：用完整 val 数据集计算 val_loss（修复 BUG）
             val_loss = self._eval_full_val(model)

@@ -1,8 +1,10 @@
 """CometSparkLM: CometSpark-v0.1 语言模型。
 
-支持两种架构：
+支持三种架构：
 - arch="hybrid": 基于 ``verse_nex.hybrid.HybridLM``（SSM + Sparse Attention 混合）
 - arch="transformer": 基于 ``verse_torch.nn.TransformerLM``（GQA + RoPE Transformer）
+- arch="verse_nex": 基于 ``verse_nex.cometspark.CometSparkNexLM``
+  （纯 VerseNex 原生架构：TriSparseAttention + MoD 多稠密分区）
 
 对外统一接口：
 - ``forward(idx)`` → logits (B, T, vocab)
@@ -35,8 +37,14 @@ def _import_hybrid_lm():
     return HybridLM
 
 
+# 延迟导入 CometSparkNexLM，避免在不使用 verse_nex 时也加载 verse_nex.cometspark
+def _import_cometspark_nex_lm():
+    from verse_nex.cometspark import CometSparkNexLM
+    return CometSparkNexLM
+
+
 class CometSparkLM(Module):
-    """CometSpark-v0.1 语言模型（hybrid / transformer 二选一）。
+    """CometSpark-v0.1 语言模型（hybrid / transformer / verse_nex 三选一）。
 
     Args:
         config: :class:`CometSparkConfig` 实例
@@ -46,9 +54,10 @@ class CometSparkLM(Module):
         super().__init__()
         self.config = config
         # 校验 arch
-        if config.arch not in ("hybrid", "transformer"):
+        if config.arch not in ("hybrid", "transformer", "verse_nex"):
             raise ValueError(
-                f"arch 必须为 'hybrid' 或 'transformer'，得到 {config.arch!r}"
+                f"arch 必须为 'hybrid' / 'transformer' / 'verse_nex'，"
+                f"得到 {config.arch!r}"
             )
 
         if config.arch == "hybrid":
@@ -65,6 +74,39 @@ class CometSparkLM(Module):
                 sparse_ratio=config.sparse_ratio,
                 ssm_kind=config.ssm_kind,
                 sparse_placement="spread",
+                tie_weights=config.tie_weights,
+            )
+        elif config.arch == "verse_nex":
+            # Part4: 纯 VerseNex 原生架构（TriSparseAttention + MoD）
+            CometSparkNexLM = _import_cometspark_nex_lm()
+            # 若 layer_pattern 为 None，按 mod_every 自动生成
+            layer_pattern = config.layer_pattern
+            if layer_pattern is None:
+                from verse_nex.cometspark import _build_v02_pattern
+                layer_pattern = _build_v02_pattern(
+                    n_layer=config.n_layer,
+                    mod_every=config.mod_every,
+                )
+            self.net = CometSparkNexLM(
+                vocab_size=config.vocab_size,
+                dim=config.n_embd,
+                n_layer=config.n_layer,
+                n_head=config.n_head,
+                n_kv_head=config.n_kv_head,
+                layer_pattern=layer_pattern,
+                window_size=config.window_size,
+                num_global_tokens=config.num_global_tokens,
+                use_alibi=config.use_alibi,
+                use_rope=config.use_rope,
+                max_seq_len=max(config.max_position_embeddings, config.seq_len),
+                dropout=config.dropout,
+                rope_theta=config.rope_theta,
+                num_dense_parts=config.num_dense_parts,
+                num_experts_per_part=config.num_experts_per_part,
+                top_k=config.top_k,
+                expert_hidden=None,
+                aux_loss_weight=config.aux_loss_weight,
+                dense_part_names=None,
                 tie_weights=config.tie_weights,
             )
         else:
@@ -295,9 +337,18 @@ class CometSparkLM(Module):
         ):
             with no_grad():
                 self.eval()
-                out = self.net.generate(
-                    Tensor(idx_np), max_new_tokens=max_new_tokens, mode="recurrent"
-                )
+                if self.config.arch == "verse_nex":
+                    # CometSparkNexLM.generate 自带 greedy + recurrent 路径，
+                    # 直接委托（接受 ndarray，返回 ndarray）
+                    out = self.net.generate(
+                        idx_np, max_new_tokens=max_new_tokens
+                    )
+                else:
+                    # hybrid arch：net.generate 接受 Tensor 与 mode 参数
+                    out = self.net.generate(
+                        Tensor(idx_np), max_new_tokens=max_new_tokens,
+                        mode="recurrent",
+                    )
             if isinstance(out, Tensor):
                 out = out.data
             else:
@@ -665,4 +716,137 @@ def CometSparkLarge() -> CometSparkLM:
     return CometSparkLM(config)
 
 
-__all__ = ["CometSparkLM", "CometSparkSmall", "CometSparkMedium", "CometSparkLarge"]
+# ---------------------------------------------------------------------------
+# Part4: CometSpark-V0.2 工厂函数（VerseNex 原生架构）
+# ---------------------------------------------------------------------------
+
+
+def CometSparkV02Small(
+    vocab_size: int = 256,
+    seq_len: int = 128,
+) -> CometSparkLM:
+    """CometSpark-V0.2 Small：VerseNex 原生架构的小型测试配置（~0.5M 参数）。
+
+    用于端到端训练/推理流程验证（与 CometSparkSmall 同等规模）。
+
+    Args:
+        vocab_size: 词表大小（默认 256，与 byte tokenizer 一致）
+        seq_len: 训练序列长度
+
+    Returns:
+        :class:`CometSparkLM` 实例（arch="verse_nex"）
+    """
+    config = CometSparkConfig(
+        arch="verse_nex",
+        vocab_size=vocab_size,
+        n_layer=4,
+        n_head=4,
+        n_embd=64,
+        seq_len=seq_len,
+        n_kv_head=2,
+        tie_weights=True,
+        # VerseNex 专用：每 4 层 1 MoD（4 层 → 1 mod + 3 trisparse）
+        mod_every=4,
+        num_dense_parts=2,
+        num_experts_per_part=2,
+        top_k=1,
+        window_size=32,
+        num_global_tokens=4,
+        max_position_embeddings=256,
+        dropout=0.1,
+    )
+    return CometSparkLM(config)
+
+
+def CometSparkV02(
+    vocab_size: int = 151936,
+    dim: int = 384,
+    n_layer: int = 32,
+    n_head: int = 8,
+    n_kv_head: int = 4,
+    seq_len: int = 2048,
+    max_position_embeddings: int = 2048,
+    dropout: float = 0.0,
+    aux_loss_weight: float = 0.01,
+    num_dense_parts: int = 5,
+    num_experts_per_part: int = 8,
+    top_k: int = 3,
+    window_size: int = 512,
+    num_global_tokens: int = 64,
+    use_alibi: bool = True,
+    use_rope: bool = False,
+    rope_theta: float = 10000.0,
+    tie_weights: bool = True,
+    layer_pattern: Optional[List[str]] = None,
+) -> CometSparkLM:
+    """CometSpark-V0.2 工厂：32 层 VerseNex 原生 + MoD，目标 ≈ 0.5B 参数。
+
+    默认配置：
+    - vocab_size=151936（Qwen3 tokenizer 词表大小）
+    - dim=384, n_layer=32, n_head=8, n_kv_head=4 (GQA 2:1)
+    - layer_pattern: 每 4 层 1 个 MoD（共 8 MoD + 24 trisparse）
+    - num_dense_parts=5（通用/语言/数理/生化/代码）
+    - num_experts_per_part=8, top_k=3
+    - tie_weights=True, max_seq_len=2048
+    - 参数预算 ≈ 479M ≈ 0.5B
+
+    通过 :class:`CometSparkConfig` + :class:`CometSparkLM` 构造，对外统一
+    接口与 transformer/hybrid arch 一致。
+
+    Args:
+        vocab_size: 词表大小
+        dim: 模型维度（默认 384）
+        n_layer: 总层数（默认 32）
+        n_head: 注意力头数（默认 8）
+        n_kv_head: GQA 的 kv head 数（默认 4）
+        seq_len: 训练序列长度（默认 2048）
+        max_position_embeddings: 最大上下文长度（默认 2048）
+        dropout: dropout 概率
+        aux_loss_weight: MoD aux loss 权重
+        num_dense_parts: DensePart 数量
+        num_experts_per_part: 每个 DensePart 的 Expert 数
+        top_k: 每个 token 选出的 Expert 数
+        window_size: TriSparse 滑动窗口大小
+        num_global_tokens: TriSparse 全局 sink token 数
+        use_alibi: 是否启用 ALiBi 路径
+        use_rope: 是否启用 RoPE
+        rope_theta: RoPE 基础频率
+        tie_weights: 是否共享 embedding 与 head 权重
+        layer_pattern: 显式 layer_pattern（None 则按 mod_every 自动生成）
+
+    Returns:
+        :class:`CometSparkLM` 实例（arch="verse_nex"）
+    """
+    config = CometSparkConfig(
+        arch="verse_nex",
+        vocab_size=vocab_size,
+        n_layer=n_layer,
+        n_head=n_head,
+        n_embd=dim,
+        seq_len=seq_len,
+        n_kv_head=n_kv_head,
+        tie_weights=tie_weights,
+        # VerseNex 专用字段
+        layer_pattern=layer_pattern,
+        mod_every=4,
+        num_dense_parts=num_dense_parts,
+        num_experts_per_part=num_experts_per_part,
+        top_k=top_k,
+        window_size=window_size,
+        num_global_tokens=num_global_tokens,
+        use_alibi=use_alibi,
+        use_rope=use_rope,
+        aux_loss_weight=aux_loss_weight,
+        rope_theta=rope_theta,
+        max_position_embeddings=max_position_embeddings,
+        dropout=dropout,
+    )
+    return CometSparkLM(config)
+
+
+__all__ = [
+    "CometSparkLM",
+    "CometSparkSmall", "CometSparkMedium", "CometSparkLarge",
+    # Part4: V0.2 工厂（VerseNex 原生）
+    "CometSparkV02Small", "CometSparkV02",
+]
