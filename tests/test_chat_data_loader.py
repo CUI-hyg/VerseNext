@@ -1,9 +1,11 @@
-"""Task 1.4: TextDataset 新格式（chat 数组 + prompt-completion）单元测试。
+"""Task 1.4: TextDataset 新格式（chat 数组 + prompt-completion + text）单元测试。
 
-覆盖 8 个用例：
+覆盖用例：
 1. test_load_chat_format: 加载 chat 数组格式
 2. test_load_prompt_completion_format: 加载 prompt-completion 格式
-3. test_reject_legacy_text_format: 拒绝旧版 {"text":"..."} 格式
+3. test_text_format_supported: {"text":"..."} 格式支持（Part4 紧急更新）
+   test_single_sample_prompt_only: 单样本只存在 prompt
+   test_single_sample_completion_only: 单样本只存在 completion
 4. test_loss_mask: loss mask 屏蔽 prompt 部分（y=-100），保留 completion 部分
 5. test_mixed_formats: 混合格式加载
 6. test_dataset_len: __len__ 返回 n_blocks
@@ -108,21 +110,54 @@ def test_load_prompt_completion_format(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 3. test_reject_legacy_text_format
+# 3. test_text_format_supported
 # ---------------------------------------------------------------------------
 
 
-def test_reject_legacy_text_format(tmp_path):
-    """旧版 {"text":"..."} 格式应抛 ValueError。"""
+def test_text_format_supported(tmp_path):
+    """{"text":"..."} 格式现重新支持，所有 token 参与 loss。
+
+    Part4 紧急更新：text 格式用于预训练/续训，单样本（只存在 prompt 或
+    completion）也允许，存在的字段当作纯文本全部参与 loss。
+    """
     items = [
-        {"text": "床前明月光，疑是地上霜。"},
+        {"text": "床前明月光，疑是地上霜。举头望明月，低头思故乡。"},
     ]
-    path = tmp_path / "legacy.jsonl"
+    path = tmp_path / "text.jsonl"
     _write_jsonl(path, items)
 
     tok = _make_tokenizer()
-    with pytest.raises(ValueError, match="旧版 text 格式已废弃"):
-        TextDataset(tok, str(path), seq_len=16)
+    ds = TextDataset(tok, str(path), seq_len=16)
+    assert len(ds) > 0
+    # text 格式所有 token 参与 loss → y 中应有非 -100 的值
+    x, y = ds[0]
+    assert (y != -100).any(), "text 格式应有 token 参与 loss"
+
+
+def test_single_sample_prompt_only(tmp_path):
+    """单样本：只存在 prompt 时，prompt 当作纯文本全部参与 loss。"""
+    items = [{"prompt": "只有 prompt 的样本，应当作为纯文本训练。"}]
+    path = tmp_path / "prompt_only.jsonl"
+    _write_jsonl(path, items)
+
+    tok = _make_tokenizer()
+    ds = TextDataset(tok, str(path), seq_len=16)
+    assert len(ds) > 0
+    x, y = ds[0]
+    assert (y != -100).any(), "prompt_only 应有 token 参与 loss"
+
+
+def test_single_sample_completion_only(tmp_path):
+    """单样本：只存在 completion 时，completion 当作纯文本全部参与 loss。"""
+    items = [{"completion": "只有 completion 的样本，应当作为纯文本训练。"}]
+    path = tmp_path / "completion_only.jsonl"
+    _write_jsonl(path, items)
+
+    tok = _make_tokenizer()
+    ds = TextDataset(tok, str(path), seq_len=16)
+    assert len(ds) > 0
+    x, y = ds[0]
+    assert (y != -100).any(), "completion_only 应有 token 参与 loss"
 
 
 # ---------------------------------------------------------------------------
@@ -321,7 +356,10 @@ def test_detect_format():
     """_detect_format 对各种输入返回正确格式名。"""
     assert _detect_format([{"role": "user", "content": "x"}]) == "chat"
     assert _detect_format({"prompt": "x", "completion": "y"}) == "prompt_completion"
-    assert _detect_format({"text": "x"}) == "legacy_text"
+    # Part4 紧急更新：text 格式重新支持，单样本（prompt_only/completion_only）允许
+    assert _detect_format({"text": "x"}) == "text"
+    assert _detect_format({"prompt": "x"}) == "prompt_only"
+    assert _detect_format({"completion": "x"}) == "completion_only"
     assert _detect_format({"foo": "bar"}) == "unknown"
     assert _detect_format([1, 2, 3]) == "unknown"
     assert _detect_format("string") == "unknown"
