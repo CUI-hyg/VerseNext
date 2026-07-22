@@ -30,17 +30,26 @@
 
 from __future__ import annotations
 
-import os as _os
-import sys as _sys
+import sys
 
-# 路径自举：确保 verse_torch / verse_nex 可被导入（它们保持独立未并入 verse_infra）
-# 本文件位于 packages/verse_infra/verse_infra/__init__.py，需向上回溯 2 级到 packages/
-_THIS_DIR = _os.path.dirname(_os.path.abspath(__file__))
-_PACKAGES_DIR = _os.path.dirname(_os.path.dirname(_THIS_DIR))  # packages/
-for _dep in ("verse_torch", "verse_nex"):
-    _dep_path = _os.path.join(_PACKAGES_DIR, _dep)
-    if _os.path.isdir(_dep_path) and _dep_path not in _sys.path:
-        _sys.path.insert(0, _dep_path)
+# 路径引导：优先使用 spark._bootstrap 统一设置（幂等，注入 verse_torch /
+# verse_nex / verse_infra / spark / data 五条路径）；spark 不可用时内联回退，
+# 仅添加 verse_torch / verse_nex（verse_infra 自身已作为当前包被加载）。
+try:
+    from spark._bootstrap import ensure_paths
+except ImportError:
+    def ensure_paths():  # type: ignore[no-redef]
+        """spark 不可用时的内联回退：仅注入 verse_torch / verse_nex。"""
+        from pathlib import Path as _Path
+        _this_dir = _Path(__file__).resolve().parent
+        _packages_dir = _this_dir.parent.parent  # packages/
+        for _dep in ("verse_torch", "verse_nex"):
+            _dep_path = _packages_dir / _dep
+            _dep_str = str(_dep_path)
+            if _dep_path.is_dir() and _dep_str not in sys.path:
+                sys.path.insert(0, _dep_str)
+
+ensure_paths()
 
 __version__ = "0.1.0"
 
@@ -94,25 +103,21 @@ def __getattr__(name):
     后续直接从 ``__dict__`` 取值。
     """
     # 特殊处理：DatasetDownloader 位于仓库根目录的 data/downloader.py
-    # （不在 verse_infra 包内），需要把仓库根目录加入 sys.path 才能导入。
+    # （不在 verse_infra 包内）。ensure_paths() 已将 data/ 注入 sys.path，
+    # 兼容 /workspace 也在 sys.path 的情况（from data.downloader import）。
     if name == "DatasetDownloader":
-        _workspace_dir = _os.path.dirname(_PACKAGES_DIR)
-        _data_dir = _os.path.join(_workspace_dir, "data")
-        if _os.path.isdir(_data_dir):
-            if _workspace_dir not in _sys.path:
-                _sys.path.insert(0, _workspace_dir)
+        ensure_paths()
+        try:
+            from data.downloader import DatasetDownloader as _DD
+        except ImportError:
             try:
-                from data.downloader import DatasetDownloader as _DD
-                globals()[name] = _DD
-                return _DD
+                from downloader import DatasetDownloader as _DD
             except ImportError as _e:
                 raise AttributeError(
-                    f"无法加载 DatasetDownloader from data.downloader: {_e}"
+                    f"无法加载 DatasetDownloader：{_e}"
                 )
-        raise AttributeError(
-            "DatasetDownloader 不可用：未找到 data/downloader.py "
-            f"（期望位于 {_data_dir}）"
-        )
+        globals()[name] = _DD
+        return _DD
 
     # 先检查是否是子模块名
     if name in _SUBMODULES:

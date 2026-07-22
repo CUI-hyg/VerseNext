@@ -19,6 +19,10 @@
 13. [jinja2 聊天模板使用指南（Part4K2 新增）](#13-jinja2-聊天模板使用指南part4k2-新增)
 14. [.vn 格式使用指南（Part4K2 新增）](#14-vn-格式使用指南part4k2-新增)
 15. [数据集下载指南（Part4K2 新增）](#15-数据集下载指南part4k2-新增)
+16. [spark/run.py 快速训练指南（Part4K2.5 新增）](#16-sparkrunpy-快速训练指南part4k25-新增)
+17. [训练后自动评估指南（Part4K2.5 新增）](#17-训练后自动评估指南part4k25-新增)
+18. [并行训练修复说明（Part4K2.5 新增）](#18-并行训练修复说明part4k25-新增)
+19. [loss 图表修复说明（Part4K2.5 新增）](#19-loss-图表修复说明part4k25-新增)
 
 ---
 
@@ -1712,6 +1716,213 @@ dir_ = dl.download_hf("wikitext", subset="wikitext-2-raw-v1", split="train")
 - **缓存**：`cache_dir` 下按 URL hash 命名，重复下载直接命中缓存
 
 > **提示**：HuggingFace datasets 需要 `pip install "datasets>=2.18"` 可选依赖。缺失时 `download_hf` 会提示安装。
+
+---
+
+## 16. spark/run.py 快速训练指南（Part4K2.5 新增）
+
+`spark/run.py` 是基于 VerseTrainer API 封装的命令行快捷入口，提供 7 个子命令（train/eval/generate/chat/compress/convert/download），**所有命令都有合理默认值，最小化用户配置**。与 VerseTrainer CLI（`verse-train` 等）功能等价，但前者零安装可用、子命令更精简、默认值更友好。
+
+路径自举由 `spark/_bootstrap.py` 统一完成（基于 `__file__` 推断，幂等注入 `sys.path`），无需手动设置 `PYTHONPATH`。
+
+### 16.1 快速训练（最小命令）
+
+```bash
+# 小配置快速调试（约 10 秒完成，零安装可用）
+python spark/run.py train --small
+
+# 1B 正式训练（默认训练后自动评估）
+python spark/run.py train
+
+# 覆盖步数 / 设备 / 混合精度
+python spark/run.py train --max-steps 1000 --device cuda --amp
+
+# 断点续训
+python spark/run.py train --resume
+```
+
+### 16.2 全部子命令速查
+
+| 子命令 | 用途 | 示例 |
+|---|---|---|
+| `train` | 训练模型（训练后默认自动评估） | `python spark/run.py train --small` |
+| `eval` | 评估 + 打分 | `python spark/run.py eval --checkpoint checkpoints/best.pt --score` |
+| `generate` | 生成文本 | `python spark/run.py generate --prompt "床前明月光，"` |
+| `chat` | 交互式聊天 | `python spark/run.py chat --checkpoint checkpoints/best.pt` |
+| `compress` | 压缩模型 | `python spark/run.py compress --checkpoint checkpoints/best.pt --method prune,quantize` |
+| `convert` | 模型格式互转（`.pt ↔ .vn`） | `python spark/run.py convert --input checkpoints/best.pt --output model.vn` |
+| `download` | 下载数据集 | `python spark/run.py download --hf wikitext --split train` |
+
+### 16.3 通用参数
+
+所有子命令均支持：
+
+- `--dry-run`：只打印将要执行的操作而不真正执行，便于在正式运行前核对参数。
+- `--config`：指定配置文件路径（不指定时 `train` 用 1B 默认配置，`--small` 用小配置）。
+- `--quiet` / `--verbose`：静默模式（仅打印最终结果）/ 详细日志模式。
+
+### 16.4 与 VerseTrainer CLI 的关系
+
+| 维度 | `spark/run.py` | `verse-train` 等 |
+|---|---|---|
+| 安装 | 零安装，直接 `python spark/run.py` | 需 `pip install -e packages/verse_infra` 注册 console_scripts |
+| 子命令数 | 7 个（精简） | 8 个（含 `verse-continue` / `verse-tokenize` / `verse-finetune` / `verse-posttrain`） |
+| 默认值 | 友好（`--small` 一键调试、`--eval-after` 默认开） | 偏向显式配置 |
+| 适用场景 | 快速试用 / 沙箱验证 / 端到端演示 | 生产训练 / CI / 脚本编排 |
+
+> **提示**：两者底层都调用 `verse_infra.verse_trainer.train()` 等同一套 API，训练结果完全一致，可按场景自由切换。
+
+---
+
+## 17. 训练后自动评估指南（Part4K2.5 新增）
+
+Part4K2.5 Task 4 为 `train()` 新增 `eval_after` 参数（默认 `True`），训练完成后自动调用 `_auto_evaluate` 对 best checkpoint 做 5 指标打分，形成"训练 → 评估"闭环。
+
+### 17.1 工作原理
+
+1. 训练正常完成（或 EarlyStopping 触发）后，加载 `best.pt` checkpoint。
+2. 用配置中的默认测试 prompt（或 `eval_config["prompts"]` 自定义）逐条生成。
+3. 调用 `ScoringEvaluator` 计算 5 个指标：
+
+| 指标 | 说明 |
+|---|---|
+| `exact_match` | 精确匹配率（生成与参考完全相等） |
+| `prefix_accuracy` | 前缀匹配率（适合续写任务） |
+| `char_f1` | 字符级 F1 |
+| `bleu` | BLEU-4 简化版 |
+| `rouge_l` | ROUGE-L（基于最长公共子序列的 F1） |
+
+4. 评估结果写入 `train()` 返回 dict 的 `eval_result` 字段。
+
+### 17.2 CLI 用法
+
+```bash
+# 默认开启自动评估（spark/run.py）
+python spark/run.py train --small            # 训练后自动评估
+
+# 跳过自动评估（仅训练）
+python spark/run.py train --small --no-eval
+
+# VerseTrainer CLI 同样支持（通过 config 的 training.eval_after 字段控制）
+verse-train --config spark/config/cometspark_v05_small.yml
+```
+
+### 17.3 编程接口
+
+```python
+from verse_infra.verse_trainer import train
+
+# 默认 eval_after=True
+result = train(
+    config_path="spark/config/cometspark_v05_small.yml",
+    base_dir=".",
+)
+print(result["best_val_loss"])
+print(result.get("eval_result"))   # 自动评估结果（5 指标）
+
+# 显式关闭自动评估
+result = train(
+    config_path="spark/config/cometspark_v05_small.yml",
+    eval_after=False,
+)
+
+# 自定义评估 prompt
+result = train(
+    config_path="spark/config/cometspark_v05_small.yml",
+    eval_config={
+        "prompts": [
+            {"prompt": "床前明月光，", "reference": "疑是地上霜。"},
+            {"prompt": "1+1=", "reference": "2"},
+        ],
+    },
+)
+```
+
+### 17.4 注意事项
+
+- 评估失败**不影响训练结果**：`spark/run.py` 内部用 `try/except` 包裹自动评估，失败时仅打印警告。
+- 自动评估需要 `best.pt` 已生成（即训练至少完成一次 checkpoint 保存）。
+- 5 指标打分需要参考答案；无参考答案时部分指标（exact_match / bleu）会退化为 0，prefix_accuracy / char_f1 / rouge_l 仍可反映生成质量。
+
+---
+
+## 18. 并行训练修复说明（Part4K2.5 新增）
+
+Part4K2.5 Task 6 修复了 `ParallelTrainer`（见 5.6 节）的 4 个健壮性问题。
+
+### 18.1 chunk 间状态重置
+
+**问题**：旧实现中各 chunk 复用同一优化器实例，导致一阶/二阶动量跨 chunk 泄漏，后续 chunk 的训练受前面 chunk 残留动量干扰。
+
+**修复**：`_train_chunk` 内部为每个 chunk 创建全新的优化器实例（`optimizer = optimizer_cls(model.parameters(), lr=self.lr, ...)`），确保优化器状态不跨 chunk 泄漏。同时 chunk 开始时备份模型状态，确保 chunk 训练后状态可追踪。
+
+### 18.2 round_robin 均匀数据分配
+
+**问题**：默认 `sequential` 策略下每个 chunk 都用完整 `train_dataset`，数据无差异化；希望 chunk 间数据不重复时无现成机制。
+
+**修复**：新增 `parallel_strategy` 配置字段（`cfg["parallel_strategy"]`），支持两种策略：
+
+| 策略 | 行为 | 适用场景 |
+|---|---|---|
+| `sequential`（默认） | 每个 chunk 用完整 train_dataset | 数据量小、希望各 chunk 充分训练 |
+| `round_robin` | 数据集按索引轮询分配，chunk 间数据不重复 | 数据量大、希望覆盖更多数据 / 模拟数据并行 |
+
+```bash
+# round_robin 策略（CLI）
+verse-train --config spark/config/cometspark_v05.yml \
+    --parallel-chunks 4 --parallel-strategy round_robin --max-steps 200
+```
+
+### 18.3 Phase 2 重训步数为 0 时崩溃
+
+**问题**：当 `chunk_steps` 较小（如 `< 4`）时，Phase 2 重训步数 `chunk_steps // 4` 为 0，导致 `Trainer.fit(max_steps=0)` 崩溃。
+
+**修复**：`chunk_steps < 4` 时跳过 Phase 2 重训（直接进入下一 chunk），并在重训步数计算中保证 `>= 1`。同时 Phase 2 内部创建新优化器，不复用旧优化器状态。
+
+### 18.4 非 tty 环境 tqdm 输出垃圾字符
+
+**问题**：CI / 输出重定向 / 容器日志场景下，stderr 不是 tty，tqdm 仍尝试用 `\r` 刷新进度条，产生大量控制字符污染日志。
+
+**修复**：`_ChunkProgressBar` 仅在「tqdm 可用 + 未静默 + stderr 是 tty」时才启用 tqdm 进度条；否则降级为简洁打印（每完成一个 chunk 打印一行）。`Trainer.fit` 的内层进度条同样在非 tty 时降级为 `log_interval` 打印。
+
+```python
+# 编程接口：可手动控制
+trainer = ParallelTrainer(
+    model, train_ds, val_ds,
+    cfg={
+        "parallel_chunks": 4,
+        "enable_progress_bar": False,   # 强制关闭进度条（CI 推荐）
+        "quiet": True,                  # 静默模式
+    },
+)
+```
+
+---
+
+## 19. loss 图表修复说明（Part4K2.5 新增）
+
+Part4K2.5 Task 3 修复了 `plot_loss_curve`（见 5.5 节）的两个可视化问题。
+
+### 19.1 x 轴偏移修复
+
+**问题**：旧实现把 `train_losses`（逐 step 记录）与 `val_losses`（按 `eval_interval` 记录）画在同一 x 轴上时，val 线的 x 坐标未按 `eval_interval` 步长对齐，导致 val 曲线相对 train 曲线偏移，误判训练趋势。
+
+**修复**：`plot_loss_curve` 现在按 `eval_interval` 步长为 val 点取正确 x 坐标（`x_val = [i * eval_interval for i in range(len(val_losses))]`），与 train 曲线的 step 坐标对齐。
+
+### 19.2 ASCII 降级显示 val 线
+
+**问题**：matplotlib 不可用时降级为 ASCII 文本图（80×20 字符画布），旧实现只画 train 线（`T`），val 线丢失，无法对比训练 / 验证 loss。
+
+**修复**：ASCII 降级模式现在同时绘制 train 线（`T`）与 val 线（`V`），两条线在同一字符画布上对齐显示，便于在无 matplotlib 环境（如纯 SSH / 容器）下也能直观对比 loss 趋势。
+
+### 19.3 visualize 统计增强
+
+`verse_torch.visualize`（`visualize.py`）的统计输出增强，训练结束后除了 loss 曲线外，额外打印：
+
+- 最终 train / val loss 与最佳 val loss
+- loss 下降率（`compute_loss_rate`）
+- 训练总步数与 wall-clock 耗时
+- checkpoint 保存路径
 
 ---
 

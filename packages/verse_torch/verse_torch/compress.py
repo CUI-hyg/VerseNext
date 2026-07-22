@@ -689,6 +689,21 @@ def distill_only(teacher, student, train_loader, max_steps: int = 100,
 # ---------------------------------------------------------------------------
 
 
+def _parse_version_tuple(v) -> tuple:
+    """把版本字符串解析为可比较的整数元组，如 ``"1.3.0"`` → ``(1, 3, 0)``。
+
+    用于替代字符串直接比较，避免 ``"1.30"`` / ``"1.3.0"`` 等等价版本
+    因字符串不等而被误判。
+    """
+    parts = []
+    for p in str(v).split("."):
+        try:
+            parts.append(int(p))
+        except ValueError:
+            parts.append(0)
+    return tuple(parts) if parts else (0,)
+
+
 def compress_pipeline(model, config=None, return_stats: bool = False,
                       version: str = "1.3",
                       # 旧 API 向后兼容参数（任一非 None / 非 dict 时走旧 API）
@@ -749,7 +764,9 @@ def compress_pipeline(model, config=None, return_stats: bool = False,
     # 分派：新 API vs 旧 API
     # ------------------------------------------------------------------
     if isinstance(config, dict):
-        if str(version) == "1.3":
+        # Part4K2.5 Task 5：用版本号元组比较替代字符串比较，
+        # 确保 "1.3" / "1.30" / "1.3.0" 等等价版本都能正确走 v13 分支
+        if _parse_version_tuple(version) >= (1, 3):
             return _compress_pipeline_v13(model, config, return_stats=return_stats)
         return _compress_pipeline_v2(model, config, return_stats=return_stats)
     return _compress_pipeline_v1(

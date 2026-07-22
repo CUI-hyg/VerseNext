@@ -29,9 +29,8 @@ from __future__ import annotations
 import json
 import math
 import os
-import os as _os
 import pickle
-import sys as _sys
+from pathlib import Path
 from typing import Optional, List
 
 import numpy as np
@@ -42,16 +41,9 @@ from .config import CometSparkV05Config
 
 
 # ---------------------------------------------------------------------------
-# 路径自举：确保 verse_torch / verse_nex 可被 import
+# 路径引导：统一委托 spark._bootstrap（幂等，自动注入 verse_torch 等）
 # ---------------------------------------------------------------------------
-
-_THIS_DIR = _os.path.dirname(_os.path.abspath(__file__))
-# spark/model/ → spark/ → /workspace
-_REPO_ROOT = _os.path.dirname(_os.path.dirname(_THIS_DIR))
-for _dep in ("verse_torch", "verse_nex", "verse_infra"):
-    _dep_path = _os.path.join(_REPO_ROOT, "packages", _dep)
-    if _os.path.isdir(_dep_path) and _dep_path not in _sys.path:
-        _sys.path.insert(0, _dep_path)
+import spark._bootstrap  # noqa: F401 — 副作用导入：设置 sys.path
 
 
 def _import_cometspark_nex_lm():
@@ -496,18 +488,22 @@ class CometSparkV05LM:
                 "state_dict": {name: ndarray},
             }
         """
-        os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+        # Part4K2.5 Task 5：用 pathlib 替代 os.path，跨平台路径处理更稳健
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "arch": "versenex",
             "config": self.config.to_dict(),
             "state_dict": {k: np.asarray(v) for k, v in self.state_dict().items()},
         }
-        with open(path, "wb") as f:
+        with p.open("wb") as f:
             pickle.dump(payload, f)
 
     def load(self, path: str) -> "CometSparkV05LM":
         """从 ``.pt`` 文件加载 state_dict 到当前模型（config 不变）。"""
-        with open(path, "rb") as f:
+        # Part4K2.5 Task 5：用 pathlib 替代 os.path，跨平台路径处理更稳健
+        p = Path(path)
+        with p.open("rb") as f:
             payload = pickle.load(f)
         sd = payload["state_dict"] if "state_dict" in payload else payload
         self.load_state_dict(sd, strict=False)

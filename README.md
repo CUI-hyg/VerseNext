@@ -64,6 +64,48 @@ VerseNext 的目标是用 **线性复杂度架构（SSM / Mamba / RWKV / Linear 
 - **解决胡乱输出**：embedding scale + tie_weights + temperature scaling + 合理初始化
 - **训练/推理 CLI**：`verse-train --config spark/config/cometspark_v05.yml`，详见 [spark/README.md](spark/README.md)
 
+### spark/run.py 快捷入口（Part4K2.5 新增）
+
+`spark/run.py` 是基于 VerseTrainer API 封装的命令行快捷入口，提供 7 个子命令，**所有命令都有合理默认值，最小化用户配置**。无需安装即可直接 `python spark/run.py <子命令>` 运行，路径自举由 `spark/_bootstrap.py` 统一完成。
+
+| 子命令 | 用途 | 关键参数 |
+|---|---|---|
+| `train` | 训练模型（训练后默认自动评估） | `--small`（小配置快速调试）/ `--config` / `--max-steps` / `--device cpu\|cuda\|npu` / `--amp` / `--resume` / `--eval-after` / `--no-eval` / `--dry-run` / `--quiet` / `--verbose` |
+| `eval` | 评估 + 打分 | `--checkpoint` / `--max-tokens`（默认不限，EOS 自然停止）/ `--temperature` / `--score` / `--references-file` |
+| `generate` | 生成文本 | `--checkpoint` / `--prompt` / `--max-tokens` / `--temperature` / `--top-k` |
+| `chat` | 交互式聊天（支持 `/quit` / `/clear` / `/save`） | `--checkpoint` / `--max-tokens`（默认 512）/ `--temperature` |
+| `compress` | 压缩模型（prune/quantize/lora/ternary 组合） | `--checkpoint` / `--method prune,quantize` / `--sparsity` / `--qtype` / `--lora-r` / `--output` |
+| `convert` | 模型格式互转（`.pt ↔ .vn`） | `--input` / `--output` / `--chat-template` / `--tokenizer` / `--arch` |
+| `download` | 下载数据集（URL + HuggingFace + 自动转 .npz） | `--url` / `--hf` / `--split` / `--to-npz` / `-o` / `--workers` / `--no-resume` |
+
+```bash
+# 快速训练（小配置，约 10 秒完成）
+python spark/run.py train --small
+
+# 1B 正式训练 + 训练后自动评估（默认开启）
+python spark/run.py train
+
+# 跳过训练后自动评估
+python spark/run.py train --no-eval
+
+# 生成文本
+python spark/run.py generate --prompt "你好世界"
+
+# 交互式聊天
+python spark/run.py chat --checkpoint checkpoints/best.pt
+
+# 压缩模型（剪枝 + 量化）
+python spark/run.py compress --checkpoint checkpoints/best.pt --method prune,quantize
+
+# 模型格式互转
+python spark/run.py convert --input checkpoints/best.pt --output model.vn
+
+# 下载数据集
+python spark/run.py download --url https://example.com/data.jsonl --to-npz -o data/cached.npz
+```
+
+> **提示**：所有子命令均支持 `--dry-run` 只打印将要执行的操作而不真正执行，便于在正式运行前核对参数。`spark/run.py` 与 VerseTrainer CLI（`verse-train` 等）功能等价，区别在于前者零安装可用、子命令更精简、默认值更友好。
+
 ### GPU/NPU 支持（DeviceBackend）
 
 `verse_torch.device.DeviceBackend` 提供设备后端抽象：
@@ -289,6 +331,9 @@ from verse_infra import DatasetDownloader
 ### 一键训练 CometSpark V0.5-1B
 
 ```bash
+# 最快验证：spark/run.py 快捷入口（小配置，约 10 秒完成，零安装可用）
+python spark/run.py train --small
+
 # CPU 预训练（小配置，快速验证）
 verse-train --config spark/config/cometspark_v05_small.yml --device cpu --max-steps 10
 
@@ -441,6 +486,17 @@ Part4K2 在 Part4K1 基础上完成 8 大升级，重点解决 **模型交付格
 - **VerseTrainer 优化（Task 7）**：CLI 新增 `verse-convert` / `verse-download` / `verse-continue`（统一分发入口 `python -m verse_infra.verse_trainer.cli verse-continue`）三个子命令；`continue_train()` 通过 `train(continue_from=checkpoint)` 实现持续训练；`--partition-training` 智能分区训练开关。
 - **数据集下载器（Task 8）**：`data/downloader.py` 的 `DatasetDownloader`（经 `verse_infra` 顶层 `__getattr__` 懒加载导出）支持任意 URL + HuggingFace datasets 下载，断点续传 + 多线程（≥10MB 自动分块）+ 自动转 .npz（json/jsonl/csv/txt/parquet → npz，含 ids/mask/seq_len）；CLI `verse-download --url/--hf --to-npz`。
 
+### Part4K2.5 重大升级摘要
+
+Part4K2.5 在 Part4K2 基础上完成 6 项紧急优化，重点解决 **易用性 / 包导入稳定性 / 训练可视化正确性 / 训练后验证闭环 / 并行训练健壮性** 五个方向：
+
+- **spark/run.py CLI 快捷方式（Task 1）**：基于 VerseTrainer API 封装的 7 子命令入口（train/eval/generate/chat/compress/convert/download），所有命令有合理默认值，零安装可用 `python spark/run.py <子命令>`；统一 `--dry-run` 预览参数。
+- **包导入修复（Task 2）**：新增 `spark/_bootstrap.py` 统一路径引导模块（基于 `__file__` 推断，幂等注入 sys.path），简化 6 处重复的 `sys.path.insert` 路径自举为单次 `import spark._bootstrap`；删除孤儿 `.pyc` 缓存。
+- **loss 图表修复（Task 3）**：`plot_loss_curve` x 轴对齐修复（按 `eval_interval` 步长取点，避免偏移）；ASCII 降级模式正确显示 val 线；`visualize` 统计增强。
+- **训练后自动评估（Task 4）**：`train()` 新增 `eval_after` 参数（默认 `True`），训练完成后调用 `_auto_evaluate` 对 best checkpoint 做 5 指标打分（exact_match / prefix_accuracy / char_f1 / bleu / rouge_l），结果写入返回 dict 的 `eval_result` 字段；`spark/run.py train --no-eval` 可跳过。
+- **小错误修复 + 性能优化（Task 5）**：见 [性能调优指南](docs/performance_tuning.md) 的 Part4K2.5 优化清单。
+- **并行训练修复（Task 6）**：`ParallelTrainer` chunk 间状态重置（每个 chunk 创建独立优化器，避免状态泄漏）；`round_robin` 数据分配策略使 chunk 间数据均匀不重复；Phase 2 重训在 `chunk_steps < 4` 时跳过（避免步数为 0 崩溃）；非 tty 环境 tqdm 自动降级为简洁打印（CI / 重定向场景不再输出 `\r` 垃圾字符）。
+
 ### 第二次进化 / Part3K2 / Part4 摘要
 
 详见 [审计报告](audit_report.md) 与 [Part4 升级报告](docs/part4_upgrade_report.md)。
@@ -468,6 +524,8 @@ Part4K2 在 Part4K1 基础上完成 8 大升级，重点解决 **模型交付格
 ├── data/
 │   └── downloader.py       # DatasetDownloader（任意 URL + HF + 断点续传 + 自动转 .npz，Part4K2）
 ├── spark/                  # CometSpark V0.5-1B 端到端 LM 训练仓库（Part4K1）
+│   ├── _bootstrap.py       # 统一路径引导模块（Part4K2.5）
+│   ├── run.py              # CLI 快捷入口（7 子命令，Part4K2.5）
 │   ├── config/             # cometspark_v05.yml / cometspark_v05_small.yml
 │   ├── model/              # CometSparkV05LM + CometSparkV05Config
 │   └── src/                # data_loader / trainer / evaluate / utils

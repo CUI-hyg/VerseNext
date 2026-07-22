@@ -1,6 +1,6 @@
 # Verse 性能调优指南
 
-> 本文档面向希望榨干硬件性能的用户，覆盖 numba JIT 加速、BLAS 配置、batch_size 选择、CPU 线程数、量化加速、并行计算、**GPU/NPU 加速（Part4K1 新增）**、**混合精度 autocast（Part4K1 新增）**、**CachedDataset 数据加载加速（Part4K1 新增）**、**压缩技术 V1.3 调优（Part4K2 新增）**、**智能分区训练性能调优（Part4K2 新增）**、**资源利用优化（Part4K2 新增）**、**1B 模型训练优化建议（Part4K2 新增）** 十三个维度。Verse 默认纯 CPU / 纯 NumPy（无需重新编译框架），Part4K1 起可选启用 GPU/NPU 加速（通过 PyTorch 委托后端）。
+> 本文档面向希望榨干硬件性能的用户，覆盖 numba JIT 加速、BLAS 配置、batch_size 选择、CPU 线程数、量化加速、并行计算、**GPU/NPU 加速（Part4K1 新增）**、**混合精度 autocast（Part4K1 新增）**、**CachedDataset 数据加载加速（Part4K1 新增）**、**压缩技术 V1.3 调优（Part4K2 新增）**、**智能分区训练性能调优（Part4K2 新增）**、**资源利用优化（Part4K2 新增）**、**1B 模型训练优化建议（Part4K2 新增）**、**Part4K2.5 性能优化清单（Part4K2.5 新增）**、**并行训练调优建议（Part4K2.5 新增）** 十五个维度。Verse 默认纯 CPU / 纯 NumPy（无需重新编译框架），Part4K1 起可选启用 GPU/NPU 加速（通过 PyTorch 委托后端）。
 
 ---
 
@@ -715,3 +715,120 @@ small_model, stats = compress_pipeline(large_model, config, version="1.3", retur
 - [ ] 内存不足：`--partition-training --partition-size 2`
 - [ ] 训练完成：`verse-continue` 追加训练
 - [ ] 部署：`compress_pipeline(version="1.3")` 压缩 + `verse-convert` 转 `.vn`
+
+---
+
+## 16. Part4K2.5 性能优化清单（Part4K2.5 新增）
+
+Part4K2.5 Task 5 在前序版本基础上做了一批小错误修复与性能优化，本节汇总与性能相关的优化点。
+
+### 16.1 优化点清单
+
+| 优化点 | 位置 | 收益 |
+|---|---|---|
+| 包导入路径统一 | `spark/_bootstrap.py` 统一路径引导，简化 6 处重复 `sys.path.insert` | 启动时减少重复路径检查；避免 `sys.path` 膨胀导致的跨路径导入风险 |
+| 孤儿 `.pyc` 清理 | 删除无对应 `.py` 源文件的 `.pyc` 缓存 | 避免 Python 加载陈旧字节码导致的诡异行为 |
+| loss 曲线 x 轴对齐 | `plot_loss_curve` 按 `eval_interval` 步长取 val 点 x 坐标 | 不影响训练性能，但避免误判训练趋势导致的无效调参 |
+| 训练后自动评估 | `train(eval_after=True)` 默认开启 | 一次训练即得 5 指标打分，省去手动 `verse-eval` 二次加载 checkpoint 的开销 |
+| 并行训练 chunk 状态重置 | 每个 chunk 创建独立优化器 | 避免动量泄漏导致的训练不稳定，间接提升最终模型质量 |
+| 非 tty 环境 tqdm 降级 | stderr 非 tty 时降级为简洁打印 | CI / 容器日志场景避免大量 `\r` 控制字符，日志体积显著减小 |
+
+### 16.2 推荐配置组合
+
+```bash
+# CI / 容器环境（无 TTY，日志要干净）
+python spark/run.py train --small --quiet
+# 等价于：enable_progress_bar=False + quiet=True + 非 tty 自动降级
+
+# 沙箱快速验证（自动评估开）
+python spark/run.py train --small
+
+# 生产训练（GPU + 混合精度 + 并行 + Loss 优化）
+verse-train --config spark/config/cometspark_v05.yml \
+    --device cuda --amp --parallel-chunks 4 \
+    --loss-optimizer --parallel-strategy round_robin --max-steps 10000
+```
+
+### 16.3 自动评估的性能影响
+
+`eval_after=True` 会在训练结束后额外加载 best checkpoint 并跑一轮 5 指标打分：
+
+- **额外耗时**：约等于一次 `verse-eval` 的耗时（取决于测试 prompt 数量与生成长度）。
+- **额外内存**：需重新加载模型（与训练时峰值内存相当，但优化器状态已释放，实际略低）。
+- **何时关闭**：大规模训练只想看 loss 曲线、不需要生成质量指标时，用 `--no-eval` 跳过。
+
+---
+
+## 17. 并行训练调优建议（Part4K2.5 新增）
+
+`ParallelTrainer`（见 [训练指南 5.6 节](training_guide.md#56-paralleltrainer--并行训练器part3k2part4-增强-aux_loss)）把 `max_steps` 拆成 N 个 chunk 训练。Part4K2.5 修复了 chunk 状态泄漏 / Phase 2 崩溃 / 非 tty 垃圾字符等问题后，本节给出调优建议。
+
+### 17.1 parallel_chunks 选择
+
+| 场景 | 推荐 `parallel_chunks` | 理由 |
+|---|---|---|
+| 沙箱调试 | 2 | 快速验证流程，chunk 内步数足够 |
+| CPU 训练（16 核） | 4 | 平衡 chunk 内步数与合并 fine-tune 步数 |
+| GPU 训练 | 4 ~ 8 | 利用 round_robin 覆盖更多数据 |
+| 极端低内存 | 8+ | 配合 `--partition-training` 双重降内存 |
+
+> **提示**：`parallel_chunks` 过大会导致每个 chunk 步数过少（`chunk_steps = max_steps // parallel_chunks`），当 `chunk_steps < 4` 时 Phase 2 重训会被跳过（Part4K2.5 修复），此时合并 fine-tune 阶段成为质量主力。
+
+### 17.2 parallel_strategy 选择
+
+| 策略 | 数据分配 | 适用场景 |
+|---|---|---|
+| `sequential`（默认） | 每个 chunk 用完整 train_dataset | 数据量小（< 1000 条）、希望各 chunk 充分训练同一批数据 |
+| `round_robin` | 数据集按索引轮询分配，chunk 间不重复 | 数据量大、希望覆盖更多数据、模拟数据并行 |
+
+```bash
+# round_robin：4 个 chunk 各看 1/4 数据
+verse-train --config spark/config/cometspark_v05.yml \
+    --parallel-chunks 4 --parallel-strategy round_robin --max-steps 200
+```
+
+### 17.3 merge_finetune_steps 调优
+
+合并所有 chunk 后的整体 fine-tune 步数（默认 `max_steps // 10`）：
+
+- **过小**：chunk 间边界未充分弥合，最终模型质量受限于最佳 chunk。
+- **过大**：在最佳 chunk 状态上训练过久，可能过拟合。
+- **建议**：`max_steps // 10` 是经验默认值；数据量大时可适当增加到 `max_steps // 5`。
+
+### 17.4 CI / 非 tty 环境推荐配置
+
+CI 与容器日志场景下，tqdm 进度条会产生大量 `\r` 控制字符污染日志。Part4K2.5 已自动检测 stderr 是否为 tty 并降级，但建议显式配置以确保日志干净：
+
+```bash
+# CI 推荐：静默 + 关闭进度条
+verse-train --config spark/config/cometspark_v05_small.yml \
+    --parallel-chunks 2 --quiet --max-steps 50
+```
+
+```python
+# 编程接口
+trainer = ParallelTrainer(
+    model, train_ds, val_ds,
+    cfg={
+        "parallel_chunks": 2,
+        "max_steps": 50,
+        "enable_progress_bar": False,   # 显式关闭进度条
+        "quiet": True,                  # 静默模式
+    },
+)
+```
+
+### 17.5 与智能分区训练的组合
+
+`ParallelTrainer`（按 step 拆分）可与 `LayerWiseTrainer`（按 layer 拆分）组合，实现双重降内存：
+
+```bash
+verse-train --config spark/config/cometspark_v05.yml \
+    --partition-training --partition-size 4 \
+    --parallel-chunks 2 --max-steps 2000
+```
+
+- 分区训练把模型按 layer 分组卸载到硬盘（降参数内存）
+- 并行训练把 step 拆成 chunk（降单次训练时长，配合 round_robin 覆盖更多数据）
+
+> **提示**：两者组合时总训练时间约为「单次分区训练时间 × parallel_chunks」，建议仅在内存极度受限时使用。

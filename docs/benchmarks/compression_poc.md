@@ -1,6 +1,6 @@
 # VerseTorch.compress 模型压缩 PoC 基准测试报告
 
-> 自动生成自 `tests/test_compression_poc.py`，时间 2026-07-22 13:38:49
+> 自动生成自 `tests/test_compression_poc.py`，时间 2026-07-22 15:28:25
 
 ## 1. 测试目标
 

@@ -558,6 +558,20 @@ def _load_tokenizer(tok_cfg: dict, base_dir: str, save_dir: str):
 
 
 # ---------------------------------------------------------------------------
+# Part4K2.5 Task 4: 训练后自动评估默认测试用例
+# ---------------------------------------------------------------------------
+
+# 默认 4 条测试用例：2 条无 reference（只记录生成质量），2 条有 reference（计算打分）。
+# 评估速度快，适合训练后快速验证。
+_DEFAULT_EVAL_PROMPTS = [
+    {"prompt": "你好", "reference": None},
+    {"prompt": "Hello", "reference": None},
+    {"prompt": "1+1=", "reference": "2"},
+    {"prompt": "中国的首都是", "reference": "北京"},
+]
+
+
+# ---------------------------------------------------------------------------
 # 主训练入口 train（兼容 data/demo/train/trainer.py.train）
 # ---------------------------------------------------------------------------
 
@@ -580,8 +594,10 @@ def train(
     continue_from: Optional[str] = None,
     quiet: bool = False,
     verbose: bool = False,
+    eval_after: bool = True,
+    eval_config: Optional[dict] = None,
 ) -> dict:
-    """主训练函数（Part4K1 Task 6.2 升级版 + Part4K2 Task 7.3/7.4）。
+    """主训练函数（Part4K1 Task 6.2 升级版 + Part4K2 Task 7.3/7.4 + Task 4）。
 
     兼容 ``data/demo/train/trainer.py.train`` 原签名，并新增：
     - ``device``：设备字符串（cpu/cuda/npu）
@@ -601,6 +617,9 @@ def train(
       是训练完成后继续追加训练（新目标 = additional_steps）。
     - ``quiet``：Part4K2 Task 7.2 静默模式（仅打印最终结果）
     - ``verbose``：Part4K2 Task 7.2 详细日志模式
+    - ``eval_after``：Part4K2.5 Task 4 训练完成后是否自动评估打分（默认 True）
+    - ``eval_config``：评估配置 dict（默认 None，使用训练配置中的评估参数）；
+      可包含 ``"prompts"``（list of {prompt, reference}）覆盖默认测试用例
 
     Args:
         config_path: 配置文件路径（config.yml）
@@ -608,7 +627,8 @@ def train(
         n_threads: NumPy BLAS 线程数；0 表示不限制
     Returns:
         dict 包含：wall_clock / initial_loss / final_loss / best_val_loss /
-        checkpoint_dir / loss_history_path / full_model_path / vocab_size
+        checkpoint_dir / loss_history_path / full_model_path / vocab_size；
+        eval_after=True 时额外包含 ``eval_result``（评估打分结果）
     """
     start_time = time.time()
 
@@ -1119,7 +1139,7 @@ def train(
             flush=True,
         )
 
-    return {
+    result = {
         "wall_clock": wall_clock,
         "initial_loss": initial_loss,
         "final_loss": final_loss,
@@ -1131,6 +1151,32 @@ def train(
         "full_model_path": full_model_path,
         "vocab_size": vocab_size,
     }
+
+    # ---------------------------------------------------------------
+    # Part4K2.5 Task 4: 训练完成后自动评估打分（默认 eval_after=True）
+    # 评估失败不影响训练结果（try/except 包裹，失败时打印警告但继续返回）
+    # ---------------------------------------------------------------
+    if eval_after and full_model_path:
+        try:
+            eval_result = _auto_evaluate(
+                model_path=full_model_path,
+                config=full_cfg,
+                tokenizer=tok,
+                vocab_size=vocab_size,
+                eval_config=eval_config,
+                base_dir=base_dir,
+                quiet=quiet,
+            )
+            result["eval_result"] = eval_result
+        except Exception as e:
+            print(
+                f"[train] 警告：训练后自动评估失败（不影响训练结果）："
+                f"{type(e).__name__}: {e}",
+                flush=True,
+            )
+            result["eval_result"] = None
+
+    return result
 
 
 def _save_parallel_history(save_dir, train_losses, val_losses,
@@ -1229,6 +1275,335 @@ def continue_train(
     )
 
 
+# ---------------------------------------------------------------------------
+# Part4K2.5 Task 4: 训练后自动评估打分
+# ---------------------------------------------------------------------------
+
+
+def _resolve_eval_prompts(eval_config, full_config) -> list:
+    """解析评估测试用例。
+
+    优先级：
+    1. ``eval_config["prompts"]``（调用方显式传入的评估配置）
+    2. ``full_config["eval"]["prompts"]``（配置文件中的 eval 段）
+    3. ``_DEFAULT_EVAL_PROMPTS``（默认 4 条中英文测试用例）
+
+    Args:
+        eval_config: 调用方传入的评估配置 dict（可为 None）
+        full_config: 训练配置 dict（含 model/training/eval 等段）
+
+    Returns:
+        list of {"prompt": str, "reference": Optional[str]}
+    """
+    raw_prompts = None
+
+    # 1. eval_config 显式传入
+    if eval_config is not None and isinstance(eval_config, dict):
+        raw_prompts = eval_config.get("prompts")
+
+    # 2. full_config 的 eval 段
+    if raw_prompts is None and isinstance(full_config, dict):
+        eval_section = full_config.get("eval", {})
+        if isinstance(eval_section, dict):
+            raw_prompts = eval_section.get("prompts")
+
+    # 3. 默认测试用例
+    if raw_prompts is None:
+        return [dict(item) for item in _DEFAULT_EVAL_PROMPTS]
+
+    # 规范化：支持 dict 格式和纯字符串格式
+    result = []
+    for item in raw_prompts:
+        if isinstance(item, dict):
+            result.append({
+                "prompt": str(item.get("prompt", "")),
+                "reference": item.get("reference"),
+            })
+        elif isinstance(item, str):
+            result.append({"prompt": item, "reference": None})
+    # 空列表兜底为默认
+    if not result:
+        return [dict(item) for item in _DEFAULT_EVAL_PROMPTS]
+    return result
+
+
+def _load_model_for_eval(model_path: str, full_config: dict, vocab_size: int):
+    """从 model_path 加载模型用于评估。
+
+    加载策略（按优先级）：
+    1. ``CometSparkNexLM.from_pretrained(model_path)``（verse_nex 原生）
+    2. ``CometSparkLM.from_pretrained(model_path)``（data/demo 兼容）
+    3. 用 ``_build_model`` 重建模型 + ``pickle.load`` 加载 state_dict
+    4. model_path 不存在时尝试同目录 best.pt
+
+    Args:
+        model_path: 模型文件路径（cometspark.pt）
+        full_config: 训练配置 dict（含 model 段）
+        vocab_size: 词表大小
+
+    Returns:
+        加载好的模型对象
+
+    Raises:
+        FileNotFoundError: 所有加载策略均失败
+    """
+    model_cfg = full_config.get("model", {}) if isinstance(full_config, dict) else {}
+
+    # model_path 不存在时回退到 best.pt
+    eff_path = model_path
+    if not os.path.exists(eff_path):
+        save_dir = os.path.dirname(model_path) or "."
+        best_path = os.path.join(save_dir, "best.pt")
+        if os.path.exists(best_path):
+            eff_path = best_path
+        else:
+            raise FileNotFoundError(
+                f"模型文件不存在：{model_path}（也未找到 {best_path}）"
+            )
+
+    # 策略 1：CometSparkNexLM.from_pretrained
+    try:
+        from verse_nex.cometspark import CometSparkNexLM
+        return CometSparkNexLM.from_pretrained(eff_path)
+    except Exception:
+        pass
+
+    # 策略 2：data/demo CometSparkLM.from_pretrained
+    try:
+        import sys as _sys
+        demo_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(
+                _sys.modules[__name__].__file__))),
+            "data", "demo",
+        )
+        if demo_dir not in _sys.path:
+            _sys.path.insert(0, demo_dir)
+        from model.model import CometSparkLM
+        if hasattr(CometSparkLM, "from_pretrained"):
+            return CometSparkLM.from_pretrained(eff_path)
+    except Exception:
+        pass
+
+    # 策略 3：重建模型 + pickle.load state_dict
+    model, _ = _build_model(model_cfg, vocab_size)
+    try:
+        with open(eff_path, "rb") as f:
+            payload = pickle.load(f)
+        sd = payload.get("state_dict") or payload.get("model_state_dict") or payload
+        if hasattr(model, "load_state_dict"):
+            model.load_state_dict(sd, strict=False)
+        return model
+    except Exception as e:
+        raise FileNotFoundError(
+            f"无法从 {eff_path} 加载模型：{type(e).__name__}: {e}"
+        )
+
+
+def _auto_evaluate(
+    model_path: str,
+    config,
+    tokenizer,
+    vocab_size: int,
+    eval_config=None,
+    base_dir: str = ".",
+    quiet: bool = False,
+) -> dict:
+    """训练后自动评估打分（Part4K2.5 Task 4）。
+
+    流程：
+    1. 加载训练好的模型（从 model_path）
+    2. 生成测试文本（用 eval_config / config["eval"]["prompts"] / 默认测试用例）
+    3. 计算打分（exact_match / prefix_accuracy / char_f1 / bleu / rouge_l）
+    4. 打印评估报告
+    5. 返回评估结果
+
+    Args:
+        model_path: 训练好的模型文件路径（cometspark.pt）
+        config: 训练配置 dict（含 model/eval 段），或模型 config 对象
+        tokenizer: 已加载的 tokenizer
+        vocab_size: 词表大小
+        eval_config: 评估配置 dict（可含 ``"prompts"`` 覆盖默认测试用例）
+        base_dir: 相对路径基准目录
+        quiet: 静默模式（只打印打分汇总，不打印每条生成结果）
+
+    Returns:
+        dict: {
+            "prompts": list[str],
+            "generations": list[str],
+            "references": list[Optional[str]],
+            "scores": dict,  # 5 个指标 + n_samples + per_sample
+            "avg_length": float,
+            "has_eos_ratio": float,
+        }
+    """
+    # 延迟导入：避免与 evaluate.py 循环导入
+    from .evaluate import (
+        _safe_encode,
+        _safe_decode_with_prompt,
+        _get_eos_id,
+    )
+    from verse_torch import Tensor, no_grad
+    from verse_torch.scoring import ScoringEvaluator
+
+    # 1. 解析测试用例
+    prompts_data = _resolve_eval_prompts(eval_config, config)
+    prompts = [p["prompt"] for p in prompts_data]
+    references = [p["reference"] for p in prompts_data]
+
+    # 解析 max_new_tokens（默认 32 = 快速评估；None = EOS 自然停止；
+    # eval_config 可覆盖）。自动评估默认限制 32 token 以保证速度，
+    # 避免未训练模型无 EOS 时生成 100K token 超时。
+    max_new_tokens = 32
+    if eval_config is not None and isinstance(eval_config, dict):
+        cfg_mnt = eval_config.get("max_new_tokens")
+        if cfg_mnt is not None:
+            max_new_tokens = cfg_mnt
+
+    # 2. 加载模型
+    model = _load_model_for_eval(model_path, config, vocab_size)
+
+    eos_id = _get_eos_id(tokenizer)
+
+    # 3. 生成
+    generations = []
+    has_eos_count = 0
+    total_length = 0
+
+    if not quiet:
+        print(f"[auto-eval] 开始评估 {len(prompts)} 条 prompt", flush=True)
+        print("=" * 60, flush=True)
+
+    with no_grad():
+        if hasattr(model, "eval"):
+            model.eval()
+        for i, (prompt, reference) in enumerate(zip(prompts, references)):
+            ids = _safe_encode(tokenizer, prompt)
+            if not ids:
+                ids = [0]
+            idx_np = np.asarray(ids, dtype=np.int64).reshape(1, -1)
+            try:
+                gen_kwargs = dict(temperature=1.0, top_k=None, eos_id=eos_id)
+                try:
+                    # max_new_tokens=None：让模型按 EOS 自然停止
+                    generated = model.generate(
+                        idx_np, max_new_tokens=max_new_tokens, **gen_kwargs
+                    )
+                except TypeError:
+                    # 旧模型 generate 不接受 max_new_tokens=None，限制 16 token
+                    fallback_n = max_new_tokens if max_new_tokens is not None else 16
+                    generated = model.generate(
+                        idx_np, max_new_tokens=fallback_n, **gen_kwargs
+                    )
+                if isinstance(generated, Tensor):
+                    gen_ids = generated.data.reshape(-1).tolist()
+                else:
+                    gen_ids = np.asarray(generated).reshape(-1).tolist()
+            except Exception as e:
+                if not quiet:
+                    print(
+                        f"[auto-eval] 生成失败 prompt={prompt!r}: {e}",
+                        flush=True,
+                    )
+                gen_ids = list(ids)
+
+            full_text = _safe_decode_with_prompt(tokenizer, prompt, ids, gen_ids)
+            n_generated = len(gen_ids) - len(ids)
+            generated_part = gen_ids[len(ids):]
+            has_eos = (
+                eos_id is not None
+                and len(generated_part) > 0
+                and eos_id in generated_part
+            )
+
+            generations.append(full_text)
+            total_length += max(0, n_generated)
+            if has_eos:
+                has_eos_count += 1
+
+            if not quiet:
+                print(f"  [{i + 1}/{len(prompts)}] [prompt] {prompt}", flush=True)
+                print(f"  [output] {full_text}", flush=True)
+                print(
+                    f"  (tokens: {n_generated}, has_eos: {has_eos})",
+                    flush=True,
+                )
+                if reference is not None:
+                    print(f"  [ref]    {reference}", flush=True)
+                print("-" * 60, flush=True)
+
+    # 4. 打分（仅有 reference 的样本参与打分）
+    scored_indices = [i for i, r in enumerate(references) if r is not None]
+    empty_scores = {
+        "exact_match": 0.0,
+        "prefix_accuracy": 0.0,
+        "char_f1": 0.0,
+        "bleu": 0.0,
+        "rouge_l": 0.0,
+        "n_samples": 0,
+        "per_sample": [],
+    }
+
+    if scored_indices:
+        scored_preds = []
+        scored_refs = []
+        for i in scored_indices:
+            gen = generations[i]
+            prompt = prompts[i]
+            # 剥离 prompt 前缀后与 reference 对比（_safe_decode_with_prompt
+            # 用 prompt + decoded 拼接，所以 startswith(prompt) 必然成立）
+            if gen.startswith(prompt):
+                pred = gen[len(prompt):]
+            else:
+                pred = gen
+            scored_preds.append(pred)
+            scored_refs.append(str(references[i]))
+
+        evaluator = ScoringEvaluator()
+        scores = evaluator.evaluate(scored_preds, scored_refs)
+        report = evaluator.report(scores)
+        print("[auto-eval] 评分报告：", flush=True)
+        print(report, flush=True)
+    else:
+        scores = empty_scores
+        if not quiet:
+            print("[auto-eval] 无 reference，跳过打分", flush=True)
+
+    # 5. 汇总
+    n = len(prompts)
+    avg_length = total_length / n if n > 0 else 0.0
+    has_eos_ratio = has_eos_count / n if n > 0 else 0.0
+
+    if quiet:
+        # quiet 模式只打印打分汇总
+        if scored_indices:
+            score_str = " ".join(
+                f"{k}={v:.4f}" for k, v in scores.items()
+                if k not in ("per_sample", "n_samples")
+            )
+        else:
+            score_str = "no_reference"
+        print(
+            f"[auto-eval] {score_str} has_eos_ratio={has_eos_ratio:.2f} "
+            f"avg_length={avg_length:.1f}",
+            flush=True,
+        )
+    else:
+        print(
+            f"[auto-eval] 汇总: avg_length={avg_length:.1f} "
+            f"has_eos_ratio={has_eos_ratio:.2f}",
+            flush=True,
+        )
+
+    return {
+        "prompts": prompts,
+        "generations": generations,
+        "references": references,
+        "scores": scores,
+        "avg_length": avg_length,
+        "has_eos_ratio": has_eos_ratio,
+    }
+
+
 __all__ = [
     "train",
     "continue_train",
@@ -1238,4 +1613,5 @@ __all__ = [
     "reset_shutdown_flag",
     "is_shutdown_requested",
     "ChunkOOMError",
+    "_auto_evaluate",
 ]

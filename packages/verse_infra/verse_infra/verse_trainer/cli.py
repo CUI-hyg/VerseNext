@@ -86,6 +86,11 @@ def _build_train_parser() -> argparse.ArgumentParser:
                         help="并行训练数据分配策略（默认 sequential，round_robin 为不重叠数据子集）")
     parser.add_argument("--base-dir", default=None,
                         help="配置中相对路径的基准目录（默认 config 同级目录）")
+    parser.add_argument("--no-eval", action="store_true",
+                        help="跳过训练后自动评估打分（默认训练后自动评估）")
+    parser.add_argument("--eval-prompts", default=None,
+                        help="自定义评估 prompt JSON 文件路径"
+                             "（格式：[{\"prompt\": \"...\", \"reference\": \"...\"}, ...]）")
     return parser
 
 
@@ -125,6 +130,14 @@ def train_main(argv: Optional[List[str]] = None) -> int:
                 "completion": args.completion or "",
             }
 
+    # Part4K2.5 Task 4: 解析 --eval-prompts（JSON 文件）
+    eval_config = None
+    if args.eval_prompts:
+        import json as _json
+        with open(args.eval_prompts, "r", encoding="utf-8") as f:
+            prompts_data = _json.load(f)
+        eval_config = {"prompts": prompts_data}
+
     from .trainer import train
     result = train(
         config_path=effective_config,
@@ -141,6 +154,9 @@ def train_main(argv: Optional[List[str]] = None) -> int:
         offload_dir=args.offload_dir,
         quiet=getattr(args, "quiet", False),
         verbose=getattr(args, "verbose", False),
+        # Part4K2.5 Task 4: 默认 eval_after=True，--no-eval 跳过
+        eval_after=not getattr(args, "no_eval", False),
+        eval_config=eval_config,
     )
     print(f"\n[train] 结果：{result['best_val_loss']:.4f}", flush=True)
     return 0

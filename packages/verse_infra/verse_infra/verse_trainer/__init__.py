@@ -32,19 +32,9 @@ VerseNexTrainer / LoRATrainer / SFTTrainer / DPOTrainer / NexTrainer）全部
 
 from __future__ import annotations
 
-# 路径自举：verse_trainer 现为 verse_infra 子包，需向上回溯到 packages/ 目录
-# 确保 verse_torch / verse_nex（保持独立的底层后端）可被定位。
-# verse_tokenizer 已是 verse_infra 兄弟子包，无需额外 sys.path 注入。
-import os as _os
-import sys as _sys
-
-_THIS_DIR = _os.path.dirname(_os.path.abspath(__file__))
-# packages/verse_infra/verse_infra/verse_trainer/ → packages/
-_PACKAGES_DIR = _os.path.dirname(_os.path.dirname(_os.path.dirname(_THIS_DIR)))
-for _dep in ("verse_torch", "verse_nex"):
-    _dep_path = _os.path.join(_PACKAGES_DIR, _dep)
-    if _os.path.isdir(_dep_path) and _dep_path not in _sys.path:
-        _sys.path.insert(0, _dep_path)
+# 路径引导：verse_torch / verse_nex 的 sys.path 注入已由上层
+# verse_infra/__init__.py（调用 spark._bootstrap.ensure_paths 或内联回退）统一处理，
+# 本子包无需重复 sys.path.insert。
 
 
 # 公共 API（延迟导入避免循环依赖）

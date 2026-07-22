@@ -30,6 +30,11 @@ _DEFAULT_PROMPTS = [
     "春风",
 ]
 
+# Part4K2.5 Task 5：评估场景下的安全生成上限。
+# 当 max_new_tokens=None 时，模型默认 max_safe_limit=100_000 过大，
+# 未训练模型可能无 EOS 导致长时间生成。评估场景降到 256 足够。
+_EVAL_MAX_SAFE_LIMIT = 256
+
 
 def _safe_encode(tok, text):
     """兼容 BPETokenizer / ByteTokenizer 的 encode 签名。"""
@@ -210,10 +215,15 @@ def evaluate(
                 )
                 if max_new_tokens is not None:
                     gen_kwargs["max_new_tokens"] = int(max_new_tokens)
+                else:
+                    # Part4K2.5 Task 5：评估场景降低安全上限，
+                    # 避免未训练模型无 EOS 时长时间生成（默认 100K → 256）
+                    gen_kwargs["max_safe_limit"] = _EVAL_MAX_SAFE_LIMIT
                 try:
                     generated = model.generate(idx_np, top_p=top_p, **gen_kwargs)
                 except TypeError:
-                    # 旧模型 generate 不接受 top_p 参数
+                    # 旧模型 generate 不接受 top_p / max_safe_limit 参数
+                    gen_kwargs.pop("max_safe_limit", None)
                     generated = model.generate(idx_np, **gen_kwargs)
                 if isinstance(generated, Tensor):
                     gen_ids = generated.data.reshape(-1).tolist()
@@ -312,4 +322,103 @@ def _run_scoring(results, prompts, references_file, base_dir):
     return scores
 
 
-__all__ = ["evaluate"]
+def format_eval_report(eval_result: dict) -> str:
+    """格式化评估结果为可读报告字符串。
+
+    Args:
+        eval_result: :func:`evaluate_from_train_result` 或
+            :func:`verse_trainer.trainer._auto_evaluate` 返回的 dict
+
+    Returns:
+        多行报告字符串
+    """
+    if not isinstance(eval_result, dict):
+        return f"[eval-report] 无效的评估结果：{type(eval_result)}"
+
+    lines = ["=" * 60, "训练后评估报告", "=" * 60]
+
+    prompts = eval_result.get("prompts", [])
+    generations = eval_result.get("generations", [])
+    references = eval_result.get("references", [])
+    scores = eval_result.get("scores", {})
+
+    for i, (p, g) in enumerate(zip(prompts, generations)):
+        lines.append(f"  [{i + 1}/{len(prompts)}] [prompt] {p}")
+        lines.append(f"  [output] {g}")
+        if i < len(references) and references[i] is not None:
+            lines.append(f"  [ref]    {references[i]}")
+        lines.append("-" * 60)
+
+    if scores:
+        lines.append(f"  样本数: {scores.get('n_samples', 0)}")
+        for m in ("exact_match", "prefix_accuracy", "char_f1", "bleu", "rouge_l"):
+            if m in scores:
+                lines.append(f"  {m:20s}: {scores[m]:.4f}")
+    else:
+        lines.append("  无打分（无 reference）")
+
+    avg_len = eval_result.get("avg_length", 0.0)
+    eos_ratio = eval_result.get("has_eos_ratio", 0.0)
+    lines.append(f"  avg_length: {avg_len:.1f}")
+    lines.append(f"  has_eos_ratio: {eos_ratio:.2f}")
+    lines.append("=" * 60)
+    return "\n".join(lines)
+
+
+def evaluate_from_train_result(
+    train_result: dict,
+    config_path: str = None,
+    base_dir: str = ".",
+    prompts=None,
+    quiet: bool = False,
+) -> dict:
+    """从 train() 返回的结果 dict 直接评估（Part4K2.5 Task 4 便捷函数）。
+
+    若 ``train_result`` 已包含 ``eval_result``（训练时已自动评估），
+    直接格式化返回；否则用 :func:`evaluate` 重新加载模型评估。
+
+    Args:
+        train_result: :func:`verse_trainer.trainer.train` 返回的 dict
+        config_path: 配置文件路径（重新评估时需要）；None 时尝试从
+            ``train_result`` 推断（不可行则报错）
+        base_dir: 相对路径基准目录
+        prompts: 自定义 prompt 列表；None 用默认
+        quiet: 静默模式
+
+    Returns:
+        评估结果 dict（含 prompts / generations / references / scores /
+        avg_length / has_eos_ratio）
+    """
+    # 1. 训练时已自动评估：直接复用
+    existing = train_result.get("eval_result")
+    if existing is not None:
+        if not quiet:
+            report = format_eval_report(existing)
+            print(report, flush=True)
+        return existing
+
+    # 2. 训练时未评估（eval_after=False 或评估失败）：重新加载评估
+    model_path = train_result.get("full_model_path")
+    if not model_path:
+        raise ValueError("train_result 中无 full_model_path，无法评估")
+
+    if config_path is None:
+        raise ValueError("重新评估需要提供 config_path")
+
+    if not quiet:
+        print(
+            f"[eval-from-train] 训练时未评估，重新加载模型 {model_path} 评估",
+            flush=True,
+        )
+
+    return evaluate(
+        config_path=config_path,
+        base_dir=base_dir,
+        prompts=prompts,
+        max_new_tokens=None,
+        score=True if prompts is None else False,
+        checkpoint=model_path if not os.path.exists(model_path) else None,
+    )
+
+
+__all__ = ["evaluate", "evaluate_from_train_result", "format_eval_report"]

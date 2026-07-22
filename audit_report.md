@@ -708,3 +708,74 @@ Part4K2 Task 10 全项目综合验收通过：
 7. **无回归问题**：相比 Part4K1 基线（788 passed / 13 skipped），新增 186 passed、9 skipped，0 failed，无回归
 
 **VerseNext 框架 Part4K2 架构升级与模型优化审计通过，可发布（Task 9 文档补齐为后续工作）。**
+
+---
+
+## Part4K2.5：紧急优化（2026-07-22）
+
+> 审计日期：2026-07-22
+> 审计范围：`/workspace` 全项目（spark / verse_torch / verse_infra / docs / tests）
+> 审计任务：Task 7（升级文档 + 注释，删除旧的代码与文件）
+> 审计目标：文档与实现一致 + 代码注释完善 + 旧构建产物 / 缓存清理 + .gitignore 补全
+
+### 变更概览
+- spark/run.py CLI 快捷方式：7 子命令，提升易用度
+- 包导入修复：spark/_bootstrap.py 统一路径引导，简化 6 处 sys.path.insert
+- loss 图表修复：plot_loss_curve x 轴正确，ASCII 降级显示 val 线
+- 训练后自动评估：eval_after 默认 True，5 指标打分
+- 小错误修复 + 性能优化
+- 并行训练修复：chunk 状态重置，Phase 2 跳过，非 tty 降级
+
+### 新增文件
+- spark/run.py, spark/_bootstrap.py
+- tests/test_spark_run.py, tests/test_loss_and_parallel_fix.py, tests/test_auto_eval.py
+
+> 注：Task 7 文档同步时核对发现 `tests/test_bugfixes_perf.py` 在仓库中不存在（前序 Task 5 未落地该测试文件），故本审计不列入。Task 5 的小错误修复与性能优化已由 `test_loss_and_parallel_fix.py` / `test_auto_eval.py` 等覆盖验证。
+
+### 修复的问题
+- 包导入 sys.path 膨胀和跨路径风险
+- loss 图表 x 轴偏移和 val 线不显示
+- 训练后无自动验证
+- 并行训练 chunk 间状态泄漏
+- 并行训练 Phase 2 步数为 0 时崩溃
+- 非 tty 环境 tqdm 输出垃圾字符
+
+### Task 7 文档与清理工作
+
+#### 文档更新
+- `README.md`：新增「spark/run.py 快捷入口」章节（7 子命令表 + 示例）；快速开始新增 `python spark/run.py train --small`；新增「Part4K2.5 重大升级摘要」章节；仓库结构图补充 `spark/_bootstrap.py` / `spark/run.py`。
+- `docs/training_guide.md`：新增第 16~19 章（spark/run.py 快速训练指南 / 训练后自动评估指南 / 并行训练修复说明 / loss 图表修复说明），目录同步更新。
+- `docs/performance_tuning.md`：新增第 16~17 章（Part4K2.5 性能优化清单 / 并行训练调优建议），引言维度计数从 13 更新为 15。
+- `spark/README.md`：新增 run.py 与 _bootstrap.py 说明，更新训练/评估/生成命令示例。
+- `audit_report.md`：追加本 Part4K2.5 章节。
+
+#### 代码注释校验
+- `spark/run.py`：模块 docstring + 各子命令 docstring + 路径自举注释完善（Task 1 已落地，无需补充）。
+- `spark/_bootstrap.py`：模块 docstring + `ensure_paths()` docstring + 路径计算注释完善（Task 2 已落地，无需补充）。
+- `training.py` `ParallelTrainer._train_chunk`：已含「Part4K2.5 Task 6 修复」注释（chunk 状态重置 / 独立优化器 / 模型状态备份）。
+- `training.py` `_ChunkProgressBar`：已含「Part4K2.5 Task 6 修复：非 tty 环境降级」注释。
+- `trainer.py` `train()`：docstring 已含 `eval_after` / `eval_config` 参数说明（Part4K2.5 Task 4）。
+
+#### 旧代码与文件清理
+- **`__pycache__` 清理**：删除全部 19 个 `__pycache__` 目录（Python 编译缓存，自动重生成）。
+- **构建残留删除**：删除 `packages/verse_nex/build/`（陈旧 `python setup.py build` 产物，仅含 Part4 之前的 hybrid/linear_attention/mamba2/positional/rwkv7/sparse_attention，缺少 Part4K1 新增的 tri_sparse_attn/moe/cometspark/nexrl/speculative/kv_cache_parallel，确认为无用残留）。
+- **shim 包保留**：`packages/verse_compat` / `packages/verse_inference` / `packages/verse_tokenizer` / `packages/verse_trainer` 四个 shim 包仍在使用（旧导入路径转发 + DeprecationWarning），按约束保留不删除。
+- **临时文件扫描**：全项目无 `.bak` / `.orig` / `.tmp` 文件。
+
+#### .gitignore 补全
+新增条目：
+- `*.vn`（模型权重容器，Part4K2 新格式）
+- `checkpoints/`（训练产物目录）
+- `loss_history.json`（训练 loss 历史）
+
+已确认存在（无需新增）：`__pycache__/` / `*.py[cod]`（含 `*.pyc` `*.pyo`）/ `.eggs/` / `*.egg-info/` / `build/` / `dist/` / `*.egg` / `.pytest_cache/` / `*.pt`。
+
+### 综合验收结论
+Part4K2.5 Task 7 文档与清理工作完成：
+
+1. **文档与实现一致**：README / training_guide / performance_tuning / spark/README / audit_report 全部同步 Part4K2.5 的 6 项变更（run.py 入口 / 包导入修复 / loss 图修复 / 自动评估 / 性能优化 / 并行训练修复）。
+2. **代码注释完善**：4 个关键文件（spark/run.py / spark/_bootstrap.py / training.py ParallelTrainer / trainer.py train）的注释经校验均已在 Task 1~6 落地，Task 7 无需补充。
+3. **旧构建产物清理**：19 个 `__pycache__` 目录 + `verse_nex/build/` 陈旧残留已删除；shim 包按约束保留。
+4. **.gitignore 补全**：新增 3 条必要条目，未添加不必要条目。
+
+**VerseNext 框架 Part4K2.5 紧急优化文档与清理审计通过。**

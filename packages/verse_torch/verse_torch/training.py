@@ -293,14 +293,23 @@ class _ChunkPBar:
         self.desc = desc
         self._tqdm = None
         self._t0 = time.time()
+        # Part4K2.5 Task 6 修复：非 tty 环境降级为简洁打印
+        # （CI / 重定向场景下 tqdm 会输出大量 \r 垃圾字符）
+        # 仅在 tqdm 可用且未静默且 stderr 是 tty 时才用 tqdm
         if not self.quiet and _HAS_TQDM:
             try:
-                self._tqdm = _tqdm(
-                    total=self.total,
-                    desc=self.desc,
-                    unit="chunk",
-                    dynamic_ncols=True,
+                import sys as _sys
+                is_tty = (
+                    hasattr(_sys.stderr, "isatty")
+                    and _sys.stderr.isatty()
                 )
+                if is_tty:
+                    self._tqdm = _tqdm(
+                        total=self.total,
+                        desc=self.desc,
+                        unit="chunk",
+                        dynamic_ncols=True,
+                    )
             except Exception:
                 self._tqdm = None
 
@@ -692,16 +701,29 @@ def _plot_ascii(
     # 构造画布
     canvas = [[" "] * width for _ in range(height)]
 
-    def put_curve(values, n_total, char):
+    def put_curve(values, n_total, char, step_fn=None):
+        """在画布上绘制一条曲线。
+
+        Args:
+            values: loss 值列表
+            n_total: 用于 x 坐标映射的总步数（通常是 train 的步数）
+            char: 绘制字符（'T' 或 'V'）
+            step_fn: 可选函数，把 value 的索引映射到实际 step 位置
+                （val 用 ``lambda i: i * eval_interval`` 对齐到 train 的 step）；
+                None 时用索引本身作为 step（train 行为）
+        """
         n_v = len(values)
         if n_v == 0:
             return
         for i, v in enumerate(values):
             # x 映射到 [0, width-1]
+            step = step_fn(i) if step_fn is not None else i
             if n_total <= 1:
                 x = 0
             else:
-                x = int(i * (width - 1) / max(1, n_total - 1))
+                x = int(step * (width - 1) / max(1, n_total - 1))
+            # 限制 x 在画布范围内（val 的 step 可能超出 train 范围）
+            x = max(0, min(x, width - 1))
             # y 映射到 [0, height-1]（注意翻转：高 loss 在顶部）
             yf = (float(v) - y_min) / (y_max - y_min)
             yf = max(0.0, min(1.0, yf))
@@ -715,8 +737,14 @@ def _plot_ascii(
                     canvas[y][x] = char
 
     # 先绘制 train（T），再绘制 val（V）——val 后绘制保证 V 在重叠处可见
+    # val 的 x 坐标基于 eval_interval 对齐到 train 的 step，确保位置准确
+    if eval_interval < 1:
+        eval_interval = 1
     put_curve(train_losses, n_train, "T")
-    put_curve(val_losses, max(n_train, n_val), "V")
+    put_curve(
+        val_losses, n_train, "V",
+        step_fn=lambda i: min(i * eval_interval, max(0, n_train - 1)),
+    )
 
     # 写入文件
     lines = []
@@ -813,9 +841,14 @@ def plot_loss_curve(
         # ASCII 模式也打印 val 信息（best step 与 matplotlib 分支一致）
         if eval_interval < 1:
             eval_interval = 1
-        val_x_ascii = [i * eval_interval for i in range(len(val_losses))]
-        if val_x_ascii and val_x_ascii[-1] >= len(train_losses):
-            val_x_ascii = [min(x, len(train_losses) - 1) for x in val_x_ascii]
+        n_train_ascii = len(train_losses)
+        if n_train_ascii > 0:
+            val_x_ascii = [
+                min(i * eval_interval, n_train_ascii - 1)
+                for i in range(len(val_losses))
+            ]
+        else:
+            val_x_ascii = list(range(len(val_losses)))
         _print_val_info(val_losses, val_x_ascii)
         print(f"[plot_loss_curve] loss 曲线已保存到: {txt_path}", flush=True)
         return txt_path
@@ -823,13 +856,18 @@ def plot_loss_curve(
     # matplotlib 可用分支
     fig, ax = plt.subplots(figsize=(10, 6))
     train_x = list(range(len(train_losses)))
-    # val 的 x 坐标按 eval_interval 对齐（不超过 train_x 范围）
+    # val 的 x 坐标按 eval_interval 对齐
     if eval_interval < 1:
         eval_interval = 1
-    val_x = [i * eval_interval for i in range(len(val_losses))]
-    if val_x and val_x[-1] >= len(train_losses):
-        # 防止超出，按比例缩放到 train 范围内
-        val_x = [min(x, len(train_losses) - 1) for x in val_x]
+    n_train_mpl = len(train_losses)
+    if n_train_mpl > 0:
+        # 每个 val 点对齐到 i*eval_interval，超出 train 范围时截断到最后一个 step
+        val_x = [
+            min(i * eval_interval, n_train_mpl - 1)
+            for i in range(len(val_losses))
+        ]
+    else:
+        val_x = list(range(len(val_losses)))
 
     ax.plot(train_x, train_losses, color="blue", linestyle="-", linewidth=1.0, label="train")
     if val_losses:
@@ -848,6 +886,17 @@ def plot_loss_curve(
             markeredgewidth=0.8,
             label=f"val (every {eval_interval} steps)",
         )
+    # Part4K2.5 Task 5：显式设置 y 轴范围，避免 loss 全 0（或全相等）时
+    # matplotlib 自动缩放导致曲线不可见（与 ASCII 路径的兜底逻辑一致）。
+    # 过滤 NaN / Inf，避免 set_ylim 抛 ValueError（训练异常时 loss 可能为 inf）
+    all_vals_mpl = [float(v) for v in list(train_losses) + list(val_losses)
+                    if v is not None and np.isfinite(float(v))]
+    if all_vals_mpl:
+        y_min_mpl = float(min(all_vals_mpl))
+        y_max_mpl = float(max(all_vals_mpl))
+        if y_max_mpl - y_min_mpl < 1e-12:
+            y_max_mpl = y_min_mpl + 1.0
+        ax.set_ylim(y_min_mpl, y_max_mpl)
     ax.set_xlabel("step")
     ax.set_ylabel("loss")
     ax.set_title("Loss Curve")
@@ -1246,12 +1295,17 @@ class Trainer:
         方便用户用 grep / awk 等命令行工具直接读取，避免依赖 JSON 解析。
         """
         os.makedirs(self.save_dir, exist_ok=True)
+        # initial_loss / final_loss：训练第一个与最后一个 step 的 loss
+        initial_loss = float(self.train_losses[0]) if self.train_losses else float("nan")
+        final_loss = float(self.train_losses[-1]) if self.train_losses else float("nan")
         history = {
             "train_losses": list(self.train_losses),
             "val_losses": list(self.val_losses),
             "max_steps": self.max_steps,
             "eval_interval": self.eval_interval,
             "best_val_loss": self.best_val_loss,
+            "initial_loss": initial_loss,
+            "final_loss": final_loss,
         }
         with open(os.path.join(self.save_dir, "loss_history.json"), "w", encoding="utf-8") as f:
             json.dump(history, f, ensure_ascii=False, indent=2)
@@ -1712,7 +1766,11 @@ class ParallelTrainer:
     def _split_steps(self):
         """把 ``max_steps`` 拆成 ``parallel_chunks`` 份，余数均摊到前几个 chunk。
 
-        返回 ``list[int]``，长度 = ``parallel_chunks``，和 = ``max_steps``。
+        返回 ``list[int]``：
+        - 若 ``max_steps >= parallel_chunks``：长度 = ``parallel_chunks``，
+          每个元素 >= 1，和 = ``max_steps``。
+        - 若 ``max_steps < parallel_chunks``：过滤掉 0 步 chunk，
+          长度 = ``max_steps``（每个 chunk 1 步），和 = ``max_steps``。
         """
         n = self.parallel_chunks
         base = self.max_steps // n
@@ -1721,6 +1779,7 @@ class ParallelTrainer:
         for i in range(remainder):
             steps_list[i] += 1
         # 过滤 0 步 chunk（max_steps < parallel_chunks 时部分 chunk 为 0）
+        # 当 max_steps >= parallel_chunks 时，base >= 1，所有 chunk 至少 1 步
         steps_list = [s for s in steps_list if s > 0]
         return steps_list
 
@@ -1916,6 +1975,11 @@ class ParallelTrainer:
           避免 chunk 内部的 checkpoint/loss 文件污染用户目录。
         - 关闭 tqdm 进度条与实时绘图，降低 IO 噪音。
         - chunk 训练结束后调用 ``_eval_full_val`` 计算可比较的 val_loss。
+
+        Part4K2.5 Task 6 修复：
+        - chunk 开始时备份模型状态，确保 chunk 训练后状态可追踪
+        - 每个 chunk 创建独立的优化器实例，避免优化器状态跨 chunk 泄漏
+        - chunk 训练后模型状态为该 chunk 的最终状态（由调用方决定是否恢复）
         """
         if chunk_steps <= 0:
             # 0 步 chunk：仅评估当前模型
@@ -1940,6 +2004,7 @@ class ParallelTrainer:
         if self.use_aux:
             chunk_cfg["aux_loss_weight"] = self.aux_loss_weight
 
+        # 每个 chunk 创建全新的优化器实例，确保优化器状态不跨 chunk 泄漏
         optimizer_cls = self.optimizer_cls
         if optimizer_cls is None:
             from .optim import AdamW
@@ -1992,6 +2057,8 @@ class ParallelTrainer:
             val_loss = self._eval_full_val(model)
             train_loss = (chunk_trainer.train_losses[-1]
                           if chunk_trainer.train_losses else float("inf"))
+        # chunk_trainer 和 optimizer 在 with 块结束后被 GC，
+        # 确保优化器状态不泄漏到下一个 chunk
         return model, train_loss, val_loss
 
     # ------------------------------------------------------------------
@@ -2119,14 +2186,32 @@ class ParallelTrainer:
             self.model.load_state_dict(copy.deepcopy(original_state))
 
         for idx, result in enumerate(chunk_results):
+            # Part4K2.5 Task 6 修复：chunk_steps < 4 时跳过 Phase 2 重训
+            # （步数太少重训意义不大，且 chunk_steps // 4 == 0 会导致步数为 0）
+            retrain_steps = result["steps"] // 4
+            if retrain_steps <= 0:
+                # chunk_steps < 4：跳过重训，但仍 update 进度条以保持 total 一致
+                if self.verbose:
+                    print(f"[parallel] 跳过 chunk {result['chunk_id']} 重训"
+                          f"（steps={result['steps']} < 4）", flush=True)
+                outer_pbar.update(
+                    n=1,
+                    postfix={
+                        "retrain": f"chunk_{result['chunk_id']}(skip)",
+                        "val": "N/A",
+                    },
+                )
+                continue
+
             if self.verbose:
                 print(f"[parallel] 串行重训 chunk {result['chunk_id']} "
                       f"({idx+1}/{len(chunk_results)})...", flush=True)
             # 加载该 chunk 的最佳状态作为重训起点
             if result["model_state"] is not None and hasattr(self.model, "load_state_dict"):
                 self.model.load_state_dict(copy.deepcopy(result["model_state"]))
-            # 再训练一段短步数（chunk_steps // 4，至少 1 步）
-            retrain_steps = max(1, result["steps"] // 4)
+            # Part4K2.5 Task 6 修复：retrain_steps = chunk_steps // 4（>= 1，因为
+            # chunk_steps >= 4 时 result["steps"] // 4 >= 1）
+            # _train_chunk 内部会创建新的优化器，确保 Phase 2 不复用旧优化器状态
 
             # Part4K2 Task 7.5: round_robin 重训也用对应 chunk 的数据子集
             if self.parallel_strategy == "round_robin":
