@@ -14,6 +14,11 @@
 8. [推理部署](#8-推理部署)
 9. [完整示例：CometSpark V0.5-1B](#9-完整示例cometspark-v05-1b)
 10. [VerseTrainer CLI 速查](#10-versetrainer-cli-速查)
+11. [智能分区训练指南（Part4K2 新增）](#11-智能分区训练指南part4k2-新增)
+12. [持续训练指南（Part4K2 新增）](#12-持续训练指南part4k2-新增)
+13. [jinja2 聊天模板使用指南（Part4K2 新增）](#13-jinja2-聊天模板使用指南part4k2-新增)
+14. [.vn 格式使用指南（Part4K2 新增）](#14-vn-格式使用指南part4k2-新增)
+15. [数据集下载指南（Part4K2 新增）](#15-数据集下载指南part4k2-新增)
 
 ---
 
@@ -45,7 +50,7 @@ pip install "torch>=2.0"          # GPU 委托后端（cuda / mps）
 pip install torch_npu             # 华为昇腾 NPU 后端（仅在 NPU 设备上需要）
 ```
 
-安装 `verse_infra` 后会注册 5 个 VerseTrainer CLI 入口（详见第 10 节）：`verse-train` / `verse-finetune` / `verse-posttrain` / `verse-eval` / `verse-tokenize`。
+安装 `verse_infra` 后会注册 7 个 VerseTrainer CLI 入口（详见第 10 节）：`verse-train` / `verse-finetune` / `verse-posttrain` / `verse-eval` / `verse-tokenize` / `verse-convert` / `verse-download`，外加通过统一分发入口调用的 `verse-continue`（`python -m verse_infra.verse_trainer.cli verse-continue`）。
 
 > **Part4K1 导入路径变更**：`verse_tokenizer` / `verse_inference` / `verse_compat` 已聚合为 `verse_infra` 子模块。新代码请用 `from verse_infra.verse_tokenizer import BPETokenizer`；旧路径 `from verse_tokenizer import BPETokenizer` 仍可用（经 shim 转发 + DeprecationWarning，一个版本）。
 
@@ -1327,15 +1332,18 @@ spark/
 
 ## 10. VerseTrainer CLI 速查
 
-VerseTrainer 提供 5 个 CLI 入口（安装 `verse_infra` 后自动注册为 console_scripts）：
+VerseTrainer 提供 8 个 CLI 入口（7 个注册为 console_scripts + 1 个通过统一分发入口调用）：
 
 | 命令 | 作用 | 关键参数 |
 |---|---|---|
-| `verse-train` | 预训练 | `--config` / `--device cpu\|cuda\|npu` / `--parallel-chunks N` / `--max-steps` / `--resume` / `--amp` / `--loss-optimizer` / `--single-sample` / `--prompt` / `--completion` / `--single-file` |
+| `verse-train` | 预训练 | `--config` / `--device cpu\|cuda\|npu` / `--parallel-chunks N` / `--max-steps` / `--resume` / `--amp` / `--loss-optimizer` / `--single-sample` / `--partition-training` / `--partition-size N` / `--prompt` / `--completion` / `--single-file` |
+| `verse-continue` | **持续训练（Part4K2）** | `--checkpoint` / `--additional-steps` / `--config` / `--device` / `--amp`（通过 `python -m verse_infra.verse_trainer.cli verse-continue` 调用） |
 | `verse-finetune` | 微调 | `--config` / `--method lora\|full` / `--device` / `--data` |
 | `verse-posttrain` | 后训练 | `--config` / `--rl nexrl\|sft\|dpo` / `--device` / `--data` |
-| `verse-eval` | 评估 + 打分 | `--config` / `--checkpoint` / `--prompts-file` / `--references-file` / `--score` |
+| `verse-eval` | 评估 + 打分 | `--config` / `--checkpoint` / `--prompts-file` / `--references-file` / `--score` / `--max-tokens`（默认 None=EOS 自然停止） |
 | `verse-tokenize` | tokenizer 训练 / 加载 / 转换 | `--train` / `--load` / `--convert` / `--from-hf Qwen/Qwen3.5-35B-A3B` |
+| `verse-download` | **数据集下载（Part4K2）** | `--url` / `--hf` / `--split` / `--to-npz` / `-o` |
+| `verse-convert` | **模型格式转换（Part4K2）** | `--input` / `--output` / `--chat-template` / `--tokenizer` / `--arch` |
 
 完整参数说明见 [`packages/verse_infra/verse_infra/verse_trainer/cli.py`](../packages/verse_infra/verse_infra/verse_trainer/cli.py)。
 
@@ -1361,7 +1369,349 @@ verse-eval --config spark/config/cometspark_v05.yml \
 
 # 5. 加载 Qwen tokenizer
 verse-tokenize --from-hf Qwen/Qwen3.5-35B-A3B
+
+# 6. 智能分区训练（Part4K2，低内存跑大模型）
+verse-train --config spark/config/cometspark_v05.yml \
+    --partition-training --partition-size 2 --max-steps 1000
+
+# 7. 持续训练（Part4K2，从 checkpoint 继续追加训练）
+python -m verse_infra.verse_trainer.cli verse-continue \
+    --checkpoint checkpoints/best.pt --additional-steps 1000 \
+    --config spark/config/cometspark_v05.yml --device cuda --amp
+
+# 8. 模型格式互转（Part4K2，.pt ↔ .vn）
+verse-convert --input checkpoints/best.pt --output model.vn \
+    --chat-template chat_template.jinja --tokenizer tokenizer.json --arch versenex
+
+# 9. 数据集下载（Part4K2，任意 URL + HF + 自动转 .npz）
+verse-download --url https://example.com/data.jsonl --to-npz -o data/cached.npz
+verse-download --hf wikitext --split train
 ```
+
+---
+
+## 11. 智能分区训练指南（Part4K2 新增）
+
+智能分区训练（`LayerWiseTrainer`）把模型按 layer 分组训练，训完一组卸载到硬盘 `.vn` 分片，保持统一实体（对外表现为完整模型训练）。适用于**有限内存的 CPU / 单卡 GPU 训练大模型**场景。详见 [ADR-011](architecture/adr-011-layerwise-training.md)。
+
+### 11.1 适用场景
+
+- 1B 参数模型在 8GB 内存 CPU 上训练（全量训练需 12GB+）
+- 单卡 GPU 显存不足以容纳完整模型 + 优化器状态
+- 希望逐层聚焦训练（底层 / 顶层差异化学习率需求）
+
+### 11.2 基本用法
+
+```python
+from verse_torch import LayerWiseTrainer
+
+# model 需有 .blocks 属性（如 VerseNexLM / CometSparkNexLM）
+trainer = LayerWiseTrainer(
+    model,
+    config={
+        "lr": 1e-3,
+        "weight_decay": 0.01,
+        "log_interval": 10,
+        "eval_interval": 50,
+        "finetune_steps": 20,   # 合并后整体微调 20 步
+    },
+    partition_size=2,            # 每组 2 个 block
+    memory_threshold_mb=512,     # 内存超 512MB 触发卸载
+)
+train_losses, val_losses = trainer.fit(train_loader, val_loader, max_steps=1000)
+```
+
+### 11.3 工作原理
+
+1. **分组**：按 `partition_size` 把 `model.blocks` 分组（embedding / lm_head / norm 始终在内存）
+2. **逐组训练**：训练当前组时其他组冻结（`requires_grad=False`），每组训练 `max_steps // n_partitions` 步
+3. **卸载**：训完一组用 `VNFileWriter` 写到 `offload_dir/partition_{idx}.vn`（safetensors / npz，无损）
+4. **内存监控**：超过 `memory_threshold_mb` 时自动卸载已训练的非当前组
+5. **合并**：全部组训练完成后，从硬盘加载所有分片恢复完整模型
+6. **可选 fine-tune**：`finetune_steps > 0` 时合并后整体微调（全部参数可训练，`lr * 0.5`）
+
+### 11.4 CLI 用法
+
+```bash
+# 智能分区训练（CPU，partition_size=2）
+verse-train --config spark/config/cometspark_v05.yml \
+    --partition-training --partition-size 2 --max-steps 1000
+
+# 配合 GPU + 混合精度
+verse-train --config spark/config/cometspark_v05.yml \
+    --partition-training --partition-size 4 --device cuda --amp --max-steps 5000
+```
+
+### 11.5 参数调优建议
+
+| 参数 | CPU 8GB | CPU 16GB | GPU 24GB |
+|---|---|---|---|
+| `partition_size` | 2 | 4 | 8（或不用分区） |
+| `memory_threshold_mb` | 512 | 1024 | 4096 |
+| `finetune_steps` | 20 | 30 | 50 |
+
+> **提示**：`partition_size` 越小越接近全量训练（精度越高但速度越慢）；`finetune_steps` 用于弥合分组训练的层间边界，建议至少 20 步。
+
+---
+
+## 12. 持续训练指南（Part4K2 新增）
+
+持续训练（`verse-continue`）在训练完成后从 checkpoint 继续追加训练，与 `--resume` 的"中断恢复"语义不同：`--resume` 是从中断点继续同一轮训练，`verse-continue` 是在已完成训练基础上追加新步数。
+
+### 12.1 与 `--resume` 的区别
+
+| 特性 | `--resume` | `verse-continue` |
+|---|---|---|
+| 语义 | 中断恢复（继续同一轮训练） | 追加训练（已完成基础上加步数） |
+| `best_val_loss` | 恢复中断前的值 | 继承之前的值（不从头比较） |
+| 适用场景 | 训练意外中断 | 训练完成后想继续提升 |
+| 调用方式 | `verse-train --resume` | `python -m verse_infra.verse_trainer.cli verse-continue` |
+
+### 12.2 CLI 用法
+
+```bash
+# 从 checkpoint 继续追加 1000 步训练
+python -m verse_infra.verse_trainer.cli verse-continue \
+    --checkpoint checkpoints/best.pt --additional-steps 1000 \
+    --config spark/config/cometspark_v05.yml --device cuda --amp
+
+# CPU 持续训练
+python -m verse_infra.verse_trainer.cli verse-continue \
+    --checkpoint checkpoints/best.pt --additional-steps 500 \
+    --config spark/config/cometspark_v05_small.yml --device cpu
+```
+
+### 12.3 编程接口
+
+```python
+from verse_infra.verse_trainer import continue_train
+
+# continue_train 通过 train(continue_from=checkpoint) 实现
+continue_train(
+    config_path="spark/config/cometspark_v05.yml",
+    checkpoint="checkpoints/best.pt",
+    additional_steps=1000,
+    device="cuda",
+    amp=True,
+)
+```
+
+### 12.4 注意事项
+
+- `--checkpoint` 必须指向有效的 `.pt` 文件（含 `state_dict`）
+- 自动继承之前的 `best_val_loss`，新训练中只有更低 val_loss 才会更新 best
+- 支持 `--device cuda --amp` GPU 加速
+- 持续训练的 checkpoint 仍保存为 `.pt` 格式（可用 `verse-convert` 转 `.vn`）
+
+---
+
+## 13. jinja2 聊天模板使用指南（Part4K2 新增）
+
+Part4K2 将 ChatML 渲染升级为 jinja2 模板优先 + f-string 降级，并新增 Qwen3 官方工具调用格式支持。详见 [ADR-010](architecture/adr-010-jinja2-chat-template.md)。
+
+### 13.1 基础 ChatML 渲染
+
+```python
+from verse_infra.verse_tokenizer import render_chat_qwen
+
+# 渲染多轮对话
+text = render_chat_qwen([
+    {"role": "user", "content": "你好"},
+    {"role": "assistant", "content": "你好！很高兴见到你。"},
+])
+# 输出：<|im_start|>user\n你好<|im_end|>\n<|im_start|>assistant\n你好！很高兴见到你。<|im_end|>\n
+
+# 推理前缀（add_generation_prompt=True）
+text = render_chat_qwen(
+    [{"role": "user", "content": "你好"}],
+    add_generation_prompt=True,
+)
+# 输出末尾追加 <|im_start|>assistant\n，等待模型生成
+```
+
+### 13.2 工具调用渲染
+
+```python
+from verse_infra.verse_tokenizer import render_chat_qwen_with_tools
+
+tools = [{"type": "function", "function": {
+    "name": "get_weather",
+    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+}}]
+
+messages = [
+    {"role": "user", "content": "北京天气"},
+    {"role": "assistant", "content": "",
+     "tool_calls": [{"name": "get_weather", "arguments": {"city": "北京"}}]},
+    {"role": "tool", "content": '{"temp": 25}'},
+]
+
+out = render_chat_qwen_with_tools(messages, tools=tools)
+# assistant 消息渲染为：
+# <|im_start|>assistant
+# <tool_call>
+# {"name": "get_weather", "arguments": {"city": "北京"}}
+# </tool_call>
+# <|im_end|>
+```
+
+### 13.3 解析模型生成的工具调用
+
+```python
+from verse_infra.verse_tokenizer import extract_tool_calls_qwen3
+
+# 模型生成的文本
+generated = '<tool_call>\n{"name": "search", "arguments": {"q": "天气"}}\n</tool_call>'
+calls = extract_tool_calls_qwen3(generated)
+# 返回：[{"name": "search", "arguments": {"q": "天气"}}]
+
+# 无工具调用时返回空列表
+calls = extract_tool_calls_qwen3("普通回复")  # []
+```
+
+### 13.4 jinja2 可选依赖
+
+- **jinja2 可用时**：优先用 `Template(template_str).render(**kwargs)` 渲染
+- **jinja2 不可用时**：降级为 f-string 拼接，输出**完全等价**
+- 安装：`pip install "jinja2>=3.0"`
+
+> **提示**：jinja2 路径的输出与 f-string 降级路径完全等价（`ensure_ascii=True` + `sort_keys=True` 对齐 `tojson` 行为），无需担心两条路径输出差异。
+
+### 13.5 模板常量
+
+```python
+from verse_infra.verse_tokenizer.chat_template import (
+    CHATML_TEMPLATE,                  # 基础 ChatML
+    CHATML_TEMPLATE_WITH_TOOLS,       # 含 tools 声明
+    CHATML_TEMPLATE_WITH_TOOL_CALLS,  # 含 tools 声明 + assistant 工具调用
+)
+# 这些模板字符串可内嵌到 tokenizer.json 的 chat_template 字段
+```
+
+---
+
+## 14. .vn 格式使用指南（Part4K2 新增）
+
+`.vn` 是基于 safetensors 的 ZIP 容器格式，取代传统 pickle `.pt`，提供 mmap 零拷贝 + pickle-free 安全性 + 自描述元数据。详见 [ADR-009](architecture/adr-009-vn-format.md)。
+
+### 14.1 CLI 互转
+
+```bash
+# .pt → .vn（可附加 chat_template / tokenizer）
+verse-convert --input checkpoints/best.pt --output model.vn \
+    --chat-template chat_template.jinja --tokenizer tokenizer.json --arch versenex
+
+# .vn → .pt（无损回转）
+verse-convert --input model.vn --output model.pt
+```
+
+### 14.2 编程接口：写入
+
+```python
+from verse_torch import VNFileWriter
+
+with VNFileWriter("model.vn", arch="versenex", config=cfg_dict) as w:
+    w.write_weights(model.state_dict())
+    w.write_chat_template(template_str)   # 可选
+    w.write_tokenizer("tokenizer.json")   # 可选
+```
+
+### 14.3 编程接口：读取
+
+```python
+from verse_torch import VNFileReader
+
+with VNFileReader("model.vn") as r:
+    meta = r.read_meta()              # {"vn_format_version": 1, "arch": ..., ...}
+    cfg = r.read_config()             # 模型配置 dict
+    sd = r.read_weights(mmap=True)    # 权重（safetensors mmap 零拷贝）
+    tmpl = r.read_chat_template()     # Optional[str]
+    tok = r.read_tokenizer()          # Optional[dict]
+```
+
+### 14.4 互转函数
+
+```python
+from verse_torch import pt_to_vn, vn_to_pt, convert_format
+
+# .pt → .vn
+pt_to_vn("model.pt", "model.vn", arch="versenex", config=cfg,
+          chat_template=tmpl_str, tokenizer="tokenizer.json")
+
+# .vn → .pt
+vn_to_pt("model.vn", "model.pt")
+
+# 自动检测后缀互转
+convert_format("model.pt", "model.vn")
+convert_format("model.vn", "model.pt")
+```
+
+### 14.5 格式结构
+
+```
+model.vn (ZIP)
+├── model.safetensors   # 权重（safetensors 可用时，mmap 零拷贝）
+├── model.npz           # 权重（safetensors 不可用时降级，allow_pickle=False）
+├── config.yml          # 模型配置（YAML，优先 PyYAML，否则 JSON 兼容子集）
+├── chat_template.jinja # 聊天模板（可选）
+├── tokenizer.json      # tokenizer（可选）
+└── meta.json           # 元数据（vn_format_version / arch / weight_format / compression_info / created_at）
+```
+
+> **提示**：safetensors 不可用时自动降级 npz，纯标准库 + numpy 即可工作。安装 `pip install "safetensors>=0.4"` 启用 mmap 零拷贝。
+
+---
+
+## 15. 数据集下载指南（Part4K2 新增）
+
+`DatasetDownloader` 支持任意 URL + HuggingFace datasets 下载，断点续传 + 多线程 + 自动转 `.npz` 缓存。
+
+### 15.1 CLI 用法
+
+```bash
+# 任意 URL 下载（多线程 + 断点续传 + 自动转 .npz）
+verse-download --url https://example.com/data.jsonl --to-npz -o data/cached.npz
+
+# HuggingFace datasets 下载
+verse-download --hf wikitext --split train
+verse-download --hf wikitext --split train --subset wikitext-2-raw-v1
+```
+
+### 15.2 编程接口
+
+```python
+from verse_infra import DatasetDownloader
+
+dl = DatasetDownloader(cache_dir="data/datasets", num_workers=4)
+
+# 任意 URL 下载 + 自动转 .npz
+npz_path = dl.download_and_cache(
+    "https://example.com/data.jsonl",
+    output_path="data/datasets/cached.npz",
+)
+
+# HuggingFace datasets 下载
+dir_ = dl.download_hf("wikitext", subset="wikitext-2-raw-v1", split="train")
+```
+
+### 15.3 支持的格式转换
+
+下载后自动转为 `.npz`（含 `ids` / `mask` / `seq_len`，与 `CachedDataset` 对齐）：
+
+| 源格式 | 转换说明 |
+|---|---|
+| `.json` / `.jsonl` | 解析每行 JSON，提取 `text` 字段 |
+| `.csv` | 用标准库 `csv` 解析，提取指定列 |
+| `.txt` | 每行作为一个样本 |
+| `.parquet` | 用 `pyarrow` 解析（需安装 `pyarrow`） |
+
+### 15.4 多线程与断点续传
+
+- **多线程**：文件 ≥ 10MB（`_MULTITHREAD_THRESHOLD`）自动分块多线程下载
+- **断点续传**：基于已下载字节数 + `Range` header，从中断点继续
+- **缓存**：`cache_dir` 下按 URL hash 命名，重复下载直接命中缓存
+
+> **提示**：HuggingFace datasets 需要 `pip install "datasets>=2.18"` 可选依赖。缺失时 `download_hf` 会提示安装。
 
 ---
 
@@ -1377,6 +1727,10 @@ verse-tokenize --from-hf Qwen/Qwen3.5-35B-A3B
 - [VerseInfra 聚合 ADR](architecture/adr-006-verse-infra-aggregation.md) —— Part4K1 总包聚合决策
 - [NexRL 设计 ADR](architecture/adr-007-nexrl-design.md) —— Part4K1 强化学习设计决策
 - [超稀疏并行注意力 ADR](architecture/adr-008-parallel-sparse-attention.md) —— Part4K1 三层并行加速决策
+- [.vn 文件格式 ADR](architecture/adr-009-vn-format.md) —— Part4K2 模型交付格式决策
+- [jinja2 聊天模板 ADR](architecture/adr-010-jinja2-chat-template.md) —— Part4K2 ChatML 模板决策
+- [智能分区训练 ADR](architecture/adr-011-layerwise-training.md) —— Part4K2 大模型低内存训练决策
+- [压缩技术 V1.3 ADR](architecture/adr-012-compression-v13.md) —— Part4K2 三重损失蒸馏决策
 - [压缩 PoC 基准](benchmarks/compression_poc.md) —— 1M 参数模型压缩实测数据
 - [性能调优指南](performance_tuning.md) —— CPU BLAS / numba / GPU 加速 / 混合精度 / CachedDataset
 - [主 README](../README.md)

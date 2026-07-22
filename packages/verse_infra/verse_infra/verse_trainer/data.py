@@ -535,8 +535,14 @@ class BatchLoader:
     """简易 batch loader：可迭代，每次返回一个 batch。
 
     与 PyTorch DataLoader 接口对齐（仅 PoC 所需的最小集）。
-    ``num_workers`` / ``pin_memory`` / ``persistent_workers`` 为占位参数
-    （CPU-only 实现忽略，保留以匹配 PyTorch API）。
+    ``num_workers`` / ``persistent_workers`` 为占位参数（CPU-only 实现忽略）。
+
+    Part4K2 Task 5.4: ``pin_memory`` 实装 + 数据预取（prefetch）：
+    - ``pin_memory=True`` 且 PyTorch 可用时，把每个 batch 的 ndarray 通过
+      ``torch.tensor(...).pin_memory()`` 预拷贝到锁页内存，便于后续
+      ``non_blocking=True`` 异步传输到 GPU。
+    - ``prefetch=True``（默认与 pin_memory 同步开启）时，当前 batch 训练的
+      同时在后台线程预取下一个 batch，掩盖 IO 延迟。
 
     Args:
         dataset: TextDataset / CachedDataset 或任何实现 __len__ / __getitem__ 的对象
@@ -546,8 +552,9 @@ class BatchLoader:
         drop_last: 是否丢弃最后不足 batch_size 的样本
         seed: 随机种子（仅 shuffle=True 时生效）
         num_workers: 占位参数（CPU-only，默认 0，忽略）
-        pin_memory: 占位参数（CPU-only，默认 False，忽略）
+        pin_memory: 是否启用锁页内存预拷贝（默认 False）
         persistent_workers: 占位参数（默认 False，忽略）
+        prefetch: 是否启用预取（默认与 pin_memory 同步开启）
     """
 
     def __init__(
@@ -561,6 +568,7 @@ class BatchLoader:
         num_workers: int = 0,
         pin_memory: bool = False,
         persistent_workers: bool = False,
+        prefetch: Optional[bool] = None,
     ):
         self.dataset = dataset
         self.batch_size = int(batch_size)
@@ -571,8 +579,19 @@ class BatchLoader:
         self._epoch = 0
         # 占位参数（CPU-only 实现忽略）
         self.num_workers = num_workers
-        self.pin_memory = pin_memory
+        self.pin_memory = bool(pin_memory)
         self.persistent_workers = persistent_workers
+        # Part4K2 Task 5.4: prefetch 默认跟随 pin_memory
+        self.prefetch = bool(prefetch) if prefetch is not None else self.pin_memory
+        # 检测 torch 可用性（pin_memory / prefetch 仅在有 torch 时生效）
+        try:
+            import torch as _torch  # type: ignore
+            self._torch = _torch
+        except Exception:
+            self._torch = None
+            # 无 torch 时 pin_memory / prefetch 自动降级为 False
+            self.pin_memory = False
+            self.prefetch = False
 
     def __len__(self) -> int:
         n = len(self.dataset)
@@ -580,19 +599,121 @@ class BatchLoader:
             return n // self.batch_size
         return (n + self.batch_size - 1) // self.batch_size
 
+    def _pin_batch(self, batch):
+        """把 batch 中的 ndarray 转成 pinned torch.Tensor（GPU 异步传输用）。
+
+        batch 通常是 ``(x_batch, y_batch)`` 元组，每个元素是 ndarray。
+        转换为 ``torch.Tensor`` 并调用 ``.pin_memory()``。
+        若 batch 结构复杂或转换失败，原样返回。
+        """
+        if not self.pin_memory or self._torch is None:
+            return batch
+        try:
+            if isinstance(batch, (tuple, list)):
+                pinned = []
+                for x in batch:
+                    if isinstance(x, np.ndarray):
+                        t = self._torch.from_numpy(x)
+                        try:
+                            t = t.pin_memory()
+                        except Exception:
+                            pass
+                        pinned.append(t)
+                    elif self._torch is not None and isinstance(x, self._torch.Tensor):
+                        try:
+                            if not x.is_pinned():
+                                x = x.pin_memory()
+                        except Exception:
+                            pass
+                        pinned.append(x)
+                    else:
+                        pinned.append(x)
+                return tuple(pinned) if isinstance(batch, tuple) else pinned
+            if isinstance(batch, np.ndarray):
+                t = self._torch.from_numpy(batch)
+                try:
+                    t = t.pin_memory()
+                except Exception:
+                    pass
+                return t
+        except Exception:
+            pass
+        return batch
+
     def __iter__(self):
+        """迭代一个 epoch 的所有 batch。
+
+        Part4K2 Task 5.4: prefetch=True 时，下一个 batch 在后台线程预取，
+        当前 batch yield 后立即可用，掩盖 collate + pin_memory 耗时。
+        """
         n = len(self.dataset)
         indices = np.arange(n)
         if self.shuffle:
             self.rng.shuffle(indices)
+
+        # 把 batch 索引切片预先收集
+        batch_slices = []
         for s in range(0, n, self.batch_size):
             batch_idx = indices[s: s + self.batch_size]
             if len(batch_idx) == 0:
                 continue
             if self.drop_last and len(batch_idx) < self.batch_size:
                 break
-            batch = [self.dataset[int(i)] for i in batch_idx]
-            yield self.collate_fn(batch)
+            batch_slices.append(batch_idx)
+
+        def _materialize(b_idx):
+            batch = [self.dataset[int(i)] for i in b_idx]
+            collated = self.collate_fn(batch)
+            # pin_memory 预拷贝到锁页内存
+            return self._pin_batch(collated)
+
+        if not self.prefetch or self._torch is None or len(batch_slices) <= 1:
+            # 不预取：同步迭代
+            for b_idx in batch_slices:
+                yield _materialize(b_idx)
+            return
+
+        # prefetch=True：用一个后台线程预取下一个 batch
+        import threading
+        import queue as _queue
+
+        # 队列长度 1（只预取一个 batch，避免内存翻倍）
+        q: "_queue.Queue" = _queue.Queue(maxsize=1)
+        sentinel = object()
+        stop_flag = threading.Event()
+
+        def _producer():
+            for b_idx in batch_slices:
+                if stop_flag.is_set():
+                    return
+                try:
+                    q.put(_materialize(b_idx))
+                except Exception as e:
+                    q.put(e)
+                    return
+            q.put(sentinel)
+
+        producer = threading.Thread(target=_producer, daemon=True)
+        producer.start()
+        try:
+            while True:
+                item = q.get()
+                if item is sentinel:
+                    return
+                if isinstance(item, Exception):
+                    # 预取过程中出错：向上抛
+                    raise item
+                yield item
+        finally:
+            # 主线程退出（含异常）时通知 producer 停止
+            stop_flag.set()
+            # 排空队列避免 producer 阻塞在 put
+            try:
+                while True:
+                    q.get_nowait()
+            except _queue.Empty:
+                pass
+            producer.join(timeout=1.0)
 
 
 # ---------------------------------------------------------------------------

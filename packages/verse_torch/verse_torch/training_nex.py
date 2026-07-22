@@ -57,7 +57,9 @@ from .training import (
     _scalar,
     _cfg_get,
     _format_eta,
+    _NoOpPBar,
 )
+from .device import empty_cache, is_cpu_device
 
 try:  # tqdm 可选依赖
     from tqdm.auto import tqdm as _tqdm
@@ -178,6 +180,13 @@ class VerseNexTrainer:
         self.enable_progress_bar = bool(_cfg_get(cfg, "enable_progress_bar", True))
         self.realtime_plot = bool(_cfg_get(cfg, "realtime_plot", True))
         self.eta_window = int(_cfg_get(cfg, "eta_window", 20))
+        # Part4K2 Task 7.2: 输出控制
+        self.quiet = bool(_cfg_get(cfg, "quiet", False))
+        self.verbose = bool(_cfg_get(cfg, "verbose", False))
+        # Part4K2 Task 7.4: 1B 模型 GPU 显存定期清理（CPU 时 no-op，默认 0=关闭）
+        self.empty_cache_interval = int(_cfg_get(cfg, "empty_cache_interval", 0))
+        # 设备字符串（用于 empty_cache；默认 cpu）
+        self.device = str(_cfg_get(cfg, "device", "cpu"))
 
         # aux_loss 配置：None 表示用模型自带的 aux_loss_weight
         aux_w = _cfg_get(cfg, "aux_loss_weight", None)
@@ -287,7 +296,8 @@ class VerseNexTrainer:
         """主训练循环。返回 ``(train_losses, val_losses)``。"""
         train_iter = itertools.cycle(self.train_loader)
 
-        use_tqdm = self.enable_progress_bar and _HAS_TQDM
+        # Part4K2 Task 7.2: quiet 模式下关闭进度条
+        use_tqdm = self.enable_progress_bar and _HAS_TQDM and not self.quiet
         if use_tqdm:
             pbar = _tqdm(range(self.max_steps), desc="train_nex",
                          unit="step", dynamic_ncols=True)
@@ -327,6 +337,17 @@ class VerseNexTrainer:
             self.train_losses.append(ce_val)
             self.aux_losses.append(aux_val)
             step_times.append(time.time() - t_step)
+
+            # Part4K2 Task 7.4: 1B 模型 GPU 显存定期清理（CPU 时 no-op）
+            if (
+                self.empty_cache_interval > 0
+                and step > 0
+                and step % self.empty_cache_interval == 0
+            ):
+                try:
+                    empty_cache(self.device)
+                except Exception:
+                    pass
 
             # 定期评估 + checkpoint + early stop
             if self.eval_interval > 0 and step % self.eval_interval == 0:
@@ -373,8 +394,10 @@ class VerseNexTrainer:
                     pass
 
             # 无 tqdm 时打印日志
+            # Part4K2 Task 7.2: quiet 模式下跳过中间日志打印
             if (
                 not use_tqdm
+                and not self.quiet
                 and self.log_interval > 0
                 and (step % self.log_interval == 0 or step == self.max_steps - 1)
                 and step != last_log_step
@@ -396,15 +419,23 @@ class VerseNexTrainer:
         pbar.close()
 
         # 训练摘要
+        # Part4K2 Task 7.2: quiet 模式下只打印简短结果
         wall = time.time() - t_start
         n_done = len(self.train_losses)
         avg_step = wall / n_done if n_done > 0 else 0.0
-        print(
-            f"[train_nex] done steps={n_done}/{self.max_steps} wall={wall:.2f}s "
-            f"avg_step={avg_step:.3f}s best_val={self.best_val_loss:.4f}"
-            + (f" best@step={best_step}" if best_step >= 0 else ""),
-            flush=True,
-        )
+        if self.quiet:
+            print(
+                f"[train_nex] done best_val={self.best_val_loss:.4f} "
+                f"steps={n_done} wall={wall:.1f}s",
+                flush=True,
+            )
+        else:
+            print(
+                f"[train_nex] done steps={n_done}/{self.max_steps} wall={wall:.2f}s "
+                f"avg_step={avg_step:.3f}s best_val={self.best_val_loss:.4f}"
+                + (f" best@step={best_step}" if best_step >= 0 else ""),
+                flush=True,
+            )
 
         self._save_history()
         return self.train_losses, self.val_losses

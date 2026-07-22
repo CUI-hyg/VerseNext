@@ -145,3 +145,13 @@ packages/
 - shim 保留一个版本（Part4K1 周期），下次 major release 删除
 - 相关测试：`tests/test_verse_infra_imports.py` 覆盖子模块导入 / 便捷重导出 / 旧路径 shim DeprecationWarning
 - 相关文档：[`packages/verse_infra/README.md`](../../packages/verse_infra/README.md)
+
+## 演进更新（Part4K2）
+
+本 ADR 的 VerseInfra 总包聚合结构保持不变。Part4K2 在此基础上扩展了 `verse_infra` 的导出能力与 CLI 子命令：
+
+- **DatasetDownloader 顶层导出**：`data/downloader.py` 的 `DatasetDownloader` 通过 `verse_infra/__init__.py` 的 `__getattr__` 懒加载导出，用户可 `from verse_infra import DatasetDownloader` 直接使用（无需知道子模块路径）。
+- **CLI 新增 3 个子命令**：`verse-convert`（模型格式互转）/ `verse-download`（数据集下载）/ `verse-continue`（持续训练，通过 `python -m verse_infra.verse_trainer.cli verse-continue` 统一分发入口调用，未注册为独立 console_script）。
+- **可选依赖新增**：`pyproject.toml` 新增 `chatml = ["jinja2>=3.0"]` 可选依赖（ChatML 模板渲染）；`datasets>=2.18` 作为 `verse-download --hf` 的可选依赖。
+
+`verse_trainer` 子模块的 CLI 从 5 个扩展为 8 个入口，但总包结构（`verse_tokenizer` / `verse_compat` / `verse_inference` / `verse_trainer` 四子模块）不变。

@@ -52,6 +52,15 @@ from .chat_template import (
     render_chat_qwen,
     render_prompt_qwen,
     split_prompt_completion_qwen,
+    # Part4K2 Task 2: jinja2 ChatML 模板 + 工具调用
+    _HAS_JINJA2,
+    CHATML_TEMPLATE,
+    CHATML_TEMPLATE_WITH_TOOLS,
+    CHATML_TEMPLATE_WITH_TOOL_CALLS,
+    TOOL_CALL_BEGIN,
+    TOOL_CALL_END,
+    render_chat_qwen_with_tools,
+    extract_tool_calls_qwen3,
 )
 from .unigram import (
     SentencePieceUnigramTokenizer,
@@ -97,6 +106,15 @@ __all__ = [
     "render_chat_qwen",
     "render_prompt_qwen",
     "split_prompt_completion_qwen",
+    # Part4K2 Task 2: jinja2 ChatML 模板 + 工具调用
+    "_HAS_JINJA2",
+    "CHATML_TEMPLATE",
+    "CHATML_TEMPLATE_WITH_TOOLS",
+    "CHATML_TEMPLATE_WITH_TOOL_CALLS",
+    "TOOL_CALL_BEGIN",
+    "TOOL_CALL_END",
+    "render_chat_qwen_with_tools",
+    "extract_tool_calls_qwen3",
     # Task 5.4: NexRL 集成包装器
     "NexTokenizerWrapper",
 ]

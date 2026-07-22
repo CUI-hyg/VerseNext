@@ -214,3 +214,10 @@
 - 本 ADR 的实现细节见 [`jepa_ema_design.md`](file:///workspace/verse_data/designs/jepa_ema_design.md)（JEPA EMA + 防坍塌设计草稿）与 [`jepa.py`](file:///workspace/packages/verse_awm/verse_awm/jepa.py) / [`rssm.py`](file:///workspace/packages/verse_awm/verse_awm/rssm.py) 源码。
 - 后续若引入 GPU 后端，可考虑补充 Diffusion 生成式路线作为可选能力。
 - 相关论文参考：[I-JEPA](https://arxiv.org/abs/2301.08243)、[V-JEPA 2](https://arxiv.org/abs/2506.09985)、[DreamerV3](https://arxiv.org/abs/2301.04104)、[LeCun "A Path Towards Autonomous Machine Intelligence"](https://openreview.net/pdf?id=BZ5a1r-kVsf)。
+
+## 演进更新（Part4K2）
+
+本 ADR 的世界模型路线（JEPA + RSSM）在 Part4K2 保持不变。Part4K2 的变更主要集中于 LLM 训练 / 部署工程化，未直接影响世界模型包（`verse_awm`）。间接关联：
+
+- **.vn 文件格式**（[ADR-009](adr-009-vn-format.md)）：未来世界模型权重也可用 `.vn` 格式交付（mmap 零拷贝加载 + 自描述元数据），但目前 `verse_awm` 模型仍用 `.pt` 格式。
+- **压缩技术 V1.3**（[ADR-012](adr-012-compression-v13.md)）：`compress_pipeline` 的剪枝 / 量化能力理论上可用于压缩 JEPA / RSSM 的 encoder，但尚未集成验证。

@@ -140,3 +140,13 @@ verse-posttrain --config spark/config/cometspark_v05.yml --rl nexrl
 - 五要素抽象灵感来源于 OpenAI Gym（Env / Action / Observation）+ RLHF 文献（Agent / Reward）
 - 相关测试：`tests/test_nexrl.py` 覆盖多维奖励 / 并行 rollout / KL 防崩溃 / 动作采样策略
 - 相关代码：[`verse_nex/nexrl/`](../../packages/verse_nex/verse_nex/nexrl/)
+
+## 演进更新（Part4K2）
+
+本 ADR 的 NexRL 五要素抽象（Agent / Env / State / Action / Reward）与 PPO + GAE + KL 自适应算法保持不变。Part4K2 的 jinja2 聊天模板（[ADR-010](adr-010-jinja2-chat-template.md)）为 NexRL 的工具调用场景提供了基础设施：
+
+- **Qwen3 工具调用格式**：`render_chat_qwen_with_tools` 支持 `<tool_call>{"name":...,"arguments":...}</tool_call>` 渲染，`extract_tool_calls_qwen3` 支持从模型生成文本解析工具调用——这为 NexRL 的 `CodeEnv` / `ChatEnv` 等需要工具调用的环境铺路。
+- **tokenizer.json 内嵌模板**：`chat_template.jinja` 可内嵌到 tokenizer.json，NexRL 训练时 tokenizer 与聊天模板同包分发，避免版本错配。
+- **持续训练支持**：`verse-continue` CLI 支持从 checkpoint 继续追加训练，可用于 NexRL 训练中断后的恢复（与 `--resume` 的中断恢复语义不同，`verse-continue` 是追加新步数）。
+
+NexRL 核心算法本身未变更，Part4K2 的改进主要在工程化支撑层面。

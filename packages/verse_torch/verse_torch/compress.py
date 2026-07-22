@@ -23,7 +23,7 @@ import numpy as np
 
 from .tensor import Tensor, no_grad
 from . import nn
-from .losses import cross_entropy, kl_div_loss
+from .losses import cross_entropy, kl_div_loss, mse_loss
 from .quantize import QuantizedLinear
 
 
@@ -282,81 +282,224 @@ class LoRALinear(nn.Module):
 
 
 class KnowledgeDistiller:
-    """知识蒸馏器：teacher (frozen) + student (trainable)。
+    """知识蒸馏器 V1.3：大模型 → 小模型能力转移（以小博大）。
 
-    Loss = alpha * T^2 * KL(softmax(teacher/T) || log_softmax(student/T))
-           + (1 - alpha) * CE(student, hard_targets)
+    V1.3 损失 = alpha * T^2 * KL(teacher/T || student/T)     # 软标签蒸馏
+              + (1 - alpha) * CE(student, labels)            # 硬标签蒸馏
+              + feature_loss_weight * MSE(student_feat, teacher_feat)  # 中间层特征匹配
+
+    V1.3 增强点：
+    - **中间层特征蒸馏**（feature-level distillation）：匹配 teacher / student 的
+      中间层输出，使小模型学到等效能力（``distill_layers`` + ``feature_loss_weight``）。
+    - **自适应温度调度**（temperature annealing）：训练过程中温度从高到低渐变，
+      前期放大软标签信息、后期收敛到尖锐分布。
+    - **三重损失**：软标签 + 硬标签 + 特征匹配。
 
     Args:
         teacher: frozen 教师模型（自动 eval + requires_grad=False）
         student: 可训练学生模型
-        T: 温度（默认 2.0），soft target 平滑度
-        alpha: soft loss 权重（默认 0.5），(1-alpha) 为 hard loss 权重
+        temperature: 蒸馏温度（默认 4.0），soft target 平滑度
+        alpha: soft loss 权重（默认 0.7），(1-alpha) 为 hard loss 权重
+        distill_layers: 指定蒸馏的中间层名称列表（feature-level distillation）；
+            目前仅作元数据记录，真正的特征提取通过 ``feature_extractor`` 回调完成。
+        feature_loss_weight: 中间层特征匹配损失权重（默认 0.3）
+        T: ``temperature`` 的旧参数别名（向后兼容 V1.0）；优先级低于 ``temperature``
     """
 
-    def __init__(self, teacher, student, T: float = 2.0, alpha: float = 0.5):
+    def __init__(self, teacher, student, temperature: float = 4.0,
+                 alpha: float = 0.7, distill_layers=None,
+                 feature_loss_weight: float = 0.3, T: float = None):
         self.teacher = teacher
         self.student = student
-        self.T = float(T)
+        # T 是旧参数别名：仅当显式传入（非 None）时覆盖 temperature
+        if T is not None:
+            temperature = T
+        self.temperature = float(temperature)
         self.alpha = float(alpha)
+        self.distill_layers = list(distill_layers) if distill_layers else None
+        self.feature_loss_weight = float(feature_loss_weight)
+        # 温度退火调度：从初始温度线性退火到 T_min
+        self._T_init = self.temperature
+        self._T_min = max(1.0, self.temperature * 0.25)
         # 冻结 teacher：eval 模式 + 所有参数 requires_grad=False
         self.teacher.eval()
         for p in _iter_all_params_static(teacher):
             p.requires_grad = False
 
-    def forward(self, student_logits: Tensor, teacher_logits: Tensor,
-                hard_targets) -> Tensor:
-        T = self.T
+    # ------------------------------------------------------------------
+    # T 属性：向后兼容 V1.0（self.T 读写映射到 self.temperature）
+    # ------------------------------------------------------------------
+    @property
+    def T(self) -> float:
+        return self.temperature
+
+    @T.setter
+    def T(self, value: float):
+        self.temperature = float(value)
+        # 重新初始化退火调度基准（仅在用户显式设 T 时更新）
+        self._T_init = self.temperature
+        self._T_min = max(1.0, self.temperature * 0.25)
+
+    def compute_loss(self, student_logits: Tensor, teacher_logits: Tensor,
+                     student_features=None, teacher_features=None,
+                     labels=None) -> Tensor:
+        """V1.3 联合损失计算。
+
+        Loss = alpha * T^2 * KL(teacher/T || student/T)
+             + (1 - alpha) * CE(student, labels)
+             + feature_loss_weight * MSE(student_features, teacher_features)
+
+        Args:
+            student_logits: 学生模型 logits（可微）
+            teacher_logits: 教师模型 logits（内部 detach，不回传梯度）
+            student_features: 学生中间层特征，``Tensor`` / ``list[Tensor]`` / ``None``
+            teacher_features: 教师中间层特征，``Tensor`` / ``list[Tensor]`` / ``None``
+            labels: 硬标签（``None`` 时跳过 CE 项）
+
+        Returns:
+            标量 Tensor，支持 backward
+        """
+        T = self.temperature
         # soft loss: KL(softmax(teacher/T) || log_softmax(student/T)) * T^2
-        # kl_div_loss(log_probs, target_probs) = sum(target * (log(target) - log_probs)).mean()
         # teacher_logits.detach() 切断梯度，不回传到 teacher
         teacher_probs = (teacher_logits.detach() / T).softmax(dim=-1)
         student_log_probs = (student_logits / T).log_softmax(dim=-1)
         soft_loss = kl_div_loss(student_log_probs, teacher_probs) * (T * T)
-        # hard loss: CE(student, hard_targets)
-        hard_loss = cross_entropy(student_logits, hard_targets)
-        # 联合损失
-        total = self.alpha * soft_loss + (1.0 - self.alpha) * hard_loss
+        # hard loss: CE(student, labels)
+        if labels is not None:
+            hard_loss = cross_entropy(student_logits, labels)
+            total = self.alpha * soft_loss + (1.0 - self.alpha) * hard_loss
+        else:
+            # 无硬标签时，soft loss 全权
+            total = self.alpha * soft_loss
+        # feature matching loss（V1.3 新增）
+        feat_loss = self._feature_loss(student_features, teacher_features)
+        if feat_loss is not None:
+            total = total + self.feature_loss_weight * feat_loss
         return total
 
-    def __call__(self, student_logits, teacher_logits, hard_targets):
-        return self.forward(student_logits, teacher_logits, hard_targets)
+    def _feature_loss(self, student_features, teacher_features):
+        """中间层特征匹配损失（MSE），返回标量 Tensor 或 None。"""
+        if (student_features is None or teacher_features is None
+                or self.feature_loss_weight == 0.0):
+            return None
+        s_list = (student_features if isinstance(student_features, (list, tuple))
+                  else [student_features])
+        t_list = (teacher_features if isinstance(teacher_features, (list, tuple))
+                  else [teacher_features])
+        n = min(len(s_list), len(t_list))
+        if n == 0:
+            return None
+        total = None
+        for i in range(n):
+            s, t = self._align_features(s_list[i], t_list[i])
+            # teacher 特征 detach，仅 student 侧回传梯度
+            l = mse_loss(s, t.detach())
+            total = l if total is None else total + l
+        return total / float(n)
 
-    def distill(self, train_loader, optimizer, max_steps: int = 100,
-                eval_fn=None, eval_every: int = 0):
-        """蒸馏训练循环（可选）。
+    @staticmethod
+    def _align_features(student_feat: Tensor, teacher_feat: Tensor):
+        """对齐 student / teacher 特征的最后一维（不同维时截断到较小者）。"""
+        sd = int(student_feat.data.shape[-1])
+        td = int(teacher_feat.data.shape[-1])
+        if sd == td:
+            return student_feat, teacher_feat
+        target = min(sd, td)
+        if sd != target:
+            student_feat = student_feat[..., :target]
+        if td != target:
+            teacher_feat = teacher_feat[..., :target]
+        return student_feat, teacher_feat
+
+    def forward(self, student_logits: Tensor, teacher_logits: Tensor,
+                hard_targets) -> Tensor:
+        """V1.0 兼容前向：等价于 ``compute_loss(..., labels=hard_targets)``。"""
+        return self.compute_loss(student_logits, teacher_logits,
+                                 labels=hard_targets)
+
+    def __call__(self, student_logits, teacher_logits, hard_targets=None,
+                 student_features=None, teacher_features=None):
+        return self.compute_loss(student_logits, teacher_logits,
+                                 student_features=student_features,
+                                 teacher_features=teacher_features,
+                                 labels=hard_targets)
+
+    def distill(self, train_loader, epochs=3, lr=1e-3, optimizer=None,
+                max_steps=None, eval_fn=None, eval_every: int = 0,
+                feature_extractor=None, anneal_temperature: bool = True):
+        """端到端蒸馏训练（V1.3）。
 
         Args:
-            train_loader: 可迭代对象，每次返回 (x, y)
-            optimizer: 优化器（如 AdamW）
-            max_steps: 最大训练步数
-            eval_fn: 可选回调 (step, student) -> None
+            train_loader: 可迭代对象，每次返回 ``(x, y)`` 或 ``(x, y, *rest)``
+            epochs: 训练轮数（V1.3 默认 3）
+            lr: 学习率（``optimizer=None`` 时内部创建 AdamW）
+            optimizer: 可选优化器（向后兼容 V1.0：旧调用 ``distill(loader, optimizer,
+                max_steps=...)`` 会把 optimizer 作为第 2 个位置参数传入）
+            max_steps: 最大训练步数上限（``None`` 表示不限，按 epochs 遍历）
+            eval_fn: 可选回调 ``(step, student) -> None``
             eval_every: 每隔多少步调用 eval_fn
+            feature_extractor: 可选 ``model -> (logits, features)`` 回调；
+                传入时启用中间层特征蒸馏，否则仅做 logit 级蒸馏
+            anneal_temperature: 是否启用自适应温度调度（从 ``temperature`` 线性
+                退火到 ``_T_min``）
 
         Returns:
-            训练损失历史 list
+            训练损失历史 ``list[float]``
         """
+        # 向后兼容：旧 API distill(train_loader, optimizer, max_steps=, ...)
+        # 第 2 个位置参数（epochs）被当成 optimizer 传入的情况
+        if not isinstance(epochs, (int, float)):
+            optimizer = epochs
+            epochs = 3
+        epochs = int(epochs)
+        if optimizer is None:
+            from .optim import AdamW
+            optimizer = AdamW(self.student.parameters(), lr=lr)
+        if max_steps is not None:
+            max_steps = int(max_steps)
+
         losses_hist = []
-        step = 0
+        total_steps = 0
         self.student.train()
-        while step < max_steps:
+        for epoch in range(epochs):
+            # 自适应温度调度：线性退火
+            if anneal_temperature and epochs > 1:
+                frac = epoch / (epochs - 1)
+                self.temperature = self._T_init + (self._T_min - self._T_init) * frac
             for batch in train_loader:
-                if step >= max_steps:
+                if max_steps is not None and total_steps >= max_steps:
                     break
-                x, y = batch
+                x, y = batch[0], batch[1]
                 optimizer.zero_grad()
-                # teacher forward (no_grad)
+                # teacher forward（no_grad，不构建计算图）
                 with no_grad():
-                    teacher_logits = self.teacher(x)
-                # student forward
-                student_logits = self.student(x)
-                loss = self.forward(student_logits, teacher_logits, y)
+                    if feature_extractor is not None:
+                        teacher_logits, teacher_feats = feature_extractor(
+                            self.teacher, x)
+                    else:
+                        teacher_logits = self.teacher(x)
+                        teacher_feats = None
+                # student forward（构建计算图）
+                if feature_extractor is not None:
+                    student_logits, student_feats = feature_extractor(
+                        self.student, x)
+                else:
+                    student_logits = self.student(x)
+                    student_feats = None
+                loss = self.compute_loss(
+                    student_logits, teacher_logits,
+                    student_features=student_feats,
+                    teacher_features=teacher_feats, labels=y)
                 loss.backward()
                 optimizer.step()
                 losses_hist.append(float(loss.data))
-                step += 1
-                if eval_fn is not None and eval_every > 0 and step % eval_every == 0:
-                    eval_fn(step, self.student)
+                total_steps += 1
+                if (eval_fn is not None and eval_every > 0
+                        and total_steps % eval_every == 0):
+                    eval_fn(total_steps, self.student)
+            if max_steps is not None and total_steps >= max_steps:
+                break
         return losses_hist
 
 
@@ -547,6 +690,7 @@ def distill_only(teacher, student, train_loader, max_steps: int = 100,
 
 
 def compress_pipeline(model, config=None, return_stats: bool = False,
+                      version: str = "1.3",
                       # 旧 API 向后兼容参数（任一非 None / 非 dict 时走旧 API）
                       target_ratio: float = 0.1, eval_fn=None,
                       sparsity: float = 0.3, qtype: str = "int4",
@@ -571,6 +715,11 @@ def compress_pipeline(model, config=None, return_stats: bool = False,
             "distill":   {"teacher": teacher_model, "epochs": 10, "lr": 1e-4}
         }
 
+    V1.3 新增：``config`` 顶层可放 ``"teacher_model"`` / ``"teacher"`` 作为蒸馏
+    教师的便捷入口（等价于 ``config["distill"]["teacher"]``），并可选 ``"train_loader"``。
+    当 ``teacher_model`` 存在但无 ``train_loader`` 时，仅冻结 teacher、为学生做好准备
+    （不实际训练）；有 ``train_loader`` 时执行端到端蒸馏。
+
     新 API **不修改原模型**：内部深拷贝 model 后再应用管线。
 
     **旧 API（向后兼容）**::
@@ -585,6 +734,9 @@ def compress_pipeline(model, config=None, return_stats: bool = False,
         config: dict，新 API 的压缩配置；若为 None 则走旧 API
         return_stats: 新 API 下是否返回 (compressed_model, stats) 元组
             （旧 API 始终返回 stats dict，此参数被忽略）
+        version: 压缩管线版本。``"1.3"``（默认，以小博大：prune → quantize →
+            distill → lora，含压缩报告）；``"1.0"`` / ``"1.2"`` 走旧 v2 流程
+            （prune → quantize → lora → ternary → distill）。仅对 dict 配置生效。
         target_ratio / eval_fn / sparsity / qtype / lora_r / lora_alpha / use_lora:
             旧 API 参数，仅当 ``config`` 不是 dict 时生效
 
@@ -597,6 +749,8 @@ def compress_pipeline(model, config=None, return_stats: bool = False,
     # 分派：新 API vs 旧 API
     # ------------------------------------------------------------------
     if isinstance(config, dict):
+        if str(version) == "1.3":
+            return _compress_pipeline_v13(model, config, return_stats=return_stats)
         return _compress_pipeline_v2(model, config, return_stats=return_stats)
     return _compress_pipeline_v1(
         model,
@@ -884,6 +1038,270 @@ def _compress_pipeline_v2(model, config: dict, return_stats: bool = False):
 
 
 # ---------------------------------------------------------------------------
+# Task 6 (V1.3): compress_pipeline v1.3 —— 以小博大
+# ---------------------------------------------------------------------------
+
+
+def _resolve_teacher(config: dict):
+    """从 config 中解析 teacher_model（支持顶层便捷字段与 distill 子配置）。"""
+    # 顶层便捷字段
+    teacher = config.get("teacher_model", config.get("teacher"))
+    train_loader = config.get("train_loader")
+    # distill 子配置优先级更高
+    d_cfg = config.get("distill")
+    if isinstance(d_cfg, dict):
+        teacher = d_cfg.get("teacher", teacher)
+        train_loader = d_cfg.get("train_loader", train_loader)
+    return teacher, train_loader, d_cfg
+
+
+def _compress_pipeline_v13(model, config: dict, return_stats: bool = False):
+    """V1.3 压缩流水线：prune → quantize → distill → lora（以小博大）。
+
+    相对 v2 的变化：
+    - **流程重排**：蒸馏在量化之后、LoRA 包装之前进行（先量化减存储、再蒸馏
+      转移能力、最后 LoRA 包装为微调准备）。
+    - **teacher_model 便捷入口**：``config`` 顶层可直接放 ``teacher_model`` /
+      ``teacher`` / ``train_loader``。
+    - **吞吐率优化**：量化后 QLinear 内部使用 fused matmul（``matmul_int4``）。
+    - **压缩报告**：stats 内嵌 ``compression_report`` 字段。
+
+    输出 stats 与 v2 完全兼容（同名同义键），并追加 V1.3 专属字段。
+    """
+    # 记录原始参数量与 bit 数（压缩前）
+    original_params = count_parameters(model)
+    original_bits = int(original_params * 32)
+
+    # 深拷贝模型，确保不修改原模型
+    new_model = _deep_copy_model(model)
+
+    steps = []
+    actual_sparsity = 0.0
+    qtype_applied = None
+    has_quantize = False
+
+    # ------------------------------------------------------------------
+    # 1. prune（可选）：结构化剪枝
+    # ------------------------------------------------------------------
+    if config.get("prune") is not None:
+        prune_cfg = dict(config["prune"])
+        sparsity = float(prune_cfg.pop("sparsity", 0.3))
+        method = prune_cfg.pop("method", "outlier_safe")
+        if method not in ("outlier_safe", None):
+            raise ValueError(
+                f"prune.method 仅支持 'outlier_safe'，得到 {method!r}"
+            )
+        pruner = OutlierSafePruner(new_model, sparsity=sparsity)
+        _, prune_report = pruner.apply()
+        nonzero_after_prune = count_nonzero_params(new_model)
+        actual_sparsity = (1.0 - nonzero_after_prune / original_params
+                           if original_params > 0 else 0.0)
+        steps.append({
+            "step": "prune",
+            "sparsity": sparsity,
+            "method": method,
+            "report": prune_report,
+            "actual_sparsity": float(actual_sparsity),
+        })
+
+    # ------------------------------------------------------------------
+    # 2. quantize（可选）：INT4 / INT8，fused matmul 加速
+    # ------------------------------------------------------------------
+    if config.get("quantize") is not None:
+        q_cfg = dict(config["quantize"])
+        bits = int(q_cfg.pop("bits", 4))
+        schema = q_cfg.pop("schema", "symmetric")
+        if schema not in ("symmetric", None):
+            raise ValueError(
+                f"quantize.schema 仅支持 'symmetric'，得到 {schema!r}"
+            )
+        if bits == 4:
+            qtype_applied = "int4"
+        elif bits == 8:
+            qtype_applied = "int8"
+        else:
+            raise ValueError(f"quantize.bits 仅支持 4 或 8，得到 {bits}")
+        quantize_only(new_model, dtype=qtype_applied)
+        has_quantize = True
+        steps.append({
+            "step": "quantize",
+            "bits": bits,
+            "qtype": qtype_applied,
+            "schema": schema,
+            "fused_matmul": True,  # V1.3：QuantizedLinear 内部走 fused 路径
+        })
+
+    # ------------------------------------------------------------------
+    # 2b. ternary（可选）：覆盖 quantize（与 v2 行为一致，最后生效）
+    # ------------------------------------------------------------------
+    if config.get("ternary") is not None:
+        ternary_only(new_model)
+        qtype_applied = "ternary"
+        has_quantize = True
+        steps.append({
+            "step": "ternary",
+            "qtype": "ternary",
+            "fused_matmul": True,
+        })
+
+    # ------------------------------------------------------------------
+    # 3. distill（可选，V1.3 核心）：teacher → student 能力转移
+    #    若提供 train_loader 则端到端蒸馏；否则仅冻结 teacher 做准备
+    # ------------------------------------------------------------------
+    teacher, train_loader, d_cfg = _resolve_teacher(config)
+    if teacher is not None:
+        d_cfg = dict(d_cfg) if isinstance(d_cfg, dict) else {}
+        epochs = int(d_cfg.get("epochs", 3))
+        lr = float(d_cfg.get("lr", 1e-3))
+        T = float(d_cfg.get("T", d_cfg.get("temperature", 4.0)))
+        alpha = float(d_cfg.get("alpha", 0.7))
+        feature_loss_weight = float(d_cfg.get("feature_loss_weight", 0.3))
+        distill_layers = d_cfg.get("distill_layers")
+        max_steps = d_cfg.get("max_steps")
+        feature_extractor = d_cfg.get("feature_extractor")
+        distiller = KnowledgeDistiller(
+            teacher, new_model, temperature=T, alpha=alpha,
+            distill_layers=distill_layers,
+            feature_loss_weight=feature_loss_weight,
+        )
+        if train_loader is not None:
+            losses = distiller.distill(
+                train_loader, epochs=epochs, lr=lr, max_steps=max_steps,
+                feature_extractor=feature_extractor,
+            )
+            steps.append({
+                "step": "distill",
+                "epochs": epochs,
+                "lr": lr,
+                "max_steps": max_steps,
+                "feature_level": feature_extractor is not None,
+                "final_loss": float(losses[-1]) if losses else None,
+                "loss_history_len": len(losses),
+            })
+        else:
+            # 无 train_loader：teacher 已冻结，student 就绪
+            steps.append({
+                "step": "distill",
+                "epochs": 0,
+                "lr": lr,
+                "note": "no train_loader; teacher frozen, student ready",
+            })
+
+    # ------------------------------------------------------------------
+    # 4. lora（可选）：为微调准备（QLoRA 风格）
+    # ------------------------------------------------------------------
+    if config.get("lora") is not None:
+        lora_cfg = dict(config["lora"])
+        rank = int(lora_cfg.pop("rank", 8))
+        alpha = float(lora_cfg.pop("alpha", 16.0))
+        lora_only(new_model, r=rank, alpha=alpha)
+        steps.append({
+            "step": "lora",
+            "rank": rank,
+            "alpha": alpha,
+        })
+
+    # ------------------------------------------------------------------
+    # 计算压缩后统计（与 v2 同构 + V1.3 压缩报告）
+    # ------------------------------------------------------------------
+    compressed_bits = compute_compressed_bits(new_model)
+    compressed_params = compressed_bits / 32
+    compression_ratio = (original_bits / compressed_bits
+                        if compressed_bits > 0 else float("inf"))
+    avg_bits = (compressed_bits / original_params
+                if original_params > 0 else 32.0)
+    nonzero_after = count_nonzero_params(new_model)
+    sparsity_final = (1.0 - nonzero_after / original_params
+                      if original_params > 0 else 0.0)
+
+    # 估算吞吐率提升：INT4 ≈ 4×、INT8 ≈ 2×、ternary ≈ 8×（相对 fp32 的权重访存）
+    throughput_factor = {None: 1.0, "int4": 4.0, "int8": 2.0, "ternary": 8.0}
+    est_throughput = throughput_factor.get(qtype_applied, 1.0)
+
+    report = {
+        "original_params": int(original_params),
+        "compressed_params": float(compressed_params),
+        "compression_ratio": float(compression_ratio),
+        "sparsity": float(sparsity_final),
+        "bits_per_param": float(avg_bits),
+        "estimated_throughput_improvement": float(est_throughput),
+        "version": "1.3",
+    }
+
+    stats = {
+        "original_params": int(original_params),
+        "compressed_params": float(compressed_params),
+        "compressed_bits": int(compressed_bits),
+        "original_bits": int(original_bits),
+        "compression_ratio": float(compression_ratio),
+        "sparsity": float(actual_sparsity),
+        "bits": float(avg_bits),
+        "qtype": qtype_applied if has_quantize else None,
+        "steps": steps,
+        # V1.3 专属
+        "version": "1.3",
+        "estimated_throughput_improvement": float(est_throughput),
+        "compression_report": report,
+    }
+
+    if return_stats:
+        return new_model, stats
+    return new_model
+
+
+def compression_report(model, compressed_model) -> dict:
+    """生成压缩报告（V1.3）。
+
+    Args:
+        model: 原始模型（Module）
+        compressed_model: 压缩后模型（Module，可能含 QLinear / LoRALinear）
+
+    Returns:
+        报告 dict::
+
+            {
+              "original_params": int,
+              "compressed_params": float,   # 等效 fp32 参数量
+              "compression_ratio": float,   # original_bits / compressed_bits
+              "sparsity": float,            # 1 - nonzero / total
+              "bits_per_param": float,      # 平均 bit/param
+              "estimated_throughput_improvement": float,
+              "version": "1.3",
+            }
+    """
+    orig_params = count_parameters(model)
+    comp_params_count = count_parameters(compressed_model)
+    orig_bits = int(orig_params * 32)
+    comp_bits = compute_compressed_bits(compressed_model)
+    ratio = (orig_bits / comp_bits) if comp_bits > 0 else float("inf")
+    avg_bits = (comp_bits / orig_params) if orig_params > 0 else 32.0
+    nonzero = count_nonzero_params(compressed_model)
+    sparsity = (1.0 - nonzero / comp_params_count
+                if comp_params_count > 0 else 0.0)
+    # 从压缩模型推断 qtype（首个 QLinear）
+    qtype = None
+    for _, m in compressed_model.named_modules():
+        ql = getattr(m, "_qlin", None)
+        if ql is not None and hasattr(ql, "qtype"):
+            qtype = ql.qtype
+            break
+        if isinstance(m, QLinear):
+            qtype = m.qtype
+            break
+    throughput_factor = {None: 1.0, "int4": 4.0, "int8": 2.0, "ternary": 8.0}
+    return {
+        "original_params": int(orig_params),
+        "compressed_params": float(comp_bits / 32),
+        "compression_ratio": float(ratio),
+        "sparsity": float(sparsity),
+        "bits_per_param": float(avg_bits),
+        "estimated_throughput_improvement": float(
+            throughput_factor.get(qtype, 1.0)),
+        "version": "1.3",
+    }
+
+
+# ---------------------------------------------------------------------------
 # Part4 P10: MoD Expert 结构化剪枝（MoD-Aware 压缩）
 # ---------------------------------------------------------------------------
 
@@ -1022,6 +1440,7 @@ __all__ = [
     # 函数
     "compress_pipeline",
     "compress_mod_experts",
+    "compression_report",
     "prune_only",
     "quantize_only",
     "lora_only",

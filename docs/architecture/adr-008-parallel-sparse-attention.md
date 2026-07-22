@@ -134,3 +134,13 @@ output = decoder.generate(prompt_ids, max_new_tokens=128)
   - [`verse_nex/tri_sparse_attn.py`](../../packages/verse_nex/verse_nex/tri_sparse_attn.py)
   - [`verse_nex/speculative.py`](../../packages/verse_nex/verse_nex/speculative.py)
   - [`verse_nex/kv_cache_parallel.py`](../../packages/verse_nex/verse_nex/kv_cache_parallel.py)
+
+## 演进更新（Part4K2）
+
+本 ADR 的三层加速方案（多 chunk 并行 + SpeculativeDecoder + ParallelKVCache）保持不变。Part4K2 的变更未直接影响超稀疏并行注意力本身，但提供了配套的工程化能力：
+
+- **激活检查点**：`VerseNexBlock` 的 `use_checkpoint=True` 开关可用于 TriSparseAttention 层的前向激活节省（GPU 大模型训练场景），与并行注意力互补（并行降时间、检查点降显存）。
+- **压缩技术 V1.3**（[ADR-012](adr-012-compression-v13.md)）：`CometSparkNexLM.compress_v13()` 可对含 TriSparseAttention 的模型进行剪枝 + 量化 + 蒸馏，压缩后的小模型仍保留 TriSparse 架构特性。
+- **.vn 格式交付**（[ADR-009](adr-009-vn-format.md)）：含 TriSparse / MoD 架构的模型可用 `.vn` 格式交付，`meta.json` 记录 `arch: versenex`，加载时可据此路由到正确的模型构造逻辑。
+
+超稀疏并行注意力的核心算法（SWA + Global sink + ALiBi 三路并行 + sigmoid gate 融合）在 Part4K2 未变更。

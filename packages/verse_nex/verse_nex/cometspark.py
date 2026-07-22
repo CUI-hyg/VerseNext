@@ -92,6 +92,9 @@ class VerseNexBlock(Module):
         aux_loss_weight: MoD aux loss 权重
         # SwiGLU 专属（仅当 layer_kind=="trisparse" 时生效）
         mlp_hidden_multiple: SwiGLU 隐藏层倍数（默认 4）
+        use_checkpoint: Part4K2 Task 5.2 激活检查点开关。
+            True 时前向不保存中间激活，反向时重新计算（节省显存，适用于 GPU 大模型训练）。
+            CPU / 无 PyTorch 时自动降级为直接前向。
     """
 
     VALID_KINDS = ("trisparse", "mod")
@@ -118,6 +121,8 @@ class VerseNexBlock(Module):
         dense_part_names: Optional[list] = None,
         # SwiGLU
         mlp_hidden_multiple: int = 4,
+        # Part4K2 Task 5.2: 激活检查点
+        use_checkpoint: bool = False,
     ):
         super().__init__()
         if layer_kind not in self.VALID_KINDS:
@@ -127,6 +132,7 @@ class VerseNexBlock(Module):
 
         self.dim = dim
         self.layer_kind = layer_kind
+        self.use_checkpoint = bool(use_checkpoint)
 
         # 共用 norm
         self.norm1 = RMSNorm(dim)
@@ -537,12 +543,16 @@ class CometSparkNexLM(Module):
     def generate(
         self,
         idx,
-        max_new_tokens: int = 32,
+        max_new_tokens: Optional[int] = None,
         temperature: float = 1.0,
         top_k: Optional[int] = None,
         eos_id: Optional[int] = None,
+        max_safe_limit: int = 100_000,
     ) -> np.ndarray:
         """自回归生成（**完全迭代式 for 循环**）。
+
+        Part4K2 Task 3 升级：默认不限长度（``max_new_tokens=None``），生成到
+        EOS 自然停止；达到 ``max_safe_limit`` 安全上限时强制停止以防无限循环。
 
         - greedy 路径（``temperature==1.0`` 且 ``top_k is None``）：使用
           ``forward_recurrent`` 维护每层 KV/SSM 状态，O(1) 单步推理。
@@ -551,13 +561,17 @@ class CometSparkNexLM(Module):
 
         Args:
             idx: prompt 序列，shape (B, T_prompt) 或 (T_prompt,)
-            max_new_tokens: 最大生成 token 数
+            max_new_tokens: 最大生成 token 数；``None`` 表示不限（生成到
+                ``eos_id`` 自然停止，或达到 ``max_safe_limit`` 安全上限）。
+                指定值时按值生成（兼容旧调用）。
             temperature: 采样温度；1.0 走 greedy + recurrent
             top_k: top-k 采样；None 表示无限制
             eos_id: 若指定且末尾非 eos，则追加 eos_id 确保完整 UTF-8 边界
+            max_safe_limit: 安全上限（默认 100K），防止无限循环；仅当
+                ``max_new_tokens is None`` 时生效。
 
         Returns:
-            generated: ndarray, shape (B, T_prompt + max_new_tokens)
+            generated: ndarray, shape ``(B, T_prompt + 实际生成 token 数)``
         """
         if isinstance(idx, Tensor):
             idx_np = idx.data
@@ -567,10 +581,15 @@ class CometSparkNexLM(Module):
             idx_np = idx_np[None, :]
         idx_np = idx_np.astype(np.int64)
 
+        # 无限生成模式下：max_safe_limit 充当上限；旧调用按 max_new_tokens 限制
+        effective_limit = max_safe_limit if max_new_tokens is None else int(max_new_tokens)
+
         if temperature == 1.0 and top_k is None:
-            out = self._generate_recurrent(idx_np, max_new_tokens)
+            out = self._generate_recurrent(idx_np, effective_limit, eos_id=eos_id)
         else:
-            out = self._generate_with_logits(idx_np, max_new_tokens, temperature, top_k)
+            out = self._generate_with_logits(
+                idx_np, effective_limit, temperature, top_k, eos_id=eos_id
+            )
 
         # 强制追加 eos（确保 decode 完整 UTF-8 边界，与 CometSparkLM 行为一致）
         if eos_id is not None and out.shape[1] > 0:
@@ -580,8 +599,16 @@ class CometSparkNexLM(Module):
                 out = np.concatenate([out, eos_col], axis=1)
         return out
 
-    def _generate_recurrent(self, idx_np: np.ndarray, max_new_tokens: int) -> np.ndarray:
-        """Greedy + recurrent：使用 forward_recurrent 维护 KV cache。"""
+    def _generate_recurrent(
+        self,
+        idx_np: np.ndarray,
+        max_new_tokens: int,
+        eos_id: Optional[int] = None,
+    ) -> np.ndarray:
+        """Greedy + recurrent：使用 forward_recurrent 维护 KV cache。
+
+        Part4K2 Task 3：支持 EOS 提前停止（``eos_id`` 不为 None 时）。
+        """
         rng = np.random.default_rng()
         B, T_prompt = idx_np.shape
         with no_grad():
@@ -601,6 +628,9 @@ class CometSparkNexLM(Module):
                 logits_np = logits.data[:, -1, :]  # (B, vocab)
                 next_tok = logits_np.argmax(axis=-1).astype(np.int64)  # (B,)
                 cur = np.concatenate([cur, next_tok[:, None]], axis=1)
+                # EOS 提前停止（所有 batch 都生成 eos 时停止）
+                if eos_id is not None and np.all(next_tok == eos_id):
+                    break
         return cur
 
     def _generate_with_logits(
@@ -609,8 +639,12 @@ class CometSparkNexLM(Module):
         max_new_tokens: int,
         temperature: float,
         top_k: Optional[int],
+        eos_id: Optional[int] = None,
     ) -> np.ndarray:
-        """整序列 forward + 采样生成。"""
+        """整序列 forward + 采样生成。
+
+        Part4K2 Task 3：支持 EOS 提前停止（``eos_id`` 不为 None 时）。
+        """
         rng = np.random.default_rng()
         with no_grad():
             self.eval()
@@ -642,6 +676,9 @@ class CometSparkNexLM(Module):
                             dtype=np.int64,
                         )
                 cur = np.concatenate([cur, next_tok[:, None]], axis=1)
+                # EOS 提前停止（所有 batch 都生成 eos 时停止）
+                if eos_id is not None and np.all(next_tok == eos_id):
+                    break
         return cur
 
     # ------------------------------------------------------------------
@@ -798,6 +835,88 @@ class CometSparkNexLM(Module):
                 cfg["dense_part_names"] = list(moe.dense_part_names)
 
         return cfg
+
+    # ------------------------------------------------------------------
+    # Part4K2 Task 6: V1.3 压缩接口（以小博大）
+    # ------------------------------------------------------------------
+
+    def compress_v13(self, compress_config=None, teacher_model=None):
+        """V1.3 压缩：以小博大（prune → quantize → distill → lora）。
+
+        委托 :func:`verse_torch.compress.compress_pipeline`（version="1.3"），
+        返回压缩后的**新** :class:`CometSparkNexLM` 实例（不修改原模型）。
+
+        Args:
+            compress_config: 压缩配置 dict（``prune`` / ``quantize`` / ``lora`` /
+                ``ternary`` / ``distill`` 任意组合）。``None`` 表示空配置（仅深拷贝）。
+            teacher_model: 可选教师模型。传入时等价于在 ``compress_config["distill"]``
+                中设置 ``"teacher"``；若无 ``train_loader`` 则仅冻结 teacher 为学生
+                做准备，不实际训练（实际蒸馏请用 :meth:`distill_from`）。
+
+        Returns:
+            压缩后的新 :class:`CometSparkNexLM` 实例
+        """
+        from verse_torch.compress import compress_pipeline
+
+        cfg = dict(compress_config) if compress_config else {}
+        if teacher_model is not None:
+            d_cfg = cfg.get("distill")
+            if not isinstance(d_cfg, dict):
+                d_cfg = {}
+            d_cfg.setdefault("teacher", teacher_model)
+            cfg["distill"] = d_cfg
+        compressed, stats = compress_pipeline(
+            self, cfg, version="1.3", return_stats=True
+        )
+        # 缓存压缩统计，便于后续 compression_report 查询
+        object.__setattr__(compressed, "_v13_stats", stats)
+        return compressed
+
+    def distill_from(self, teacher_model, train_data, config=None):
+        """从大模型蒸馏能力到当前小模型（V1.3 以小博大核心）。
+
+        在当前模型（self）上就地执行知识蒸馏，使小模型逼近教师模型的能力。
+        蒸馏采用 V1.3 三重损失：软标签 KL + 硬标签 CE + 中间层特征 MSE，
+        并启用自适应温度调度。
+
+        Args:
+            teacher_model: 教师模型（frozen，自动 eval + requires_grad=False）
+            train_data: 可迭代对象，每次返回 ``(x, y)`` batch。
+                ``x`` 为 token 索引 ``(B, T)``，``y`` 为目标索引 ``(B, T)``
+            config: 蒸馏超参 dict，支持键：
+                - ``epochs`` (默认 3)
+                - ``lr`` (默认 1e-3)
+                - ``temperature`` / ``T`` (默认 4.0)
+                - ``alpha`` (默认 0.7)
+                - ``feature_loss_weight`` (默认 0.3)
+                - ``distill_layers`` (默认 None)
+                - ``max_steps`` (默认 None，不限)
+                - ``feature_extractor`` (默认 None)
+
+        Returns:
+            训练损失历史 ``list[float]``（末值应低于初值，体现能力转移）
+        """
+        from verse_torch.compress import KnowledgeDistiller
+
+        cfg = dict(config) if config else {}
+        epochs = int(cfg.pop("epochs", 3))
+        lr = float(cfg.pop("lr", 1e-3))
+        T = cfg.pop("temperature", cfg.pop("T", 4.0))
+        alpha = float(cfg.pop("alpha", 0.7))
+        feature_loss_weight = float(cfg.pop("feature_loss_weight", 0.3))
+        distill_layers = cfg.pop("distill_layers", None)
+        max_steps = cfg.pop("max_steps", None)
+        feature_extractor = cfg.pop("feature_extractor", None)
+
+        distiller = KnowledgeDistiller(
+            teacher_model, self, temperature=float(T), alpha=alpha,
+            distill_layers=distill_layers,
+            feature_loss_weight=feature_loss_weight,
+        )
+        return distiller.distill(
+            train_data, epochs=epochs, lr=lr, max_steps=max_steps,
+            feature_extractor=feature_extractor,
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -86,7 +86,7 @@ def evaluate(
     config_path: str,
     base_dir: str = ".",
     prompts=None,
-    max_new_tokens: int = 32,
+    max_new_tokens=None,
     temperature: float = 1.0,
     top_k=None,
     top_p=None,
@@ -97,11 +97,16 @@ def evaluate(
 ) -> dict:
     """加载 checkpoint 生成示例文本。
 
+    Part4K2 Task 3 升级：``max_new_tokens`` 默认改为 ``None``，即不限制输出
+    token 数，让模型按 EOS 自然停止（安全上限 100K 防无限循环）。用户在 CLI
+    显式指定 ``--max-tokens`` 时按值限制（兼容旧行为）。
+
     Args:
         config_path: 配置文件路径
         base_dir: 相对路径基准
         prompts: 自定义 prompt 列表；None 用默认 5 条
-        max_new_tokens: 每条 prompt 生成 token 数
+        max_new_tokens: 每条 prompt 生成 token 数；``None`` 表示不限
+            （生成到 EOS 自然停止，安全上限 100K）。默认 ``None``。
         temperature: 采样温度；1.0 等价 greedy，>1 增加随机性，<1 收敛
         top_k: top-k 采样；None 表示 greedy
         top_p: nucleus sampling 阈值 (0,1)；None 表示不限制
@@ -181,8 +186,9 @@ def evaluate(
         prompts = list(_DEFAULT_PROMPTS)
 
     results = []
+    token_limit_desc = "不限（EOS 自然停止）" if max_new_tokens is None else f"{max_new_tokens} tokens"
     print(
-        f"[evaluate] 开始生成 {len(prompts)} 条 prompt，每条 {max_new_tokens} tokens "
+        f"[evaluate] 开始生成 {len(prompts)} 条 prompt，每条 {token_limit_desc} "
         f"(temperature={temperature}, top_k={top_k}, top_p={top_p})",
         flush=True,
     )
@@ -196,23 +202,19 @@ def evaluate(
                 ids = [0]
             idx_np = np.asarray(ids, dtype=np.int64).reshape(1, -1)
             try:
+                # Part4K2 Task 3：max_new_tokens=None 时让模型 EOS 自然停止
+                gen_kwargs = dict(
+                    temperature=float(temperature),
+                    top_k=top_k,
+                    eos_id=eos_id,
+                )
+                if max_new_tokens is not None:
+                    gen_kwargs["max_new_tokens"] = int(max_new_tokens)
                 try:
-                    generated = model.generate(
-                        idx_np,
-                        max_new_tokens=int(max_new_tokens),
-                        temperature=float(temperature),
-                        top_k=top_k,
-                        top_p=top_p,
-                        eos_id=eos_id,
-                    )
+                    generated = model.generate(idx_np, top_p=top_p, **gen_kwargs)
                 except TypeError:
-                    generated = model.generate(
-                        idx_np,
-                        max_new_tokens=int(max_new_tokens),
-                        temperature=float(temperature),
-                        top_k=top_k,
-                        eos_id=eos_id,
-                    )
+                    # 旧模型 generate 不接受 top_p 参数
+                    generated = model.generate(idx_np, **gen_kwargs)
                 if isinstance(generated, Tensor):
                     gen_ids = generated.data.reshape(-1).tolist()
                 else:

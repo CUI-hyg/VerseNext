@@ -229,3 +229,11 @@ CometSpark V0.5-1B 采用 **VerseNex 原生架构**（`TriSparseAttention` + `Mo
 - **MoDLayer**：5 DensePart × 8 Expert × top-3 双层门控 Mixture-of-Depths。
 
 本 ADR 中 SSM 相关的 parallel/recurrent 双模式设计仍被 VerseNex 架构继承（`forward_parallel` / `forward_recurrent`），但底层 block 不再是 Mamba/RWKV。
+
+## 演进更新（Part4K2）
+
+本 ADR 的架构选型在 Part4K2 保持不变（VerseNex 原生架构仍为主线）。Part4K2 的以下能力为 VerseNex 架构提供了工程化支撑：
+
+- **压缩技术 V1.3**（[ADR-012](adr-012-compression-v13.md)）：`CometSparkNexLM.compress_v13()` / `distill_from(teacher, train_data)` 实例方法，支持对 VerseNex 架构模型进行剪枝 + 量化 + 蒸馏 + LoRA 压缩，大模型（1B）→ 小模型（280M INT4）能力转移。
+- **智能分区训练**（[ADR-011](adr-011-layerwise-training.md)）：`LayerWiseTrainer` 按 `model.blocks` 分组训练，VerseNexLM / CometSparkNexLM 的 `ModuleList` 结构天然适配分区训练。
+- **.vn 文件格式**（[ADR-009](adr-009-vn-format.md)）：VerseNex 模型的 `config.yml` `arch` 字段统一为 `versenex`，`.vn` 容器的 `meta.json` 记录该架构名，工具链可据此路由加载逻辑。

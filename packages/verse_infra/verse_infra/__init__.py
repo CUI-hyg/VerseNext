@@ -74,6 +74,16 @@ __all__ = [
     "collate_fn", "load_jsonl",
     "train", "ParallelTrainerSafe", "VerseTrainer", "ChunkOOMError",
     "evaluate", "visualize", "LossOptimizer", "RLTrainer",
+    # vn_format（Part4K2 Task 1，从 verse_torch 重导出）
+    "VN_FORMAT_VERSION", "VNFileReader", "VNFileWriter",
+    "pt_to_vn", "vn_to_pt", "convert_format", "has_safetensors",
+    # layerwise_trainer（Part4K2 Task 4，从 verse_torch 重导出）
+    "LayerWiseTrainer",
+    # data/downloader.py（Part4K2 Task 8）
+    "DatasetDownloader",
+    # Part4K2 Task 6: 压缩技术 V1.3（从 verse_torch 重导出）
+    "compression_report", "quantize_batch", "benchmark_throughput",
+    "KnowledgeDistiller", "compress_pipeline",
 ]
 
 
@@ -83,6 +93,27 @@ def __getattr__(name):
     首次访问某个名称时，按子模块顺序查找并缓存到 globals()，
     后续直接从 ``__dict__`` 取值。
     """
+    # 特殊处理：DatasetDownloader 位于仓库根目录的 data/downloader.py
+    # （不在 verse_infra 包内），需要把仓库根目录加入 sys.path 才能导入。
+    if name == "DatasetDownloader":
+        _workspace_dir = _os.path.dirname(_PACKAGES_DIR)
+        _data_dir = _os.path.join(_workspace_dir, "data")
+        if _os.path.isdir(_data_dir):
+            if _workspace_dir not in _sys.path:
+                _sys.path.insert(0, _workspace_dir)
+            try:
+                from data.downloader import DatasetDownloader as _DD
+                globals()[name] = _DD
+                return _DD
+            except ImportError as _e:
+                raise AttributeError(
+                    f"无法加载 DatasetDownloader from data.downloader: {_e}"
+                )
+        raise AttributeError(
+            "DatasetDownloader 不可用：未找到 data/downloader.py "
+            f"（期望位于 {_data_dir}）"
+        )
+
     # 先检查是否是子模块名
     if name in _SUBMODULES:
         _mod = __import__(f"verse_infra.{name}", fromlist=[name])
@@ -98,6 +129,52 @@ def __getattr__(name):
         if hasattr(_mod, name):
             _val = getattr(_mod, name)
             globals()[name] = _val  # 缓存，后续直接从 __dict__ 取
+            return _val
+
+    # 兜底：从 verse_torch 重导出 vn_format API（Part4K2 Task 1）
+    _VN_NAMES = {
+        "VN_FORMAT_VERSION", "VNFileReader", "VNFileWriter",
+        "pt_to_vn", "vn_to_pt", "convert_format", "has_safetensors",
+    }
+    # 兜底：从 verse_torch 重导出 LayerWiseTrainer（Part4K2 Task 4）
+    if name == "LayerWiseTrainer":
+        try:
+            import verse_torch as _vt
+        except ImportError as _e:
+            raise AttributeError(
+                f"无法从 verse_torch 重导出 LayerWiseTrainer：{_e}"
+            )
+        if hasattr(_vt, name):
+            _val = getattr(_vt, name)
+            globals()[name] = _val
+            return _val
+    if name in _VN_NAMES:
+        try:
+            import verse_torch as _vt
+        except ImportError as _e:
+            raise AttributeError(
+                f"无法从 verse_torch 重导出 {name!r}：{_e}"
+            )
+        if hasattr(_vt, name):
+            _val = getattr(_vt, name)
+            globals()[name] = _val
+            return _val
+
+    # 兜底：从 verse_torch 重导出压缩 V1.3 API（Part4K2 Task 6）
+    _COMPRESS_V13_NAMES = {
+        "compression_report", "quantize_batch", "benchmark_throughput",
+        "KnowledgeDistiller", "compress_pipeline",
+    }
+    if name in _COMPRESS_V13_NAMES:
+        try:
+            import verse_torch as _vt
+        except ImportError as _e:
+            raise AttributeError(
+                f"无法从 verse_torch 重导出 {name!r}：{_e}"
+            )
+        if hasattr(_vt, name):
+            _val = getattr(_vt, name)
+            globals()[name] = _val
             return _val
 
     raise AttributeError(f"module 'verse_infra' has no attribute {name!r}")

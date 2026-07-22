@@ -19,6 +19,10 @@ compat = ["torch>=2.0"]
 # verse_trainer CLI 可选依赖
 ui = ["tqdm>=4.66", "matplotlib>=3.7"]
 yaml = ["pyyaml>=6.0"]
+# Part4K2 Task 2: jinja2 可选依赖，用于 ChatML 模板渲染（不可用时降级为 f-string）
+chatml = ["jinja2>=3.0"]
+# VerseTokenizer（Qwen3）需要 transformers（lazy import，仅构造时触发）
+verse = ["transformers>=4.40"]
 
 [project.scripts]
 verse-train = "verse_infra.verse_trainer.cli:train_main"
@@ -26,6 +30,8 @@ verse-finetune = "verse_infra.verse_trainer.cli:finetune_main"
 verse-posttrain = "verse_infra.verse_trainer.cli:posttrain_main"
 verse-eval = "verse_infra.verse_trainer.cli:eval_main"
 verse-tokenize = "verse_infra.verse_trainer.cli:tokenize_main"
+verse-convert = "verse_infra.verse_trainer.cli:convert_main"
+verse-download = "verse_infra.verse_trainer.cli:download_main"
 
 [tool.setuptools.packages.find]
 where = ["."]

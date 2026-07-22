@@ -144,6 +144,10 @@ def autocast(device=None, dtype=None, enabled: bool = True):
     CPU 设备下为 **no-op**（按需求"CPU 时验证 no-op"）。
     无 PyTorch 时同样 no-op。
 
+    Part4K2 Task 5.5: NPU 后端完善 —— 当 device 为 ``"npu"`` 且
+    ``torch_npu`` 可用时，``torch.autocast(device_type="npu", ...)`` 由
+    ``torch_npu`` 注册后可正常工作。
+
     Args:
         device: 设备字符串或 ``torch.device``；``None`` 时自动用 ``"cpu"``。
         dtype: 计算 dtype（cuda 默认 ``torch.float16``）。
@@ -162,6 +166,11 @@ def autocast(device=None, dtype=None, enabled: bool = True):
         dtype = torch.float16
     elif isinstance(dtype, np.dtype):
         dtype = _numpy_dtype_to_torch(dtype)
+    # NPU 检测：torch_npu 必须可用才能 autocast
+    if dtype_str == "npu" and not has_torch_npu():
+        # torch_npu 不可用时降级为 no-op（避免训练中断）
+        yield
+        return
     with torch.autocast(device_type=dtype_str, dtype=dtype, enabled=enabled):
         yield
 

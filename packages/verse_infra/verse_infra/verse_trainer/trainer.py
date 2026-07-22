@@ -574,8 +574,14 @@ def train(
     resume: bool = False,
     amp: bool = False,
     enable_loss_optimizer: bool = False,
+    partition_training: bool = False,
+    partition_size: int = 2,
+    offload_dir: Optional[str] = None,
+    continue_from: Optional[str] = None,
+    quiet: bool = False,
+    verbose: bool = False,
 ) -> dict:
-    """主训练函数（Part4K1 Task 6.2 升级版）。
+    """主训练函数（Part4K1 Task 6.2 升级版 + Part4K2 Task 7.3/7.4）。
 
     兼容 ``data/demo/train/trainer.py.train`` 原签名，并新增：
     - ``device``：设备字符串（cpu/cuda/npu）
@@ -585,6 +591,16 @@ def train(
     - ``resume``：是否从 last checkpoint 断点续训
     - ``amp``：是否启用混合精度
     - ``enable_loss_optimizer``：是否启用 LossOptimizer（plateau 重走）
+    - ``partition_training``：是否启用智能分区训练（LayerWiseTrainer，Part4K2 Task 4）
+    - ``partition_size``：分区训练每组 layer 数量（默认 2）
+    - ``offload_dir``：分区训练硬盘卸载目录（默认 tempfile 自动创建）
+    - ``continue_from``：Part4K2 Task 7.3 持续训练 checkpoint 路径
+      （best.pt / resume.pt）。设置后从该 checkpoint 加载模型状态与
+      best_val_loss，再训练 ``max_steps_override`` 步。与 ``resume`` 区别：
+      ``resume`` 是中断后恢复（目标是完成原计划步数）；``continue_from``
+      是训练完成后继续追加训练（新目标 = additional_steps）。
+    - ``quiet``：Part4K2 Task 7.2 静默模式（仅打印最终结果）
+    - ``verbose``：Part4K2 Task 7.2 详细日志模式
 
     Args:
         config_path: 配置文件路径（config.yml）
@@ -675,21 +691,133 @@ def train(
 
     # 5. 实例化模型
     model, config = _build_model(model_cfg, vocab_size)
-    print(
-        f"[train] 实例化模型 arch={getattr(config, 'arch', 'versenex')} "
-        f"n_layer={getattr(config, 'n_layer', '?')} "
-        f"n_embd={getattr(config, 'n_embd', '?')} seq_len={seq_len}",
-        flush=True,
-    )
+    arch_name = getattr(config, "arch", "versenex")
+    # Part4K2 Task 7.4: 优先用 model.device_info() 获取设备信息
+    model_device_info = "cpu"
+    if hasattr(model, "device_info"):
+        try:
+            model_device_info = str(model.device_info())
+        except Exception:
+            model_device_info = "cpu"
+    if not quiet:
+        print(
+            f"[train] 实例化模型 arch={arch_name} "
+            f"n_layer={getattr(config, 'n_layer', '?')} "
+            f"n_embd={getattr(config, 'n_embd', '?')} seq_len={seq_len} "
+            f"device={model_device_info}",
+            flush=True,
+        )
 
     # 设备迁移
     if device is not None and device != "cpu":
         if hasattr(model, "to"):
             try:
                 model.to(device)
-                print(f"[train] 模型已迁移到 {device}", flush=True)
+                if not quiet:
+                    print(f"[train] 模型已迁移到 {device}", flush=True)
             except Exception as e:
                 print(f"[train] 警告：迁移模型到 {device} 失败：{e}", flush=True)
+
+    # ---------------------------------------------------------------
+    # Part4K2 Task 7.4: 1B 模型 CPU/GPU 亲和优化
+    # 检测参数量 > 100M 时自动启用优化：
+    # - auto_tune_threads()：CPU BLAS 线程自动调优
+    # - empty_cache_interval=50：GPU 显存定期清理
+    # - 建议 --partition-training：大模型分区训练降内存
+    # - GPU 时自动启用 autocast + GradScaler（amp=True）
+    # ---------------------------------------------------------------
+    n_params = 0
+    try:
+        if hasattr(model, "count_parameters"):
+            n_params = int(model.count_parameters())
+        else:
+            n_params = sum(
+                int(getattr(p, "numel", lambda: 0)()) if callable(getattr(p, "numel", None))
+                else int(np.prod(getattr(p, "shape", (1,)))) if hasattr(p, "shape")
+                else 0
+                for p in model.parameters()
+            )
+    except Exception:
+        n_params = 0
+
+    is_large_model = n_params > 100_000_000  # > 100M
+    empty_cache_interval = 0
+    if is_large_model:
+        # CPU BLAS 线程自动调优（大模型留 25% 余量给数据加载）
+        try:
+            from verse_torch.device import auto_tune_threads
+            tuned = auto_tune_threads(model_size_hint=n_params)
+            if not quiet:
+                print(
+                    f"[train] 1B 模型优化：参数量={n_params/1e6:.1f}M > 100M，"
+                    f"已自动调优 BLAS 线程数={tuned}",
+                    flush=True,
+                )
+        except Exception as e:
+            if not quiet:
+                print(f"[train] 警告：auto_tune_threads 失败：{e}", flush=True)
+
+        # GPU 时定期清理显存
+        eff_device = device or getattr(config, "device", "cpu") or "cpu"
+        if eff_device and str(eff_device).lower() not in ("cpu", "none", ""):
+            empty_cache_interval = 50
+            # 自动启用 amp（GPU 混合精度）
+            if not amp:
+                amp = True
+            if not quiet:
+                print(
+                    f"[train] 1B 模型优化：device={eff_device}，"
+                    f"已启用 empty_cache_interval=50 + amp={amp}",
+                    flush=True,
+                )
+
+        # 建议 --partition-training（CPU 大模型内存吃紧）
+        if not partition_training and not quiet:
+            print(
+                f"[train] 1B 模型建议：加 --partition-training 启用分区训练"
+                f"（按 layer 分组训练+卸载，降低峰值内存）",
+                flush=True,
+            )
+
+    # ---------------------------------------------------------------
+    # Part4K2 Task 7.3: 持续训练（continue_from）
+    # 从 checkpoint 加载模型状态 + 继承 best_val_loss
+    # 与 --resume 区别：continue_from 是追加训练，resume 是中断恢复
+    # ---------------------------------------------------------------
+    inherited_best_val_loss = None
+    if continue_from is not None:
+        if not os.path.exists(continue_from):
+            raise FileNotFoundError(
+                f"continue_from checkpoint 不存在：{continue_from}"
+            )
+        if not quiet:
+            print(f"[train] 持续训练：从 {continue_from} 加载模型状态", flush=True)
+        try:
+            with open(continue_from, "rb") as f:
+                ckpt_payload = pickle.load(f)
+            # 加载模型状态
+            sd = ckpt_payload.get("model_state_dict") or ckpt_payload.get("state_dict")
+            if sd is not None and hasattr(model, "load_state_dict"):
+                model.load_state_dict(copy.deepcopy(sd))
+                if not quiet:
+                    print(f"[train] 已加载模型 state_dict", flush=True)
+            # 继承 best_val_loss（不从头比较）
+            if "best_val_loss" in ckpt_payload:
+                inherited_best_val_loss = float(ckpt_payload["best_val_loss"])
+            elif "val_loss" in ckpt_payload:
+                inherited_best_val_loss = float(ckpt_payload["val_loss"])
+            if inherited_best_val_loss is not None and not quiet:
+                print(
+                    f"[train] 继承 best_val_loss={inherited_best_val_loss:.4f}"
+                    f"（后续 val_loss 需低于此值才算改善）",
+                    flush=True,
+                )
+        except Exception as e:
+            print(
+                f"[train] 警告：加载 continue_from checkpoint 失败：{e}，"
+                f"从头开始训练",
+                flush=True,
+            )
 
     # 6. 优化器 + 学习率调度
     lr = float(train_cfg.get("lr", 1e-3))
@@ -733,7 +861,68 @@ def train(
     arch = getattr(config, "arch", "versenex")
     resume_path = os.path.join(save_dir, "resume.pt") if resume else None
 
-    if parallel_chunks > 1:
+    # Part4K2 Task 4: 智能分区训练（LayerWiseTrainer）
+    # 启用后优先于 ParallelTrainer / VerseNexTrainer，按 layer 分组训练+卸载+合并
+    if partition_training:
+        from verse_torch import LayerWiseTrainer
+        # 卸载目录：未指定时在 save_dir 下创建 partition_offload 子目录
+        eff_offload_dir = offload_dir or os.path.join(save_dir, "partition_offload")
+        os.makedirs(eff_offload_dir, exist_ok=True)
+        lw_cfg = {
+            "lr": lr,
+            "weight_decay": weight_decay,
+            "batch_size": batch_size,
+            "eval_interval": eval_interval if val_loader is not None else None,
+            "log_interval": log_interval,
+            "seed": seed,
+            "label_smoothing": label_smoothing,
+            "finetune_steps": max(1, max_steps // 10),
+            # Part4K2 Task 7.2: 输出控制
+            "quiet": quiet,
+            "verbose": verbose,
+        }
+        lw_optimizer_cfg = {"weight_decay": weight_decay}
+        lw_trainer = LayerWiseTrainer(
+            model=model,
+            config=lw_cfg,
+            optimizer_config=lw_optimizer_cfg,
+            partition_size=partition_size,
+            offload_dir=eff_offload_dir,
+        )
+        # Part4K2 Task 7.3: 持续训练继承 best_val_loss
+        if inherited_best_val_loss is not None and hasattr(lw_trainer, "best_val_loss"):
+            lw_trainer.best_val_loss = float(inherited_best_val_loss)
+        if not quiet:
+            print(
+                f"[train] 开始训练 (LayerWiseTrainer) partition_size={partition_size} "
+                f"n_partitions={lw_trainer.n_partitions} max_steps={max_steps} "
+                f"batch_size={batch_size} lr={lr}",
+                flush=True,
+            )
+        train_losses, val_losses = lw_trainer.fit(
+            train_loader, val_loader, max_steps=max_steps,
+        )
+        best_val_loss = float(lw_trainer.best_val_loss)
+        # 保存 loss 历史
+        _save_parallel_history(
+            save_dir, train_losses, val_losses, max_steps, eval_interval, best_val_loss,
+        )
+        # 保存 resume checkpoint
+        try:
+            resume_path_out = os.path.join(save_dir, "resume.pt")
+            payload = {
+                "step": max_steps,
+                "model_state_dict": model.state_dict() if hasattr(model, "state_dict") else None,
+                "best_val_loss": best_val_loss,
+            }
+            with open(resume_path_out, "wb") as f:
+                pickle.dump(payload, f)
+        except Exception as e:
+            print(f"[train] 警告：保存 resume 失败：{e}", flush=True)
+        # 清理临时卸载目录（由 LayerWiseTrainer 自动管理时）
+        lw_trainer.cleanup()
+
+    elif parallel_chunks > 1:
         # ParallelTrainerSafe 分支
         parallel_cfg = {
             "parallel_chunks": parallel_chunks,
@@ -752,6 +941,11 @@ def train(
             "enable_progress_bar": enable_progress_bar,
             "realtime_plot": realtime_plot,
             "eta_window": eta_window,
+            # Part4K2 Task 7.2: 输出控制
+            "quiet": quiet,
+            "verbose": verbose,
+            # Part4K2 Task 7.4: 1B 模型 GPU 显存定期清理
+            "empty_cache_interval": empty_cache_interval,
         }
         optimizer_kwargs = {"weight_decay": weight_decay}
         checkpoint_mgr = CheckpointManager(save_dir)
@@ -767,11 +961,15 @@ def train(
             resume_path=resume_path,
             enable_loss_optimizer=enable_loss_optimizer,
         )
-        print(
-            f"[train] 开始训练 (ParallelTrainerSafe) chunks={parallel_chunks} "
-            f"max_steps={max_steps} batch_size={batch_size} lr={lr}",
-            flush=True,
-        )
+        # Part4K2 Task 7.3: 持续训练继承 best_val_loss
+        if inherited_best_val_loss is not None:
+            parallel_trainer.best_val_loss = float(inherited_best_val_loss)
+        if not quiet:
+            print(
+                f"[train] 开始训练 (ParallelTrainerSafe) chunks={parallel_chunks} "
+                f"max_steps={max_steps} batch_size={batch_size} lr={lr}",
+                flush=True,
+            )
         history = parallel_trainer.fit()
         train_losses = list(history.get("train_loss", []))
         val_losses = list(history.get("val_loss", []))
@@ -796,6 +994,11 @@ def train(
             "eta_window": eta_window,
             "aux_loss_weight": getattr(config, "aux_loss_weight", 0.01),
             "autocast": bool(amp),
+            # Part4K2 Task 7.2: 输出控制
+            "quiet": quiet,
+            "verbose": verbose,
+            # Part4K2 Task 7.4: 1B 模型 GPU 显存定期清理
+            "empty_cache_interval": empty_cache_interval,
         }
         nex_trainer = VerseNexTrainer(
             model=model,
@@ -814,15 +1017,21 @@ def train(
                 if sd is not None and hasattr(model, "load_state_dict"):
                     model.load_state_dict(copy.deepcopy(sd))
                 nex_trainer.best_val_loss = float(payload.get("best_val_loss", float("inf")))
-                print(f"[train] 从 {resume_path} 恢复训练状态", flush=True)
+                if not quiet:
+                    print(f"[train] 从 {resume_path} 恢复训练状态", flush=True)
             except Exception as e:
                 print(f"[train] 警告：恢复 resume 失败：{e}", flush=True)
 
-        print(
-            f"[train] 开始训练 (VerseNexTrainer) max_steps={max_steps} "
-            f"batch_size={batch_size} lr={lr}",
-            flush=True,
-        )
+        # Part4K2 Task 7.3: 持续训练继承 best_val_loss
+        if inherited_best_val_loss is not None:
+            nex_trainer.best_val_loss = float(inherited_best_val_loss)
+
+        if not quiet:
+            print(
+                f"[train] 开始训练 (VerseNexTrainer) max_steps={max_steps} "
+                f"batch_size={batch_size} lr={lr}",
+                flush=True,
+            )
         train_losses, val_losses = nex_trainer.fit()
         best_val_loss = float(nex_trainer.best_val_loss)
 
@@ -854,6 +1063,11 @@ def train(
             "realtime_plot": realtime_plot,
             "eta_window": eta_window,
             "autocast": bool(amp),
+            # Part4K2 Task 7.2: 输出控制
+            "quiet": quiet,
+            "verbose": verbose,
+            # Part4K2 Task 7.4: 1B 模型 GPU 显存定期清理
+            "empty_cache_interval": empty_cache_interval,
         }
         trainer = Trainer(
             model=model,
@@ -864,11 +1078,15 @@ def train(
             cfg=trainer_cfg,
             device=device,
         )
-        print(
-            f"[train] 开始训练 (Trainer) max_steps={max_steps} "
-            f"batch_size={batch_size} lr={lr}",
-            flush=True,
-        )
+        # Part4K2 Task 7.3: 持续训练继承 best_val_loss
+        if inherited_best_val_loss is not None:
+            trainer.best_val_loss = float(inherited_best_val_loss)
+        if not quiet:
+            print(
+                f"[train] 开始训练 (Trainer) max_steps={max_steps} "
+                f"batch_size={batch_size} lr={lr}",
+                flush=True,
+            )
         train_losses, val_losses = trainer.fit()
         best_val_loss = float(trainer.best_val_loss)
 
@@ -881,16 +1099,25 @@ def train(
     try:
         if hasattr(model, "save"):
             model.save(full_model_path)
-            print(f"[train] 完整模型已保存到 {full_model_path}", flush=True)
+            if not quiet:
+                print(f"[train] 完整模型已保存到 {full_model_path}", flush=True)
     except Exception as e:
         print(f"[train] 警告：保存完整模型失败：{e}", flush=True)
 
-    print(
-        f"[train] 训练完成 wall_clock={wall_clock:.2f}s "
-        f"initial_loss={initial_loss:.4f} final_loss={final_loss:.4f} "
-        f"best_val_loss={best_val_loss:.4f}",
-        flush=True,
-    )
+    # Part4K2 Task 7.2: quiet 模式下仅打印最终结果
+    if quiet:
+        print(
+            f"[train] done best_val={best_val_loss:.4f} "
+            f"steps={max_steps} wall={wall_clock:.1f}s",
+            flush=True,
+        )
+    else:
+        print(
+            f"[train] 训练完成 wall_clock={wall_clock:.2f}s "
+            f"initial_loss={initial_loss:.4f} final_loss={final_loss:.4f} "
+            f"best_val_loss={best_val_loss:.4f}",
+            flush=True,
+        )
 
     return {
         "wall_clock": wall_clock,
@@ -934,8 +1161,77 @@ def _save_parallel_history(save_dir, train_losses, val_losses,
     print(f"[train] loss 曲线已保存到: {actual_path}", flush=True)
 
 
+# ---------------------------------------------------------------------------
+# Part4K2 Task 7.3: 持续训练入口 continue_train
+# ---------------------------------------------------------------------------
+
+
+def continue_train(
+    checkpoint: str,
+    additional_steps: int,
+    config_path: str,
+    base_dir: str = ".",
+    n_threads: int = 0,
+    *,
+    device: Optional[str] = None,
+    amp: bool = False,
+    quiet: bool = False,
+    verbose: bool = False,
+) -> dict:
+    """持续训练入口（Part4K2 Task 7.3）。
+
+    从 checkpoint 加载模型状态（best.pt 或 resume.pt），继续训练
+    ``additional_steps`` 步。自动继承之前的 best_val_loss（不从头比较）。
+
+    与 :func:`train` 的 ``--resume`` 区别：
+    - ``resume`` 是中断后恢复（从中断点继续，目标是完成原计划的步数）
+    - ``continue_train`` 是训练完成后继续追加训练
+      （新目标 = additional_steps，独立步数）
+
+    Args:
+        checkpoint: checkpoint 文件路径（best.pt / resume.pt / 任意 pickle）
+        additional_steps: 追加训练步数
+        config_path: 配置文件路径（config.yml）
+        base_dir: 配置中相对路径的基准目录（默认当前目录）
+        n_threads: NumPy BLAS 线程数；0 表示不限制
+        device: 设备字符串（cpu/cuda/npu）
+        amp: 是否启用混合精度
+        quiet: 静默模式（仅打印最终结果）
+        verbose: 详细日志模式
+
+    Returns:
+        同 :func:`train` 的返回 dict
+    """
+    if not os.path.exists(checkpoint):
+        raise FileNotFoundError(f"checkpoint 不存在：{checkpoint}")
+    if additional_steps <= 0:
+        raise ValueError(f"additional_steps 必须为正整数，收到 {additional_steps}")
+
+    if not quiet:
+        print(
+            f"[continue] 持续训练：checkpoint={checkpoint} "
+            f"additional_steps={additional_steps}",
+            flush=True,
+        )
+
+    # 复用 train 入口，通过 continue_from + max_steps_override 实现
+    return train(
+        config_path=config_path,
+        base_dir=base_dir,
+        n_threads=n_threads,
+        device=device,
+        max_steps_override=int(additional_steps),
+        resume=False,
+        amp=amp,
+        continue_from=checkpoint,
+        quiet=quiet,
+        verbose=verbose,
+    )
+
+
 __all__ = [
     "train",
+    "continue_train",
     "ParallelTrainerSafe",
     "_safe_chunk_run",
     "install_signal_handlers",

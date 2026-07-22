@@ -88,26 +88,37 @@ class StreamingGenerator:
     def generate(
         self,
         prompt_ids: Union[list[int], np.ndarray, Tensor],
-        max_new_tokens: int = 100,
+        max_new_tokens: Optional[int] = None,
         yield_tokens: bool = True,
         eos_token_id: Optional[int] = None,
         reset_state: bool = True,
+        max_safe_limit: int = 100_000,
     ) -> Iterator[int]:
         """从 prompt 流式生成 token。
 
+        Part4K2 Task 3 升级：默认不限长度（``max_new_tokens=None``），生成到
+        ``eos_token_id`` 自然停止；达到 ``max_safe_limit`` 安全上限时强制停止
+        以防无限循环。
+
         Args:
             prompt_ids: prompt 的 token id 序列（list / ndarray / 1D Tensor）。
-            max_new_tokens: 最大生成 token 数。
+            max_new_tokens: 最大生成 token 数；``None`` 表示不限（生成到
+                ``eos_token_id`` 自然停止，或达到 ``max_safe_limit`` 安全上限）。
+                指定值时按值生成（兼容旧调用）。
             yield_tokens: 若为 True，每生成一个 token 就 yield；
                 若为 False，把所有 token 收集到 list 返回（仍用 generator 语法）。
             eos_token_id: 可选的 EOS token id；若生成的 token 等于它，提前停止。
             reset_state: 是否在开始时重置状态（默认 True）。
                 若为 False，复用上一次 generate 结束时的状态（多轮对话场景）。
+            max_safe_limit: 安全上限（默认 100K），防止无限循环；仅当
+                ``max_new_tokens is None`` 时生效。
 
         Yields:
             int: 每个新生成的 token id
         """
-        if max_new_tokens <= 0:
+        # 无限生成模式下：max_safe_limit 充当上限；旧调用按 max_new_tokens 限制
+        effective_limit = max_safe_limit if max_new_tokens is None else int(max_new_tokens)
+        if effective_limit <= 0:
             return
 
         # 1. 把 prompt_ids 转为 ndarray (T,)
@@ -141,7 +152,7 @@ class StreamingGenerator:
 
             # 4. 自回归生成
             next_token = self.sampler.sample(last_logits)
-            for _ in range(max_new_tokens):
+            for _ in range(effective_limit):
                 if yield_tokens:
                     yield next_token
                 # EOS 提前停止
@@ -160,18 +171,24 @@ class StreamingGenerator:
     def generate_from_text(
         self,
         prompt: str,
-        max_new_tokens: int = 100,
+        max_new_tokens: Optional[int] = None,
         add_special_tokens: bool = False,
         eos_token_id: Optional[int] = None,
+        max_safe_limit: int = 100_000,
     ) -> Iterator[str]:
         """从文本 prompt 流式生成（yield 解码后的字符串片段）。
 
+        Part4K2 Task 3 升级：默认不限长度（``max_new_tokens=None``），生成到
+        ``eos_token_id`` 自然停止；达到 ``max_safe_limit`` 安全上限时强制停止。
+
         Args:
             prompt: 文本 prompt
-            max_new_tokens: 最大生成 token 数
+            max_new_tokens: 最大生成 token 数；``None`` 表示不限（生成到
+                ``eos_token_id`` 自然停止，或达到 ``max_safe_limit`` 安全上限）。
             add_special_tokens: encode prompt 时是否加 special tokens（默认 False，
                 避免在中间插入 EOS）
             eos_token_id: 可选 EOS id
+            max_safe_limit: 安全上限（默认 100K），防止无限循环。
 
         Yields:
             str: 每个新生成 token 解码后的字符串片段
@@ -183,6 +200,7 @@ class StreamingGenerator:
             prompt_ids,
             max_new_tokens=max_new_tokens,
             eos_token_id=eos_token_id,
+            max_safe_limit=max_safe_limit,
         ):
             yield self.tokenizer.decode([token_id])
 

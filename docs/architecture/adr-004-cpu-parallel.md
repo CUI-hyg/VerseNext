@@ -247,3 +247,11 @@
 - **两条路径 API 保持一致**：用户通过 `--device cpu|cuda|npu` 切换，CPU 路径仍用本 ADR 的 multiprocessing 并行，GPU 路径走 `torch` 多线程流。
 - **混合精度 autocast**（Part4K1）在 GPU 下进一步加速：fp16 Tensor Core 加速 matmul，显存降低约 40%。
 - 本 ADR 的"反向未并行导致训练吞吐量瓶颈"风险在 GPU 路径下已缓解（`torch.Tensor.backward()` 自带反向并行）。
+
+## 演进更新（Part4K2）
+
+本 ADR 的 CPU 并行方案（`multiprocessing.Pool` + BLAS 线程）保持不变。Part4K2 新增的**智能分区训练**（[ADR-011](adr-011-layerwise-training.md)）与本 ADR 的并行方案互补：
+
+- **分区训练拆参数，并行训练拆 step**：`LayerWiseTrainer` 按 layer 分组训练（空间维度），`--parallel-chunks` 按 step 分块（时间维度），两者可组合使用实现双重降内存。
+- **`--partition-training --parallel-chunks 2`**：分区训练每组内部再用 chunk 并行，兼顾内存与速度。
+- **CPU 线程数 API**：Part4K2 完善 `set_num_threads` / `get_num_threads` / `auto_tune_threads`，与本 ADR 的 `OMP_NUM_THREADS` 环境变量互补（API 优先级高于环境变量）。

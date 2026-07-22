@@ -26,6 +26,13 @@ from .device import (
     has_torch,
     has_torch_npu,
     DEFAULT_DEVICE,
+    # Part4K2 Task 5: 显存管理与 BLAS 线程优化
+    empty_cache,
+    get_memory_info,
+    memory_usage,
+    set_num_threads,
+    get_num_threads,
+    auto_tune_threads,
 )
 # TorchBackend 仅在 torch 可用时导入（无 torch 时跳过，避免硬依赖）
 from .device import has_torch as _has_torch
@@ -58,6 +65,8 @@ from .quantize import (
     dequantize_ternary,
     matmul_ternary,
     QuantizedLinear,
+    quantize_batch,
+    benchmark_throughput,
 )
 from .nn import (
     Module,
@@ -145,6 +154,9 @@ from .training import (
     clip_grad_norm,
     ParallelTrainer,
     DistributedTrainer,
+    # Part4K2 Task 5: 资源利用优化
+    GradScaler,
+    activation_checkpoint,
 )
 from .training_nex import (
     VerseNexTrainer,
@@ -164,6 +176,7 @@ from .compress import (
     QLinear,
     compress_pipeline,
     compress_mod_experts,
+    compression_report,
     prune_only,
     quantize_only,
     lora_only,
@@ -181,6 +194,18 @@ from .scoring import (
     bleu,
     rouge_l,
 )
+# Part4K2 Task 1: .vn 文件格式（safetensors 性能优化版）
+from .vn_format import (
+    VN_FORMAT_VERSION,
+    VNFileReader,
+    VNFileWriter,
+    pt_to_vn,
+    vn_to_pt,
+    convert_format,
+    has_safetensors,
+)
+# Part4K2 Task 4: 智能分区训练器（LayerWiseTrainer）
+from .layerwise_trainer import LayerWiseTrainer
 
 __version__ = "0.1.0"
 
@@ -201,6 +226,13 @@ __all__ = [
     "has_torch",
     "has_torch_npu",
     "DEFAULT_DEVICE",
+    # Part4K2 Task 5: 显存管理与 BLAS 线程优化
+    "empty_cache",
+    "get_memory_info",
+    "memory_usage",
+    "set_num_threads",
+    "get_num_threads",
+    "auto_tune_threads",
     # 子模块
     "nn",
     "optim",
@@ -285,6 +317,9 @@ __all__ = [
     "clip_grad_norm",
     "ParallelTrainer",
     "DistributedTrainer",
+    # Part4K2 Task 5: 资源利用优化
+    "GradScaler",
+    "activation_checkpoint",
     # training_nex 模块（Part4）
     "VerseNexTrainer",
     "LoRATrainer",
@@ -305,6 +340,8 @@ __all__ = [
     "dequantize_ternary",
     "matmul_ternary",
     "QuantizedLinear",
+    "quantize_batch",
+    "benchmark_throughput",
     # parallel 函数/类
     "parallel_matmul",
     "ParallelLinear",
@@ -317,6 +354,7 @@ __all__ = [
     "QLinear",
     "compress_pipeline",
     "compress_mod_experts",
+    "compression_report",
     "prune_only",
     "quantize_only",
     "lora_only",
@@ -332,4 +370,14 @@ __all__ = [
     "char_f1",
     "bleu",
     "rouge_l",
+    # vn_format（Part4K2 Task 1）
+    "VN_FORMAT_VERSION",
+    "VNFileReader",
+    "VNFileWriter",
+    "pt_to_vn",
+    "vn_to_pt",
+    "convert_format",
+    "has_safetensors",
+    # layerwise_trainer（Part4K2 Task 4）
+    "LayerWiseTrainer",
 ]
