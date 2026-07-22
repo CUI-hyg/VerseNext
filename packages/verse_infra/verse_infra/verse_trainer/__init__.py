@@ -54,6 +54,8 @@ from .trainer import (
     install_signal_handlers,
     reset_shutdown_flag,
     is_shutdown_requested,
+    set_emergency_save_fn,
+    clear_emergency_save_fn,
     ChunkOOMError,
 )
 from .evaluate import evaluate
@@ -82,6 +84,8 @@ __all__ = [
     "install_signal_handlers",
     "reset_shutdown_flag",
     "is_shutdown_requested",
+    "set_emergency_save_fn",
+    "clear_emergency_save_fn",
     "ChunkOOMError",
     # 评估
     "evaluate",

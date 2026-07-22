@@ -667,6 +667,56 @@ def compute_loss_rate(loss_window, window: int = 50, min_delta: float = 1e-4) ->
 # ---------------------------------------------------------------------------
 
 
+def _compute_loss_x(train_losses, val_losses, eval_interval: int = 1):
+    """计算 train_x 和 val_x 坐标列表。
+
+    Part4K2.6 Task 1 修复：解决 val_loss 曲线画反的 bug。
+
+    旧实现中 val_x 用 ``min(i * eval_interval, n_train - 1)`` 截断，导致：
+    - ParallelTrainer per-chunk 场景（train/val 等长）下多个 val 点堆叠在
+     最后一个 step，曲线变形（即"画反"）。
+    - per-step 场景下 val_x 超出 train 范围时被截断，同样导致堆叠。
+
+    新策略：
+    - ``len(val_losses) == len(train_losses)``：1:1 对齐（ParallelTrainer
+      per-chunk 或 eval_interval=1），val_x = train_x = [0, 1, ..., n-1]。
+    - ``len(val_losses) < len(train_losses)`` 且 ``eval_interval > 1``：
+      per-step 对齐，val_x = [0, eval_interval, 2*eval_interval, ...]，
+      **不截断**（允许超出 train 范围，matplotlib 自动扩展 x 轴）。
+    - 其他情况（空数据等）：用索引作为 x 坐标。
+
+    Args:
+        train_losses: 训练 loss 列表
+        val_losses: 验证 loss 列表
+        eval_interval: 验证频率（<1 时视为 1）
+
+    Returns:
+        ``(train_x, val_x)`` 两个 list[int]
+    """
+    if eval_interval < 1:
+        eval_interval = 1
+    n_train = len(train_losses)
+    n_val = len(val_losses)
+
+    if n_train == 0:
+        # 无训练数据：val 用索引作为 x
+        train_x = []
+        val_x = list(range(n_val))
+    elif n_val == n_train:
+        # 1:1 对齐（ParallelTrainer per-chunk 或 eval_interval=1）
+        train_x = list(range(n_train))
+        val_x = list(range(n_val))
+    elif n_val > 0 and eval_interval > 1:
+        # per-step：val 对齐到 i*eval_interval，不截断
+        train_x = list(range(n_train))
+        val_x = [i * eval_interval for i in range(n_val)]
+    else:
+        train_x = list(range(n_train))
+        val_x = list(range(n_val))
+
+    return train_x, val_x
+
+
 def _plot_ascii(
     train_losses,
     val_losses,
@@ -697,6 +747,11 @@ def _plot_ascii(
 
     n_train = len(train_losses)
     n_val = len(val_losses)
+
+    # Part4K2.6 Task 1: 智能 val_x 计算，修复 val_loss 曲线画反的 bug
+    if eval_interval < 1:
+        eval_interval = 1
+    train_x, val_x = _compute_loss_x(train_losses, val_losses, eval_interval)
 
     # 构造画布
     canvas = [[" "] * width for _ in range(height)]
@@ -737,23 +792,50 @@ def _plot_ascii(
                     canvas[y][x] = char
 
     # 先绘制 train（T），再绘制 val（V）——val 后绘制保证 V 在重叠处可见
-    # val 的 x 坐标基于 eval_interval 对齐到 train 的 step，确保位置准确
-    if eval_interval < 1:
-        eval_interval = 1
-    put_curve(train_losses, n_train, "T")
+    # Part4K2.6 Task 1: val 的 x 坐标用 _compute_loss_x 计算（不截断），
+    # x 轴范围覆盖 train 和 val 的最大 step，避免 val 点堆叠
+    x_max_step = max(n_train - 1, val_x[-1] if val_x else 0)
+    n_total = x_max_step + 1
+    put_curve(train_losses, n_total, "T")
     put_curve(
-        val_losses, n_train, "V",
-        step_fn=lambda i: min(i * eval_interval, max(0, n_train - 1)),
+        val_losses, n_total, "V",
+        step_fn=lambda i: val_x[i] if i < len(val_x) else i,
     )
 
     # 写入文件
     lines = []
     lines.append(f"Loss Curve (ASCII)  range=[{y_min:.4f}, {y_max:.4f}]")
     lines.append(f"T=train  V=val  *=overlap  (width={width}, height={height})")
-    lines.append("+" + "-" * width + "+")
-    for row in canvas:
-        lines.append("|" + "".join(row) + "|")
-    lines.append("+" + "-" * width + "+")
+
+    # Part4K2.6 Task 1: 添加 y 轴刻度标签（y_max / y_mid / y_min）
+    # 标签宽度 label_w 字符，加上 " |" 共 label_w+2 字符（不超过 10）
+    label_w = 8
+
+    def _fmt_y_label(val):
+        """格式化 y 轴数值标签，右对齐到 label_w 字符。"""
+        s = f"{val:.4f}"
+        if len(s) > label_w:
+            # 数值过大时用科学计数法
+            s = f"{val:.2e}"
+        return s.rjust(label_w)
+
+    y_mid_val = (y_max + y_min) / 2.0
+    mid_row = height // 2
+    # 顶部边框
+    lines.append(" " * label_w + " +" + "-" * width + "+")
+    for r in range(height):
+        if r == 0:
+            label = _fmt_y_label(y_max)
+        elif r == height - 1:
+            label = _fmt_y_label(y_min)
+        elif r == mid_row:
+            label = _fmt_y_label(y_mid_val)
+        else:
+            label = " " * label_w
+        lines.append(f"{label} |" + "".join(canvas[r]) + "|")
+    # 底部边框
+    lines.append(" " * label_w + " +" + "-" * width + "+")
+    lines.append(" " * label_w + "   step →")
     lines.append(f"train_steps={n_train}  val_steps={n_val}  eval_interval={eval_interval}")
 
     # 附加 val 数值表（让 val 数据即使在密集 train 中也能被精确读出）
@@ -761,8 +843,8 @@ def _plot_ascii(
         lines.append("")
         lines.append("val_losses detail:")
         for i, v in enumerate(val_losses):
-            # val 的 step 与 plot_loss_curve 中 val_x 保持一致
-            step = i * eval_interval if eval_interval > 0 else i
+            # Part4K2.6 Task 1: val 的 step 与 _compute_loss_x 计算的 val_x 保持一致
+            step = val_x[i] if i < len(val_x) else i
             lines.append(f"  [step {step:>6d}] val_loss={float(v):.6f}")
 
     with open(save_path, "w", encoding="utf-8") as f:
@@ -839,35 +921,20 @@ def plot_loss_curve(
             txt_path = save_path + ".txt"
         _plot_ascii(train_losses, val_losses, txt_path, eval_interval=eval_interval)
         # ASCII 模式也打印 val 信息（best step 与 matplotlib 分支一致）
+        # Part4K2.6 Task 1: 用 _compute_loss_x 统一计算 val_x（不截断）
         if eval_interval < 1:
             eval_interval = 1
-        n_train_ascii = len(train_losses)
-        if n_train_ascii > 0:
-            val_x_ascii = [
-                min(i * eval_interval, n_train_ascii - 1)
-                for i in range(len(val_losses))
-            ]
-        else:
-            val_x_ascii = list(range(len(val_losses)))
+        _, val_x_ascii = _compute_loss_x(train_losses, val_losses, eval_interval)
         _print_val_info(val_losses, val_x_ascii)
         print(f"[plot_loss_curve] loss 曲线已保存到: {txt_path}", flush=True)
         return txt_path
 
     # matplotlib 可用分支
     fig, ax = plt.subplots(figsize=(10, 6))
-    train_x = list(range(len(train_losses)))
-    # val 的 x 坐标按 eval_interval 对齐
+    # Part4K2.6 Task 1: 用 _compute_loss_x 统一计算 train_x / val_x（不截断）
     if eval_interval < 1:
         eval_interval = 1
-    n_train_mpl = len(train_losses)
-    if n_train_mpl > 0:
-        # 每个 val 点对齐到 i*eval_interval，超出 train 范围时截断到最后一个 step
-        val_x = [
-            min(i * eval_interval, n_train_mpl - 1)
-            for i in range(len(val_losses))
-        ]
-    else:
-        val_x = list(range(len(val_losses)))
+    train_x, val_x = _compute_loss_x(train_losses, val_losses, eval_interval)
 
     ax.plot(train_x, train_losses, color="blue", linestyle="-", linewidth=1.0, label="train")
     if val_losses:
@@ -898,10 +965,27 @@ def plot_loss_curve(
             y_max_mpl = y_min_mpl + 1.0
         ax.set_ylim(y_min_mpl, y_max_mpl)
     ax.set_xlabel("step")
-    ax.set_ylabel("loss")
+    # Part4K2.6 Task 1: y 轴标签明确标注 "lower is better"，避免方向歧义
+    ax.set_ylabel("loss (lower is better)")
     ax.set_title("Loss Curve")
     ax.legend()
     ax.grid(True)
+    # Part4K2.6 Task 1: 标注 best_val_loss 的位置（红色箭头）
+    if val_losses and all_vals_mpl:
+        best_idx = int(min(range(len(val_losses)), key=lambda i: float(val_losses[i])))
+        best_val = float(val_losses[best_idx])
+        best_x = val_x[best_idx] if best_idx < len(val_x) else best_idx
+        # 箭头从上方指向 best 点
+        offset = (y_max_mpl - y_min_mpl) * 0.12
+        ax.annotate(
+            f"best={best_val:.4f}",
+            xy=(best_x, best_val),
+            xytext=(best_x, best_val + offset),
+            arrowprops=dict(arrowstyle="->", color="red", lw=1.5),
+            fontsize=9,
+            color="red",
+            ha="center",
+        )
     fig.tight_layout()
     fig.savefig(save_path, dpi=100)
     plt.close(fig)
@@ -1127,8 +1211,38 @@ class Trainer:
         last_log_step = -1
         best_step = -1
 
+        # Part4K2.6 Task 2: 注册紧急保存函数（Ctrl+C 时保存最新 checkpoint）
+        # 用 dict 持有最新 step / val_loss，闭包读取最新值（避免 late-binding）
+        _emergency_state = {"step": -1, "val_loss": float("inf")}
+
+        def _trainer_emergency_save():
+            """紧急保存当前训练状态（最新 checkpoint + 完整模型）。"""
+            try:
+                state = self._make_state(
+                    _emergency_state["step"], _emergency_state["val_loss"]
+                )
+                self.checkpoint.save_last(state)
+            except Exception as e:
+                print(f"[signal] 紧急保存 checkpoint 失败：{e}", flush=True)
+            try:
+                if hasattr(self.model, "save"):
+                    self.model.save(
+                        os.path.join(self.save_dir, "cometspark_emergency.pt")
+                    )
+            except Exception:
+                pass
+
+        try:
+            from verse_infra.verse_trainer.trainer import (
+                set_emergency_save_fn as _set_emg,
+            )
+            _set_emg(_trainer_emergency_save)
+        except ImportError:
+            pass  # verse_infra 不可用时跳过
+
         for step in pbar:
             t_step = time.time()
+            _emergency_state["step"] = step
             try:
                 batch = next(train_iter)
             except StopIteration:
@@ -1196,6 +1310,8 @@ class Trainer:
             if self.eval_interval > 0 and step % self.eval_interval == 0:
                 val_loss = self.evaluate()
                 self.val_losses.append(val_loss)
+                # Part4K2.6: 更新紧急保存用的最新 val_loss
+                _emergency_state["val_loss"] = float(val_loss)
                 self.early_stopping(val_loss)
 
                 state = self._make_state(step, val_loss)
@@ -1286,6 +1402,14 @@ class Trainer:
 
         # 训练结束：保存 loss_history.json + loss_curve 图
         self._save_history()
+        # Part4K2.6: 清除紧急保存函数
+        try:
+            from verse_infra.verse_trainer.trainer import (
+                clear_emergency_save_fn as _clear_emg,
+            )
+            _clear_emg()
+        except ImportError:
+            pass
         return self.train_losses, self.val_losses
 
     def _save_history(self) -> None:

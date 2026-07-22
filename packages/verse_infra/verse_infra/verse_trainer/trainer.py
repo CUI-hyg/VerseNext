@@ -53,31 +53,75 @@ from .data import (
 from .loss_optim import LossOptimizer
 
 # ---------------------------------------------------------------------------
-# 信号处理 + 全局 shutdown 标志
+# 信号处理 + 全局 shutdown 标志 + 紧急保存（Part4K2.6 Task 2）
 # ---------------------------------------------------------------------------
 
-# 全局 shutdown 标志：信号处理器置为 True，训练循环检测后 graceful 退出。
-# 用 threading.Event 保证跨线程可见性（训练可能在子线程跑）。
+# 全局 shutdown 标志：保留用于 ParallelTrainerSafe 的 chunk 间检测。
+# Part4K2.6: 信号处理器不再设置此标志——而是直接紧急保存后 os._exit(0) 强制退出，
+# 避免"等待 checkpoint 边界"的延迟和线程/进程残留。
 _shutdown_event = threading.Event()
 # 信号处理器安装标志（避免重复安装）
 _signal_handlers_installed = False
 # 保存原始信号处理器，便于恢复
 _original_signal_handlers: dict = {}
+# 全局紧急保存函数引用（Ctrl+C 时调用，保存当前模型状态）
+_emergency_save_fn: Optional[callable] = None
+
+
+def _restore_signal_handlers() -> None:
+    """恢复原始信号处理器。"""
+    global _signal_handlers_installed
+    if not _signal_handlers_installed:
+        return
+    for sig, handler in _original_signal_handlers.items():
+        try:
+            signal.signal(sig, handler)
+        except Exception:
+            pass
+    _signal_handlers_installed = False
 
 
 def _signal_handler(signum, frame):
-    """SIGTERM/SIGINT 处理器：设置 shutdown 标志，不立即退出。
+    """SIGTERM/SIGINT 处理器：紧急保存后强制退出（Part4K2.6 Task 2）。
 
-    训练循环在下一个 step / chunk 边界检测到 ``_shutdown_event`` 后
-    graceful 保存 checkpoint 并退出。
+    不再等待 checkpoint 边界，立即执行：
+    1. 调用注册的紧急保存函数（保存当前模型状态）
+    2. 打印保存完成信息
+    3. ``os._exit(0)`` 强制退出（绕过 Python 清理，避免线程残留）
     """
     sig_name = signal.Signals(signum).name if hasattr(signal, "Signals") else str(signum)
-    print(
-        f"\n[signal] 收到 {sig_name} 信号，设置 shutdown 标志，"
-        f"将在下一个 checkpoint 边界 graceful 退出...",
-        flush=True,
-    )
-    _shutdown_event.set()
+    print(f"\n[signal] 收到 {sig_name}，紧急保存并强制退出...", flush=True)
+
+    # 紧急保存
+    if _emergency_save_fn is not None:
+        try:
+            _emergency_save_fn()
+            print("[signal] 紧急保存完成", flush=True)
+        except Exception as e:
+            print(f"[signal] 紧急保存失败：{e}", flush=True)
+
+    # 恢复原始信号处理器
+    _restore_signal_handlers()
+
+    # 强制退出（os._exit 绕过 Python atexit/shutdown，确保完全退出）
+    print("[signal] 正在退出...", flush=True)
+    os._exit(0)
+
+
+def set_emergency_save_fn(fn) -> None:
+    """注册紧急保存函数（训练开始前调用）。
+
+    ``fn`` 是一个无参数的 callable，在收到 Ctrl+C 时被调用，
+    通常保存当前模型状态到 checkpoint。
+    """
+    global _emergency_save_fn
+    _emergency_save_fn = fn
+
+
+def clear_emergency_save_fn() -> None:
+    """清除紧急保存函数（训练结束后调用）。"""
+    global _emergency_save_fn
+    _emergency_save_fn = None
 
 
 def install_signal_handlers() -> None:
@@ -524,8 +568,41 @@ def _build_model(model_cfg: dict, vocab_size: int):
     return model, _MinimalConfig(config_dict)
 
 
+def _auto_build_tokenizer(kind: str, save_dir: str):
+    """自动构建简单 tokenizer（用于测试模型，Part4K2.6 Task 3）。
+
+    根据类型构建对应的 tokenizer：
+    - byte/bytes: 直接构造（vocab=259）
+    - char/charlevel/character: 构建字符级 tokenizer
+    - 其他: 降级为 byte tokenizer
+    """
+    from verse_infra.verse_tokenizer import load_tokenizer as _vload
+
+    if kind in ("byte", "bytes"):
+        return _vload(kind="byte")
+
+    if kind in ("char", "charlevel", "character"):
+        try:
+            from verse_infra.verse_tokenizer import CharTokenizer
+            tok = CharTokenizer()
+            # 保存供后续使用
+            tok_path = os.path.join(save_dir, "tokenizer.json")
+            tok.save(tok_path)
+            return tok
+        except Exception as e:
+            print(f"[train] CharTokenizer 构建失败，降级为 byte：{e}", flush=True)
+            return _vload(kind="byte")
+
+    # 其他类型降级为 byte
+    print(f"[train] 未知 tokenizer kind={kind}，降级为 byte", flush=True)
+    return _vload(kind="byte")
+
+
 def _load_tokenizer(tok_cfg: dict, base_dir: str, save_dir: str):
-    """加载 tokenizer（兼容 data/demo/model/tokenizer.py 与 verse_tokenizer）。"""
+    """加载 tokenizer（兼容 data/demo/model/tokenizer.py 与 verse_tokenizer）。
+
+    Part4K2.6 Task 3: 当 tokenizer 文件不存在且 kind 非 byte 时，自动构建。
+    """
     tok_kind = str(tok_cfg.get("kind", "byte"))
     tok_path = os.path.join(save_dir, "tokenizer.json")
     if not os.path.exists(tok_path):
@@ -538,9 +615,11 @@ def _load_tokenizer(tok_cfg: dict, base_dir: str, save_dir: str):
             from verse_infra.verse_tokenizer import load_tokenizer as _vload
             return _vload(kind="byte")
         else:
-            raise FileNotFoundError(
-                f"tokenizer 文件不存在：{tok_path}。请先 build_tokenizer。"
-            )
+            # Part4K2.6: 自动构建 tokenizer
+            print(f"[train] tokenizer 文件不存在，自动构建 {tok_kind}...", flush=True)
+            tok = _auto_build_tokenizer(tok_kind, save_dir)
+            print(f"[train] tokenizer 构建完成 vocab_size={len(tok)}", flush=True)
+            return tok
     try:
         from verse_infra.verse_tokenizer import load_tokenizer as _vload
         return _vload(kind=tok_kind, path=tok_path)
@@ -569,6 +648,94 @@ _DEFAULT_EVAL_PROMPTS = [
     {"prompt": "1+1=", "reference": "2"},
     {"prompt": "中国的首都是", "reference": "北京"},
 ]
+
+
+# ---------------------------------------------------------------------------
+# Part4K2.6 Task 3: 资源自动初始化（测试数据自动生成 + 测试配置判定）
+# ---------------------------------------------------------------------------
+
+# 测试数据模板（中英文混合，用于自动生成测试训练数据）
+_TEST_TEXTS = [
+    "你好世界，这是一个测试。",
+    "Hello World, this is a test.",
+    "1+1=2 2+2=4 3+3=6",
+    "中国的首都是北京。",
+    "机器学习是人工智能的一个重要分支。",
+    "The quick brown fox jumps over the lazy dog.",
+    "深度学习使用神经网络来学习数据表示。",
+    "Python is a popular programming language.",
+    "自然语言处理研究计算机与人类语言的交互。",
+    "Artificial intelligence is the simulation of human intelligence.",
+    "大语言模型通过预训练和微调获得语言能力。",
+    "Machine learning algorithms improve through experience.",
+    "今天的天气很好，适合出门散步。",
+    "Knowledge is power, and learning is its key.",
+    "代码是人与计算机沟通的桥梁。",
+    "Practice makes perfect, persistence leads to success.",
+    "数学是科学的基础，逻辑是数学的基础。",
+    "Time flies when you are having fun.",
+    "音乐是心灵的语言，艺术是情感的表达。",
+    "A journey of a thousand miles begins with a single step.",
+]
+
+
+def _is_test_config(model_cfg: dict, full_cfg: dict) -> bool:
+    """判断是否为测试/小模型配置（Part4K2.6 Task 3）。
+
+    判断依据（任一满足即可）：
+    - vocab_size <= 1000
+    - n_embd <= 128
+    - n_layer <= 4
+    """
+    vocab = int(model_cfg.get("vocab_size", 0))
+    n_embd = int(model_cfg.get("n_embd", 0))
+    n_layer = int(model_cfg.get("n_layer", 0))
+
+    if vocab > 0 and vocab <= 1000:
+        return True
+    if n_embd > 0 and n_embd <= 128:
+        return True
+    if n_layer > 0 and n_layer <= 4:
+        return True
+    return False
+
+
+def _auto_generate_test_data(train_path: str, val_path: str):
+    """自动生成测试数据（仅用于测试模型，Part4K2.6 Task 3）。
+
+    当训练数据文件不存在时，自动生成简单的中英文文本数据。
+    生成的数据保存为 JSONL 格式，每行一个 ``{"text": "..."}`` 对象。
+    """
+    # 确保目录存在
+    train_dir = os.path.dirname(train_path)
+    val_dir = os.path.dirname(val_path)
+    if train_dir:
+        os.makedirs(train_dir, exist_ok=True)
+    if val_dir and val_dir != train_dir:
+        os.makedirs(val_dir, exist_ok=True)
+
+    # 生成训练数据（20 条，重复 5 次 = 100 条）
+    train_data = []
+    for _ in range(5):
+        for text in _TEST_TEXTS:
+            train_data.append({"text": text})
+
+    # 生成验证数据（5 条）
+    val_data = [{"text": text} for text in _TEST_TEXTS[:5]]
+
+    with open(train_path, "w", encoding="utf-8") as f:
+        for item in train_data:
+            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+
+    with open(val_path, "w", encoding="utf-8") as f:
+        for item in val_data:
+            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+
+    print(
+        f"[train] 自动生成测试数据：train={len(train_data)}条 val={len(val_data)}条 "
+        f"(路径: {train_path})",
+        flush=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -692,6 +859,15 @@ def train(
         # 标准模式：用 CachedDataset（首次缓存 + 后续加速）
         train_path = _resolve_path(base_dir, str(data_cfg.get("train_path", "data/train.jsonl")))
         val_path = _resolve_path(base_dir, str(data_cfg.get("val_path", "data/val.jsonl")))
+        # Part4K2.6: 数据文件不存在时自动生成测试数据（仅小配置）
+        if not os.path.exists(train_path):
+            if _is_test_config(model_cfg, full_cfg):
+                _auto_generate_test_data(train_path, val_path)
+            else:
+                raise FileNotFoundError(
+                    f"训练数据文件不存在：{train_path}。"
+                    f"请准备数据文件或使用 --single-sample / --single-file 模式。"
+                )
         print(f"[train] 加载训练数据 {train_path}", flush=True)
         train_ds = CachedDataset(tok, train_path, seq_len=seq_len)
         print(f"[train] 加载验证数据 {val_path}", flush=True)
@@ -880,6 +1056,19 @@ def train(
 
     arch = getattr(config, "arch", "versenex")
     resume_path = os.path.join(save_dir, "resume.pt") if resume else None
+
+    # Part4K2.6: 注册紧急保存函数（Ctrl+C 时自动保存当前模型状态）
+    def _emergency_save():
+        """紧急保存当前模型状态。"""
+        save_path = os.path.join(save_dir, "cometspark_emergency.pt")
+        try:
+            if hasattr(model, "save"):
+                model.save(save_path)
+                print(f"[signal] 模型已紧急保存到 {save_path}", flush=True)
+        except Exception as e:
+            print(f"[signal] 紧急保存模型失败：{e}", flush=True)
+
+    set_emergency_save_fn(_emergency_save)
 
     # Part4K2 Task 4: 智能分区训练（LayerWiseTrainer）
     # 启用后优先于 ParallelTrainer / VerseNexTrainer，按 layer 分组训练+卸载+合并
@@ -1175,6 +1364,9 @@ def train(
                 flush=True,
             )
             result["eval_result"] = None
+
+    # Part4K2.6: 清除紧急保存函数
+    clear_emergency_save_fn()
 
     return result
 
@@ -1612,6 +1804,8 @@ __all__ = [
     "install_signal_handlers",
     "reset_shutdown_flag",
     "is_shutdown_requested",
+    "set_emergency_save_fn",
+    "clear_emergency_save_fn",
     "ChunkOOMError",
     "_auto_evaluate",
 ]
