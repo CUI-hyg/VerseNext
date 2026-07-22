@@ -1,0 +1,83 @@
+# CometSpark V0.5-1B 默认配置（Part4K1 Task 8.6）
+#
+# 目标参数量 ≈ 1.12B（落在 0.8B-1.2B 区间）
+# - vocab_size=248320（Qwen3.5-35B-A3B tokenizer）
+# - n_embd=1024, n_layer=20, n_head=16, n_kv_head=8 (GQA 2:1)
+# - layer_pattern: 每 4 层 1 个 MoD（共 5 MoD + 15 trisparse）
+# - num_dense_parts=4, num_experts_per_part=4, top_k=2
+# - tie_weights=True（embedding 与 lm_head 共享）
+# - embedding_scale=True + temperature_scaling（解决胡乱输出）
+#
+# 参数预算（dim=1024, expert_hidden 自动 ≈ 2688）：
+# - 15 个 trisparse 层 + 5 个 mod 层 ≈ 861M
+# - Embedding (tie, vocab=248320) = 254M
+# - 总 ≈ 1115M ≈ 1.12B
+
+model:
+  arch: versenex
+  vocab_size: 248320
+  n_layer: 20
+  n_embd: 1024
+  n_head: 16
+  n_kv_head: 8
+  seq_len: 2048
+  dropout: 0.0
+  tie_weights: true
+
+  # VerseNex / TriSparse / MoD
+  mod_every: 4
+  num_dense_parts: 4
+  num_experts_per_part: 4
+  top_k: 2
+  expert_hidden: null
+  window_size: 1024
+  num_global_tokens: 128
+  use_alibi: false
+  use_rope: true
+  rope_theta: 10000.0
+  max_position_embeddings: 4096
+  aux_loss_weight: 0.01
+
+  # tokenizer
+  tokenizer_repo: Qwen/Qwen3.5-35B-A3B
+
+  # Task 8.7：VerseNex 优化（解决胡乱输出）
+  embedding_scale: true
+  temperature_scaling: 1.0
+  init_std: 0.02
+
+  # 训练 / 设备
+  device: cpu
+  parallel_chunks: 1
+
+training:
+  batch_size: 4
+  micro_batch: 2
+  lr: 0.0003
+  weight_decay: 0.01
+  no_decay: true
+  grad_clip: 1.0
+  label_smoothing: 0.1
+  max_steps: 200
+  warmup: 20
+  eval_interval: 20
+  patience: 5
+  grad_accum: 1
+  log_interval: 10
+  seed: 42
+  enable_progress_bar: true
+  realtime_plot: true
+  eta_window: 20
+  parallel_chunks: 1
+
+tokenizer:
+  kind: bpe
+  vocab_size: 248320
+  from_hf: Qwen/Qwen3.5-35B-A3B
+
+data:
+  train_path: data/train.jsonl
+  val_path: data/val.jsonl
+
+checkpoint:
+  save_dir: checkpoints

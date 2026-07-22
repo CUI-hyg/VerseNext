@@ -236,25 +236,34 @@ def _expand_part_weights(
 
 
 class Router(Module):
-    """Top-k token 路由器，含 load balancing aux loss。
+    """Top-k token 路由器，含 load balancing aux loss + router z-loss。
 
     对输入的每个 token 计算 router logits（通过一个线性层 ``gate``），
     选出 top-k 个 route，并用 softmax 重归一化得到 ``dispatched_weights``。
-    同时计算 Switch Transformer 风格的 aux loss 用于负载均衡。
 
-    Aux loss 计算::
+    同时计算两种辅助损失：
+
+    1. **load balancing loss**（Switch Transformer 风格）::
 
         f_i = (被路由到 route i 的 token 数) / (总 token 数)   # 不可微
         P_i = mean_{b,t}(softmax_prob[b, t, i])                # 可微
-        aux = num_routes × Σ_i (f_i × P_i) × aux_loss_weight
+        load_balance = num_routes × Σ_i (f_i × P_i) × aux_loss_weight
+
+    2. **router z-loss**（ST-MoE 风格，防 router logits 过大）::
+
+        z_loss = z_loss_weight × (1/N) × Σ_{b,t,i} (logits_{b,t,i})^2
+
+    总 aux loss = load_balance + z_loss。
 
     ``f_i`` 视为常量（detached），梯度仅通过 ``P_i`` 回传到 router logits。
+    z-loss 的梯度直接通过 ``logits^2`` 回传到 gate 权重。
 
     Args:
         dim: 输入维度
         num_routes: 路由目标数（expert 数或 part 数）
         top_k: 每个 token 选出的 route 数（``1 <= top_k <= num_routes``）
-        aux_loss_weight: aux loss 的权重系数
+        aux_loss_weight: load balancing loss 的权重系数
+        z_loss_weight: router z-loss 的权重系数（0 表示不计算 z-loss）
         jitter: 训练时加到输入的均匀噪声幅度（0 表示不加）
     """
 
@@ -264,6 +273,7 @@ class Router(Module):
         num_routes: int,
         top_k: int = 2,
         aux_loss_weight: float = 0.01,
+        z_loss_weight: float = 0.001,
         jitter: float = 0.0,
     ):
         super().__init__()
@@ -276,11 +286,16 @@ class Router(Module):
         self.num_routes = num_routes
         self.top_k = top_k
         self.aux_loss_weight = aux_loss_weight
+        self.z_loss_weight = z_loss_weight
         self.jitter = jitter
 
         # 路由线性层（无 bias，与 Switch Transformer 一致）
         self.gate = Linear(dim, num_routes, bias=False)
         normal_(self.gate.weight, std=0.02)
+
+        # 最近一次 forward 的 aux loss 分项（供外部读取）
+        self._last_load_balance_loss = None
+        self._last_z_loss = None
 
     def forward(self, x: Tensor):
         """前向计算。
@@ -291,7 +306,7 @@ class Router(Module):
         Returns:
             dispatched_indices: ``(B, T, top_k)`` int Tensor（不可微）
             dispatched_weights: ``(B, T, top_k)`` float Tensor（可微，softmax 重归一化）
-            aux_loss: 标量 Tensor（可微）
+            aux_loss: 标量 Tensor（可微，load_balance + z_loss）
         """
         B, T, D = x.shape
 
@@ -323,7 +338,7 @@ class Router(Module):
         # 重归一化权重：对 top-k logits 做 softmax
         dispatched_weights = topk_logits.softmax(dim=-1)  # (B, T, top_k)
 
-        # --- aux loss（Switch Transformer 风格）---
+        # --- load balancing loss（Switch Transformer 风格）---
         # topk_onehot: (B, T, num_routes)，1 表示该 route 在 top-k 中
         topk_onehot = np.zeros((B, T, self.num_routes), dtype=np.float32)
         np.put_along_axis(topk_onehot, topk_idx, 1.0, axis=-1)
@@ -335,9 +350,28 @@ class Router(Module):
         # P_i = router 给 route i 的平均概率（可微，梯度回传到 logits）
         P = probs.mean(dim=(0, 1))  # (num_routes,)
 
-        # aux = num_routes × Σ_i (f_i × P_i)
-        aux_loss = (f_tensor * P).sum() * float(self.num_routes)
-        aux_loss = aux_loss * self.aux_loss_weight
+        # load_balance = num_routes × Σ_i (f_i × P_i) × aux_loss_weight
+        load_balance_loss = (f_tensor * P).sum() * float(self.num_routes)
+        load_balance_loss = load_balance_loss * self.aux_loss_weight
+
+        # --- router z-loss（ST-MoE 风格，防 logits 过大）---
+        # z_loss = z_loss_weight × (1/N) × Σ_{b,t,i} (logits_{b,t,i})^2
+        # 其中 N = B × T（token 总数），梯度通过 logits^2 回传到 gate 权重
+        if self.z_loss_weight > 0:
+            logits_sq = logits * logits  # (B, T, num_routes)，可微
+            z_loss = logits_sq.sum() * (self.z_loss_weight / float(B * T))
+        else:
+            z_loss = Tensor(np.zeros((), dtype=np.float32), requires_grad=False)
+
+        # 总 aux loss = load_balance + z_loss
+        aux_loss = load_balance_loss + z_loss
+
+        # 缓存分项供外部读取
+        # 用 object.__setattr__ 绕过 nn.Module.__setattr__ 的自动注册，
+        # 避免这些临时 forward 缓存进入 _parameters / state_dict 导致
+        # ParallelTrainer 合并 chunk 时 "Unexpected keys" 报错
+        object.__setattr__(self, "_last_load_balance_loss", load_balance_loss)
+        object.__setattr__(self, "_last_z_loss", z_loss)
 
         # 索引张量（不可微）
         dispatched_indices = Tensor(topk_idx, requires_grad=False)
@@ -376,7 +410,7 @@ class Expert(Module):
         self.w_up = Linear(dim, hidden, bias=False)
         self.w_down = Linear(hidden, dim, bias=False)
         self.dropout = Dropout(dropout)
-        # 参数初始化（与 TransformerLM._init_weights 风格一致）
+        # 参数初始化（与 VerseNexLM._init_weights 风格一致）
         normal_(self.w_gate.weight, std=0.02)
         normal_(self.w_up.weight, std=0.02)
         normal_(self.w_down.weight, std=0.02)
@@ -415,7 +449,8 @@ class DensePart(Module):
         top_k: 每个 token 选出的 expert 数
         expert_hidden: expert 隐藏层维度（None 则自动计算为 ``int(dim×8/3/64)×64``）
         dropout: dropout 概率
-        aux_loss_weight: aux loss 权重
+        aux_loss_weight: load balancing loss 权重
+        z_loss_weight: router z-loss 权重
     """
 
     def __init__(
@@ -426,6 +461,7 @@ class DensePart(Module):
         expert_hidden: int = None,
         dropout: float = 0.0,
         aux_loss_weight: float = 0.01,
+        z_loss_weight: float = 0.001,
     ):
         super().__init__()
         if top_k > num_experts:
@@ -451,6 +487,7 @@ class DensePart(Module):
             num_experts,
             top_k=top_k,
             aux_loss_weight=aux_loss_weight,
+            z_loss_weight=z_loss_weight,
         )
 
     def forward(self, x: Tensor, part_weights: Tensor):
@@ -500,21 +537,26 @@ class MoDLayer(Module):
 
         out = Σ_{p=1}^{num_dense_parts} part_weights[p] × DensePart_p(x)
 
-    总 aux loss::
+    总 aux loss（含 load_balance + z_loss）::
 
-        total_aux = part_router.aux + Σ_p DensePart_p.router.aux
+        total_aux = Σ_all_routers (load_balance_loss + z_loss)
+
+    使用 ``aux_loss()`` 获取最近一次 forward 的总辅助损失标量，
+    ``get_aux_loss_dict()`` 获取分项 breakdown。
 
     Args:
         dim: 输入维度
-        num_dense_parts: 稠密分区数量
-        num_experts_per_part: 每个分区内的 expert 数量
-        top_k: 每个 token 在 expert 层选出的 expert 数
+        num_dense_parts: 稠密分区数量（默认 5）
+        num_experts_per_part: 每个分区内的 expert 数量（默认 8）
+        top_k: 每个 token 在 expert 层选出的 expert 数（默认 3）
         expert_hidden: expert 隐藏层维度（None 则自动计算）
         dropout: dropout 概率
-        aux_loss_weight: aux loss 权重
+        aux_loss_weight: load balancing loss 权重
+        z_loss_weight: router z-loss 权重（防 logits 过大）
         dense_part_names: 分区名称列表（可选，用于调试/可视化）
 
     Note:
+        - 5 DensePart × 8 Expert × top-3 双层门控结构（默认）
         - 不实现 capacity 限制、expert parallelism、token dropping
         - 全程可微，支持 ``loss.backward()`` 回传梯度到输入与所有参数
     """
@@ -528,6 +570,7 @@ class MoDLayer(Module):
         expert_hidden: int = None,
         dropout: float = 0.0,
         aux_loss_weight: float = 0.01,
+        z_loss_weight: float = 0.001,
         dense_part_names: list = None,
     ):
         super().__init__()
@@ -551,6 +594,7 @@ class MoDLayer(Module):
         self.top_k = top_k
         self.expert_hidden = expert_hidden
         self.aux_loss_weight = aux_loss_weight
+        self.z_loss_weight = z_loss_weight
 
         # 分区名称（可选）
         if dense_part_names is not None:
@@ -569,6 +613,7 @@ class MoDLayer(Module):
             num_dense_parts,
             top_k=num_dense_parts,
             aux_loss_weight=aux_loss_weight,
+            z_loss_weight=z_loss_weight,
         )
 
         # 第二层：DensePart 列表
@@ -581,10 +626,14 @@ class MoDLayer(Module):
                     expert_hidden=expert_hidden,
                     dropout=dropout,
                     aux_loss_weight=aux_loss_weight,
+                    z_loss_weight=z_loss_weight,
                 )
                 for _ in range(num_dense_parts)
             ]
         )
+
+        # 最近一次 forward 的 aux loss breakdown（供外部读取）
+        self._last_aux_dict: Optional[dict] = None
 
     def forward(self, x: Tensor):
         """前向计算。
@@ -594,7 +643,8 @@ class MoDLayer(Module):
 
         Returns:
             out: ``(B, T, D)`` MoD 输出
-            total_aux_loss: 标量 Tensor（所有 Router 的 aux loss 之和）
+            total_aux_loss: 标量 Tensor（所有 Router 的 aux loss 之和，
+                            含 load_balance + z_loss）
         """
         B, T, D = x.shape
 
@@ -610,6 +660,9 @@ class MoDLayer(Module):
 
         # --- 第二层路由 + 各分区前向 ---
         total_aux = part_aux
+        # 分别累加 load_balance 与 z_loss（用于 breakdown）
+        total_load_balance = self.part_router._last_load_balance_loss
+        total_z_loss = self.part_router._last_z_loss
         # 初始化输出为零张量（不参与梯度，后续 __add__ 会正确传播）
         out = Tensor(np.zeros((B, T, D), dtype=np.float32), requires_grad=False)
 
@@ -617,5 +670,49 @@ class MoDLayer(Module):
             part_out, expert_aux = self.parts[p](x, part_weights_list[p])
             out = out + part_out
             total_aux = total_aux + expert_aux
+            # 累加分项（每个 DensePart 的 router 缓存了 _last_load_balance_loss / _last_z_loss）
+            if self.parts[p].router._last_load_balance_loss is not None:
+                total_load_balance = (
+                    total_load_balance
+                    + self.parts[p].router._last_load_balance_loss
+                )
+            if self.parts[p].router._last_z_loss is not None:
+                total_z_loss = total_z_loss + self.parts[p].router._last_z_loss
+
+        # 缓存 aux loss breakdown 供外部读取
+        self._last_aux_dict = {
+            "load_balance": total_load_balance,
+            "z_loss": total_z_loss,
+            "total": total_aux,
+        }
 
         return out, total_aux
+
+    # ------------------------------------------------------------------
+    # aux loss 访问接口
+    # ------------------------------------------------------------------
+
+    def aux_loss(self):
+        """返回最近一次 forward 的总辅助损失标量 Tensor。
+
+        含所有 Router（part_router + 各 DensePart 内 expert_router）的
+        load_balance_loss + z_loss 之和。
+
+        Returns:
+            标量 Tensor（可微）；若尚未 forward 则返回 None。
+        """
+        if self._last_aux_dict is None:
+            return None
+        return self._last_aux_dict["total"]
+
+    def get_aux_loss_dict(self) -> Optional[dict]:
+        """返回最近一次 forward 的辅助损失分项 breakdown。
+
+        Returns:
+            dict with keys:
+                - ``"load_balance"``: 所有 Router 的 load_balance_loss 之和（标量 Tensor）
+                - ``"z_loss"``: 所有 Router 的 z_loss 之和（标量 Tensor）
+                - ``"total"``: 总辅助损失（标量 Tensor，= load_balance + z_loss）
+            若尚未 forward 则返回 None。
+        """
+        return self._last_aux_dict

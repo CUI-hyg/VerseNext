@@ -15,6 +15,10 @@ from __future__ import annotations
 import numpy as np
 
 from .tensor import Tensor
+from .device import get_torch_module
+
+# 模块级缓存 torch 模块（无 torch 时为 None）
+_TORCH = get_torch_module()
 
 
 def cross_entropy(logits: Tensor, targets, ignore_index: int = -100,
@@ -378,3 +382,143 @@ def focal_loss(logits: Tensor, targets, gamma: float = 2.0, alpha: float = 0.25,
     # 平均
     loss = loss_per_sample.mean()
     return loss
+
+
+def contrastive_loss(
+    anchor: Tensor,
+    positive: Tensor,
+    negatives: Tensor = None,
+    temperature: float = 1.0,
+    sim_fn: str = "cosine",
+) -> Tensor:
+    """对比学习损失（InfoNCE / NT-Xent 风格，RL/DPO 备选）。
+
+    给定一批 anchor 与对应的 positive（以及可选的 negatives），用相似度
+    构造 logits，正样本对作为目标，最大化正样本相似度同时压低负样本相似度。
+
+    公式（InfoNCE）::
+
+        sim_ap = sim(anchor, positive) / τ          # (B,)
+        sim_an = sim(anchor, negatives) / τ         # (B, N) 或 batch 内负样本
+        logits = concat([sim_ap[:, None], sim_an], dim=-1)  # (B, 1+N)
+        loss = -log_softmax(logits)[..., 0].mean()   # 第 0 列是正样本
+
+    Args:
+        anchor: ``(B, D)`` 锚点嵌入
+        positive: ``(B, D)`` 正样本嵌入
+        negatives: 可选负样本嵌入。``None`` 时用 batch 内其他样本的 positive
+            作为负样本（in-batch negatives）；``(B, N, D)`` 时为每个 anchor
+            配 N 个显式负样本；``(N, D)`` 时共享同一组负样本。
+        temperature: 温度系数 τ（默认 1.0）；越小对比越尖锐
+        sim_fn: 相似度函数，``"cosine"``（默认，L2 归一化后点积）或 ``"dot"``
+
+    Returns:
+        标量 Tensor，支持 backward
+
+    用法:
+        >>> a = Tensor.randn(8, 64, requires_grad=True)
+        >>> p = Tensor.randn(8, 64, requires_grad=True)
+        >>> loss = contrastive_loss(a, p, temperature=0.07)
+        >>> loss.backward()
+
+        # DPO 场景：chosen / rejected 嵌入作为正/负样本
+        >>> loss = contrastive_loss(anchor, chosen_emb, rejected_emb, temperature=0.1)
+    """
+    B = anchor.shape[0]
+    # 归一化（cosine）或保留原值（dot）
+    if sim_fn == "cosine":
+        a = anchor / ((anchor * anchor).sum(dim=-1, keepdim=True).sqrt() + 1e-12)
+        p = positive / ((positive * positive).sum(dim=-1, keepdim=True).sqrt() + 1e-12)
+    else:
+        a = anchor
+        p = positive
+    # 正样本相似度：(B,) -> (B, 1)
+    sim_pos = (a * p).sum(dim=-1, keepdim=True) / temperature  # (B, 1)
+
+    if negatives is None:
+        # in-batch negatives：用其他样本的 positive 作为负样本
+        # sim_all[i, j] = sim(a_i, p_j)
+        sim_all = a @ p.transpose(-1, -2) / temperature  # (B, B)
+        # 对角线是正样本，其余是负样本
+        # logits = sim_all，target = arange(B)
+        log_probs = sim_all.log_softmax(dim=-1)  # (B, B)
+        arange = np.arange(B)
+        selected = log_probs[arange, arange]  # (B,)
+        loss = -selected.mean()
+        return loss
+
+    # 显式负样本路径
+    if isinstance(negatives, Tensor):
+        n = negatives
+    else:
+        n = Tensor(negatives, requires_grad=False)
+    if sim_fn == "cosine":
+        n = n / ((n * n).sum(dim=-1, keepdim=True).sqrt() + 1e-12)
+    # 计算 sim_neg: (B, N)
+    if n.ndim == 2:
+        # (N, D) 共享负样本：sim_neg = a @ n.T -> (B, N)
+        sim_neg = a @ n.transpose(-1, -2)  # (B, N)
+    else:
+        # (B, N, D) 每 anchor 独立负样本：sim_neg[i,j] = sum(a[i,:] * n[i,j,:])
+        # 用 unsqueeze + broadcast + sum 实现
+        a_exp = a.unsqueeze(1)  # (B, 1, D)
+        sim_neg = (a_exp * n).sum(dim=-1)  # (B, N)
+    sim_neg = sim_neg / temperature  # (B, N)
+    # logits = concat([sim_pos, sim_neg], dim=-1)  # (B, 1+N)
+    logits = _concat_last(sim_pos, sim_neg)
+    log_probs = logits.log_softmax(dim=-1)  # (B, 1+N)
+    # 正样本在第 0 列
+    selected = log_probs[:, 0]  # (B,)
+    # 数值稳定：对 (B,) 取负平均
+    loss = -selected.mean()
+    return loss
+
+
+def _concat_last(a: Tensor, b: Tensor) -> Tensor:
+    """沿最后一维拼接两个 Tensor（兼容 CPU/GPU 路径）。
+
+    ``Tensor`` 没有 ``concat`` 方法，这里手动实现沿最后一维的拼接并保持
+    计算图可微（GPU 路径委托 ``torch.cat``，CPU 路径用 ``np.concatenate``）。
+    """
+    from .tensor import _is_torch_data, Tensor as _T
+    if _is_torch_data(a.data):
+        out_data = _TORCH.cat([a.data, b.data], dim=-1)
+        return _T(out_data, requires_grad=a.requires_grad or b.requires_grad,
+                  _children=(a, b), _op="concat")
+    out_data = np.concatenate([a.data, b.data], axis=-1)
+    out = _T(out_data, requires_grad=a.requires_grad or b.requires_grad,
+             _children=(a, b), _op="concat")
+    # 反向：把上游 grad 沿最后一维 split 回 a 与 b
+    a_shape_last = a.shape[-1]
+
+    def _backward():
+        if a.requires_grad:
+            a._accumulate_grad(out.grad[..., :a_shape_last])
+        if b.requires_grad:
+            b._accumulate_grad(out.grad[..., a_shape_last:])
+
+    if out.requires_grad:
+        out._backward = _backward
+    return out
+
+
+def perplexity(logits: Tensor, targets, ignore_index: int = -100) -> Tensor:
+    """困惑度：``perplexity = exp(cross_entropy)``。
+
+    困惑度是语言模型常用评估指标，越低越好（1.0 表示完美预测）。
+    等价于 ``torch.exp(F.cross_entropy(logits, targets))``。
+
+    Args:
+        logits: ``(N, C)`` 或 ``(B, T, V)`` 的未归一化预测
+        targets: ``(N,)`` 或 ``(B, T)`` 的 int 类别索引
+        ignore_index: 待忽略的标签值（默认 -100）
+
+    Returns:
+        标量 Tensor（``requires_grad`` 与 ``logits`` 一致，支持 backward）
+
+    用法:
+        >>> ppl = perplexity(model(x), y)
+        >>> print(f"perplexity={ppl.data:.2f}")
+    """
+    ce = cross_entropy(logits, targets, ignore_index=ignore_index)
+    return ce.exp()

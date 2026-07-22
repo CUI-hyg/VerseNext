@@ -25,8 +25,7 @@ import numpy as np
 
 # 让 tests/ 目录能 import 各个包
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-for pkg in ("verse_torch", "verse_nex", "verse_awm",
-            "verse_tokenizer", "verse_inference"):
+for pkg in ("verse_torch", "verse_nex", "verse_awm", "verse_infra"):
     p = _REPO_ROOT / "packages" / pkg
     if p.is_dir():
         sys.path.insert(0, str(p))
@@ -390,8 +389,8 @@ def test_cpu_inference_smoke():
     """CPU 推理生成 token，验证 token 数 ≥ 10。"""
     from verse_torch import Tensor, no_grad
     from verse_nex import HybridLM
-    from verse_tokenizer import CharTokenizer
-    from verse_inference import ModelLoader, Sampler, StreamingGenerator
+    from verse_infra.verse_tokenizer import CharTokenizer
+    from verse_infra.verse_inference import ModelLoader, Sampler, StreamingGenerator
 
     np.random.seed(42)
     # vocab_size 需要 ≥ 提示词字符的 ASCII + 4（CharTokenizer 的 special token 占 0..3）

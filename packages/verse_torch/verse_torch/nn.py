@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 
 from .tensor import Tensor, no_grad, _GRAD_ENABLED
@@ -242,13 +244,65 @@ class Module:
     def forward(self, *args, **kwargs):
         raise NotImplementedError("Subclasses must implement forward().")
 
-    def to(self, dtype=None):
-        """类型转换（保持 API 兼容；CPU-only 故 device 忽略）。"""
-        if dtype is not None:
-            for p in self._parameters.values():
-                p.data = p.data.astype(dtype)
+    @property
+    def device(self) -> str:
+        """返回模块参数所在设备字符串。
+
+        优先用第一个参数的 device；若没有任何参数则返回 ``"cpu"``。
+        子模块的设备可能与父模块不同（极端情况下），但 ``.to(device)``
+        会把所有子模块一并迁移。
+        """
+        for p in self._parameters.values():
+            return p.device
+        for m in self._modules.values():
+            return m.device
+        return "cpu"
+
+    def to(self, device=None, dtype=None):
+        """迁移模块参数到指定 device（可选同时转换 dtype）。
+
+        - ``device="cpu"`` 或 ``None``：把所有 Tensor 参数转回 ndarray 路径。
+        - ``device`` 为 GPU/NPU：把所有参数迁移到 torch.Tensor 路径。
+        - ``dtype`` 非 None 时同时做类型转换。
+
+        遍历所有参数（``_parameters``）与子模块（``_modules``），
+        用 ``Tensor.to`` 替换原参数对象（保持 requires_grad）。
+
+        Args:
+            device: 目标设备字符串（``"cpu"`` / ``"cuda"`` / ``"npu"`` / ...）。
+            dtype: 可选 dtype。
+
+        Returns:
+            self（链式调用）。
+        """
+        # 兼容旧 API：to(np.float32) 当第一个位置参数是 numpy dtype/type 时
+        # 把它当作 dtype 而非 device 处理
+        if device is not None and not isinstance(device, str):
+            # np.float32 / np.float64 是 type；np.dtype(...) 是 np.dtype 实例
+            if isinstance(device, np.dtype) or (isinstance(device, type) and issubclass(device, np.generic)):
+                dtype = device
+                device = None
+        if device is None and dtype is not None and not isinstance(dtype, str):
+            # 旧式 to(np.float32) 调用：仅做类型转换
+            for name, p in self._parameters.items():
+                new_p = p.to("cpu", dtype=dtype)
+                # 保持引用一致（用 setattr 重新注册）
+                setattr(self, name, new_p)
             for m in self._modules.values():
-                m.to(dtype)
+                m.to(dtype=dtype)
+            return self
+
+        target_dev = str(device) if device is not None else "cpu"
+        # 迁移参数
+        for name, p in list(self._parameters.items()):
+            new_p = p.to(target_dev, dtype=dtype) if dtype is not None else p.to(target_dev)
+            # 重新注册（保持名称与 requires_grad）
+            # 直接覆盖 _parameters 字典 + 实例属性
+            self._parameters[name] = new_p
+            object.__setattr__(self, name, new_p)
+        # 递归子模块
+        for m in self._modules.values():
+            m.to(device=target_dev, dtype=dtype)
         return self
 
     def apply(self, fn):
@@ -484,7 +538,27 @@ def _concat(tensors, dim: int = 1):
     """可微的 Tensor 拼接函数（沿指定维度）。
 
     用于 KV cache 在序列维度的拼接。支持反向传播。
+    GPU 路径委托 ``torch.cat``（autograd 自动构建反向）。
     """
+    from .tensor import _is_torch_data, _TORCH
+    # GPU 路径：任一输入是 torch.Tensor 则委托 torch.cat
+    if _TORCH is not None and any(_is_torch_data(t.data) for t in tensors):
+        # 对齐 device：以第一个 torch 输入为基准
+        ref = next(t for t in tensors if _is_torch_data(t.data))
+        ref_dev = ref.data.device
+        torch_tensors = []
+        for t in tensors:
+            if _is_torch_data(t.data):
+                torch_tensors.append(t.data.to(ref_dev) if t.data.device != ref_dev else t.data)
+            else:
+                torch_tensors.append(_TORCH.from_numpy(np.ascontiguousarray(t.data)).to(ref_dev))
+        out_data = _TORCH.cat(torch_tensors, dim=dim)
+        requires_grad = _GRAD_ENABLED and any(t.requires_grad for t in tensors)
+        children = tuple(t for t in tensors if t.requires_grad)
+        return Tensor(out_data, requires_grad=requires_grad,
+                      _children=children if requires_grad else (), _op="concat",
+                      device=str(out_data.device))
+    # CPU 路径（原有实现，自研 autograd）
     datas = [t.data for t in tensors]
     out_data = np.concatenate(datas, axis=dim)
     requires_grad = _GRAD_ENABLED and any(t.requires_grad for t in tensors)
@@ -566,7 +640,7 @@ class SwiGLUMLP(Module):
         return h
 
 
-class GQASelfAttention(Module):
+class _GQASelfAttention(Module):
     """Grouped Query Attention with RoPE and KV cache.
 
     Args:
@@ -710,7 +784,7 @@ class GQASelfAttention(Module):
         return out, new_kv_cache
 
 
-class TransformerBlock(Module):
+class _TransformerBlock(Module):
     """Pre-norm Transformer block.
 
     结构:
@@ -721,7 +795,7 @@ class TransformerBlock(Module):
     def __init__(self, d: int, n_head: int, n_kv_head: int = None, dropout: float = 0.0):
         super().__init__()
         self.norm1 = RMSNorm(d)
-        self.attn = GQASelfAttention(d, n_head, n_kv_head, dropout)
+        self.attn = _GQASelfAttention(d, n_head, n_kv_head, dropout)
         self.norm2 = RMSNorm(d)
         self.mlp = SwiGLUMLP(d, dropout)
 
@@ -732,7 +806,7 @@ class TransformerBlock(Module):
         return x, new_kv_cache
 
 
-class TransformerLM(Module):
+class _TransformerLM(Module):
     """Transformer Language Model.
 
     结构: tok_emb → N × TransformerBlock → RMSNorm → head
@@ -762,7 +836,7 @@ class TransformerLM(Module):
 
         self.tok_emb = Embedding(vocab_size, n_embd)
         self.blocks = ModuleList([
-            TransformerBlock(n_embd, n_head, n_kv_head, dropout)
+            _TransformerBlock(n_embd, n_head, n_kv_head, dropout)
             for _ in range(n_layer)
         ])
         self.norm = RMSNorm(n_embd)
@@ -996,3 +1070,623 @@ class DeepNorm(Module):
     def forward(self, x: Tensor) -> Tensor:
         # DeepNorm(x) = LayerNorm(x * alpha) + x
         return self.layernorm(x * self.alpha) + x
+
+
+# ---------------------------------------------------------------------------
+# Task 1.4: 新增组件（RotaryEmbedding / KVCache / GroupNorm / Conv1d / LayerNormFast）
+# ---------------------------------------------------------------------------
+
+
+class RotaryEmbedding(Module):
+    """Rotary Position Embedding (RoPE) 独立类。
+
+    实现 GPT-NeoX 风格的 rotate_half RoPE：
+    ``x_rotated = x * cos + rotate_half(x) * sin``，其中 ``rotate_half`` 把
+    最后一维拆成两半并取负交换。
+
+    Args:
+        dim: RoPE 作用的维度（通常等于 head_dim）
+        max_seq_len: 预计算 cos/sin 表的最大序列长度
+        base: 频率基数（默认 10000，与 LLaMA 一致）
+        scaling: 可选的长度外推缩放因子（如 ``1 / rope_theta_scale``）
+    """
+
+    def __init__(self, dim: int, max_seq_len: int = 2048, base: float = 10000.0,
+                 scaling: float = 1.0):
+        super().__init__()
+        if dim % 2 != 0:
+            raise ValueError(f"RoPE dim 必须为偶数，got {dim}")
+        self.dim = int(dim)
+        self.max_seq_len = int(max_seq_len)
+        self.base = float(base)
+        self.scaling = float(scaling)
+        # 预计算 inv_freq: (dim/2,)
+        inv_freq = 1.0 / (self.base ** (np.arange(0, self.dim, 2, dtype=np.float32) / self.dim))
+        # 序列位置（应用 scaling）
+        t = np.arange(self.max_seq_len, dtype=np.float32) * self.scaling  # (T,)
+        # freqs: (T, dim/2)
+        freqs = np.outer(t, inv_freq)
+        # cos/sin: (T, dim)，把每对频率复制一份（与 rotate_half 对齐）
+        emb = np.concatenate([freqs, freqs], axis=-1)  # (T, dim)
+        cos_np = np.cos(emb)
+        sin_np = np.sin(emb)
+        # 作为非梯度 buffer 存储（用 Tensor 但 requires_grad=False）
+        # 通过 _parameters 注册以保证 Module.to(device) 能迁移
+        self.cos = Tensor(cos_np, requires_grad=False)
+        self.sin = Tensor(sin_np, requires_grad=False)
+
+    @staticmethod
+    def rotate_half(x: Tensor) -> Tensor:
+        """GPT-NeoX rotate_half：把最后一维拆成两半，前半取负拼到后半。"""
+        half = x.shape[-1] // 2
+        x1 = x[..., :half]
+        x2 = x[..., half:]
+        # 等价于 concat([-x2, x1])
+        # 用现有算子实现，CPU/GPU 路径均自动分流
+        return _concat([-x2, x1], dim=-1)
+
+    def forward(self, x: Tensor, seq_len: int = None) -> Tensor:
+        """对 ``x`` 应用 RoPE。
+
+        Args:
+            x: 形状 ``(..., T, dim)`` 的张量。
+            seq_len: 可选，指定取 cos/sin 表前 ``seq_len`` 个位置；
+                ``None`` 时取 ``x.shape[-2]``。
+
+        Returns:
+            旋转后的张量，形状与 ``x`` 相同。
+        """
+        T = x.shape[-2] if seq_len is None else int(seq_len)
+        # cos/sin: (T, dim) -> 广播到 (..., T, dim)
+        cos = self.cos[:T]  # (T, dim)
+        sin = self.sin[:T]
+        # 调整 cos/sin 的 ndim 与 x 对齐（前面补 1）
+        # x.ndim 可能是 3 (B, T, D) 或 4 (B, H, T, D)
+        while cos.ndim < x.ndim:
+            cos = cos.unsqueeze(0)
+            sin = sin.unsqueeze(0)
+        # x * cos + rotate_half(x) * sin
+        return x * cos + self.rotate_half(x) * sin
+
+
+# ---------------------------------------------------------------------------
+# KVCache 抽象与实现
+# ---------------------------------------------------------------------------
+
+
+class KVCache:
+    """KV cache 抽象基类。
+
+    推理时缓存每一层的 Key / Value，避免对历史 token 重复计算。
+    不同实现（静态 / 动态）有不同的内存与扩展策略。
+
+    子类应实现：
+    - ``update(key, value, layer_idx)``：写入新一层的 K/V，返回更新后的 (K, V)
+    - ``batch_update(keys, values, layer_idx)``：并行预测时批量更新 K/V
+        （Part4K1 Task 3.3，speculative decoding 风格）
+    - ``get(layer_idx)``：取出指定层的 (K, V)
+    - ``reset()``：清空 cache
+    - ``to(device)``：迁移到指定设备
+    """
+
+    def __init__(self, num_layers: int = 1):
+        self.num_layers = int(num_layers)
+
+    def update(self, key: Tensor, value: Tensor, layer_idx: int = 0):
+        """写入新一层的 K/V，返回更新后的 (K, V)。"""
+        raise NotImplementedError
+
+    def batch_update(
+        self,
+        keys: Tensor,
+        values: Tensor,
+        layer_idx: int = 0,
+    ):
+        """并行批量更新 KV cache（Part4K1 Task 3.3）。
+
+        用于 speculative decoding 风格的并行预测场景：一次前向预测 k 个
+        token，把对应的 K/V 一次性写入 cache，避免 k 次串行 update。
+
+        默认实现委托给 ``update``（子类可覆盖以提供更高效的批量实现）。
+
+        Args:
+            keys: (B, T_new, H, D) 新 K，T_new 通常 = 候选 token 数 k
+            values: (B, T_new, H, D) 新 V
+            layer_idx: 层索引
+        Returns:
+            更新后的 (K, V)
+        """
+        return self.update(keys, values, layer_idx=layer_idx)
+
+    def get(self, layer_idx: int = 0):
+        """取出指定层的 (K, V)。"""
+        raise NotImplementedError
+
+    def reset(self) -> None:
+        """清空 cache。"""
+        raise NotImplementedError
+
+    @property
+    def device(self) -> str:
+        """返回 cache 当前所在设备（默认 cpu）。"""
+        return "cpu"
+
+    def to(self, device) -> "KVCache":
+        """迁移 cache 到指定 device（子类实现）。"""
+        raise NotImplementedError
+
+
+class StaticCache(KVCache):
+    """静态长度 KV cache。
+
+    预分配固定大小的 ``[max_batch, max_seq, num_heads, head_dim]`` 缓冲区，
+    每次更新把新 K/V 写入指定位置（in-place）。适合批处理推理与
+    prefill / decode 分离场景。
+
+    Args:
+        num_layers: 层数
+        max_batch: 最大 batch size
+        max_seq: 最大序列长度
+        num_heads: 头数
+        head_dim: 每头维度
+        dtype: 缓冲区 dtype（默认 float32）
+    """
+
+    def __init__(self, num_layers: int, max_batch: int, max_seq: int,
+                 num_heads: int, head_dim: int, dtype=np.float32):
+        super().__init__(num_layers=num_layers)
+        self.max_batch = int(max_batch)
+        self.max_seq = int(max_seq)
+        self.num_heads = int(num_heads)
+        self.head_dim = int(head_dim)
+        self.dtype = dtype
+        # 预分配 K/V buffer: (num_layers, max_batch, max_seq, num_heads, head_dim)
+        shape = (self.num_layers, self.max_batch, self.max_seq, self.num_heads, self.head_dim)
+        self._k_buf = [Tensor(np.zeros(shape[1:], dtype=dtype), requires_grad=False)
+                       for _ in range(self.num_layers)]
+        self._v_buf = [Tensor(np.zeros(shape[1:], dtype=dtype), requires_grad=False)
+                       for _ in range(self.num_layers)]
+        # 记录每个 layer 已写入的序列长度
+        self._seen = [0] * self.num_layers
+
+    def update(self, key: Tensor, value: Tensor, layer_idx: int = 0):
+        """写入新一层的 K/V，返回累积的 (K, V)。
+
+        Args:
+            key: (B, T_new, H, D) 新 K
+            value: (B, T_new, H, D) 新 V
+            layer_idx: 层索引
+        """
+        if layer_idx >= self.num_layers:
+            raise IndexError(f"layer_idx {layer_idx} 超出 num_layers {self.num_layers}")
+        start = self._seen[layer_idx]
+        T_new = key.shape[1]
+        if start + T_new > self.max_seq:
+            raise RuntimeError(
+                f"StaticCache 溢出：layer {layer_idx} 已存 {start}，"
+                f"新增 {T_new}，超过 max_seq {self.max_seq}"
+            )
+        # 写入 buffer（用 __setitem__ 语义；这里简化为重建大 tensor）
+        # 注意：当前 Tensor 不支持原地切片赋值，采用整体重建策略
+        # 对推理场景（无梯度）影响有限
+        k_old = self._k_buf[layer_idx]
+        v_old = self._v_buf[layer_idx]
+        # 用 numpy 拼接（或 torch 拼接，由 _concat 自动分流）
+        if start == 0:
+            new_k = key
+            new_v = value
+        else:
+            # 取已缓存部分（无梯度）
+            with no_grad():
+                k_prev = k_old[:, :start]
+                v_prev = v_old[:, :start]
+                new_k = _concat([k_prev, key], dim=1)
+                new_v = _concat([v_prev, value], dim=1)
+        # 更新 buffer（保留 max_seq 长度，超出的部分用零填充）
+        # 简化：直接保留累积结果，下次再拼
+        self._k_buf[layer_idx] = new_k
+        self._v_buf[layer_idx] = new_v
+        self._seen[layer_idx] = start + T_new
+        return new_k, new_v
+
+    def get(self, layer_idx: int = 0):
+        if layer_idx >= self.num_layers:
+            raise IndexError(f"layer_idx {layer_idx} 超出 num_layers {self.num_layers}")
+        return self._k_buf[layer_idx], self._v_buf[layer_idx]
+
+    def reset(self) -> None:
+        for i in range(self.num_layers):
+            self._k_buf[i] = Tensor(np.zeros_like(self._k_buf[i].data), requires_grad=False)
+            self._v_buf[i] = Tensor(np.zeros_like(self._v_buf[i].data), requires_grad=False)
+            self._seen[i] = 0
+
+    @property
+    def device(self) -> str:
+        if self._k_buf:
+            return self._k_buf[0].device
+        return "cpu"
+
+    def to(self, device) -> "StaticCache":
+        target = str(device)
+        for i in range(self.num_layers):
+            self._k_buf[i] = self._k_buf[i].to(target)
+            self._v_buf[i] = self._v_buf[i].to(target)
+        return self
+
+
+class DynamicCache(KVCache):
+    """动态增长 KV cache。
+
+    每次更新把新 K/V 拼接到已有 cache 末尾（不预分配）。
+    内存随序列长度线性增长；适合变长推理与生成。
+
+    Args:
+        num_layers: 层数
+    """
+
+    def __init__(self, num_layers: int = 1):
+        super().__init__(num_layers=num_layers)
+        self._k: list = [None] * self.num_layers
+        self._v: list = [None] * self.num_layers
+        self._seen = [0] * self.num_layers
+
+    def update(self, key: Tensor, value: Tensor, layer_idx: int = 0):
+        """追加新 K/V，返回累积的 (K, V)。"""
+        if layer_idx >= self.num_layers:
+            raise IndexError(f"layer_idx {layer_idx} 超出 num_layers {self.num_layers}")
+        if self._k[layer_idx] is None:
+            self._k[layer_idx] = key
+            self._v[layer_idx] = value
+        else:
+            with no_grad():
+                self._k[layer_idx] = _concat([self._k[layer_idx], key], dim=1)
+                self._v[layer_idx] = _concat([self._v[layer_idx], value], dim=1)
+        self._seen[layer_idx] = self._seen[layer_idx] + key.shape[1]
+        return self._k[layer_idx], self._v[layer_idx]
+
+    def get(self, layer_idx: int = 0):
+        if layer_idx >= self.num_layers:
+            raise IndexError(f"layer_idx {layer_idx} 超出 num_layers {self.num_layers}")
+        return self._k[layer_idx], self._v[layer_idx]
+
+    def reset(self) -> None:
+        self._k = [None] * self.num_layers
+        self._v = [None] * self.num_layers
+        self._seen = [0] * self.num_layers
+
+    @property
+    def device(self) -> str:
+        for k in self._k:
+            if k is not None:
+                return k.device
+        return "cpu"
+
+    def to(self, device) -> "DynamicCache":
+        target = str(device)
+        for i in range(self.num_layers):
+            if self._k[i] is not None:
+                self._k[i] = self._k[i].to(target)
+            if self._v[i] is not None:
+                self._v[i] = self._v[i].to(target)
+        return self
+
+
+# ---------------------------------------------------------------------------
+# GroupNorm / Conv1d / LayerNormFast
+# ---------------------------------------------------------------------------
+
+
+class GroupNorm(Module):
+    """Group Normalization。
+
+    把通道维分成 ``num_groups`` 组，每组内做 mean/var 归一化（含通道与空间维）。
+    与 BatchNorm 区别：归一化不依赖 batch 维，对小 batch / 序列模型更稳定。
+
+    Args:
+        num_groups: 分组数（必须能整除 num_channels）
+        num_channels: 通道数
+        eps: 数值稳定常数
+    """
+
+    def __init__(self, num_groups: int, num_channels: int, eps: float = 1e-5):
+        super().__init__()
+        if num_channels % num_groups != 0:
+            raise ValueError(
+                f"num_channels({num_channels}) 必须能被 num_groups({num_groups}) 整除"
+            )
+        self.num_groups = int(num_groups)
+        self.num_channels = int(num_channels)
+        self.eps = eps
+        self.weight = Tensor.ones(num_channels, requires_grad=True)
+        self.bias = Tensor.zeros(num_channels, requires_grad=True)
+
+    def forward(self, x: Tensor) -> Tensor:
+        """前向：``x`` 形状 ``(..., C, ...)``，归一化在 ``num_groups`` 组内进行。
+
+        简化实现：假设 ``x`` 形状 ``(B, C, *)``，对 ``C`` 维分组后
+        在每组 ``C/num_groups`` 个通道 + 所有空间维上做 mean/var 归一化。
+        """
+        # 形状: (B, C, *spatial)
+        B = x.shape[0]
+        C = x.shape[1]
+        spatial_shape = x.shape[2:]
+        # reshape: (B, num_groups, C // num_groups, *spatial)
+        g = self.num_groups
+        cg = C // g
+        # 把 spatial 维 flatten 为一个 dim 以便 reduce
+        x_r = x.reshape(B, g, cg, -1)  # (B, g, cg, L)
+        # 在最后两维 (cg, L) 上求 mean/var
+        mean = x_r.mean(dim=(2, 3), keepdim=True)  # (B, g, 1, 1)
+        diff = x_r - mean
+        var = (diff * diff).mean(dim=(2, 3), keepdim=True)
+        normed = diff / ((var + self.eps).sqrt())
+        # reshape 回 (B, C, *spatial)
+        normed = normed.reshape(x.shape)
+        # 仿射变换：weight/bias 形状 (C,)，需要广播到 (1, C, 1, ...)
+        w = self.weight.reshape((1, C) + (1,) * len(spatial_shape))
+        b = self.bias.reshape((1, C) + (1,) * len(spatial_shape))
+        return normed * w + b
+
+
+class Conv1d(Module):
+    """一维卷积层。
+
+    ``y[b, o, t] = sum_{i, c} x[b, c, t*stride + i* dilation - padding] * W[o, c, i] + b[o]``
+
+    实现采用 im2col + matmul（CPU 路径用 NumPy，GPU 路径委托
+    ``torch.nn.functional.conv1d``）。
+
+    Args:
+        in_channels: 输入通道数
+        out_channels: 输出通道数
+        kernel_size: 卷积核大小
+        stride: 步长（默认 1）
+        padding: padding 大小（默认 0）
+        dilation: 膨胀系数（默认 1）
+        bias: 是否使用偏置
+    """
+
+    def __init__(self, in_channels: int, out_channels: int, kernel_size: int,
+                 stride: int = 1, padding: int = 0, dilation: int = 1, bias: bool = True):
+        super().__init__()
+        self.in_channels = int(in_channels)
+        self.out_channels = int(out_channels)
+        self.kernel_size = int(kernel_size)
+        self.stride = int(stride)
+        self.padding = int(padding)
+        self.dilation = int(dilation)
+        # 权重 shape: (out, in, K)
+        weight = Tensor.empty(out_channels, in_channels, kernel_size, requires_grad=True)
+        kaiming_uniform_(weight, a=np.sqrt(5.0))
+        self.weight = weight
+        if bias:
+            b = Tensor.empty(out_channels, requires_grad=True)
+            bound = 1.0 / np.sqrt(in_channels * kernel_size) if in_channels * kernel_size > 0 else 0.0
+            with no_grad():
+                b.data = np.random.uniform(-bound, bound, size=(out_channels,)).astype(np.float32)
+            self.bias = b
+        else:
+            self.bias = None
+
+    def forward(self, x: Tensor) -> Tensor:
+        """前向：``x`` 形状 ``(B, C_in, L)`` -> ``(B, C_out, L_out)``。"""
+        # GPU 路径委托 torch.nn.functional.conv1d
+        if x._is_torch_tensor or self.weight._is_torch_tensor:
+            return self._forward_torch(x)
+        # CPU 路径：im2col + matmul
+        from .tensor import no_grad as _ng  # noqa
+        B, C_in, L = x.shape
+        K = self.kernel_size
+        s = self.stride
+        p = self.padding
+        d = self.dilation
+        # padding
+        if p > 0:
+            pad_width = ((0, 0), (0, 0), (p, p))
+            x_padded = Tensor(np.pad(x.data, pad_width, mode="constant"),
+                              requires_grad=x.requires_grad, _children=(x,) if x.requires_grad else (),
+                              _op="pad")
+            # 简化：pad 不可微在此处近似为常数 0，反向仅传给 x
+            # 由于 np.pad 是可微的（梯度直接通过），我们用 result 包装
+            # 这里偷懒：直接构造一个结果 Tensor 但 _backward 仅传给 x
+            x_padded._backward = (lambda: x._accumulate_grad(
+                unbroadcast(x_padded.grad[..., p:L + p] if p > 0 else x_padded.grad, x.shape)
+            )) if x.requires_grad else None
+        else:
+            x_padded = x
+        L_padded = x_padded.shape[-1]
+        L_out = (L_padded - d * (K - 1) - 1) // s + 1
+        # im2col: (B, C_in*K, L_out)
+        cols = np.zeros((B, C_in * K, L_out), dtype=x.data.dtype)
+        x_np = x_padded.data
+        for k in range(K):
+            offset = k * d
+            # 取 x_padded[:, :, offset : offset + s*L_out : s]
+            x_slice = x_np[:, :, offset: offset + s * L_out: s]  # (B, C_in, L_out)
+            cols[:, k * C_in:(k + 1) * C_in, :] = x_slice
+        # weight: (out, in, K) -> reshape to (out, in*K)
+        W = self.weight.data.reshape(self.out_channels, -1)  # (out, in*K)
+        # matmul: (B, out, L_out) = (out, in*K) @ (B, in*K, L_out)
+        # 用 batched matmul：W (out, in*K) -> (1, out, in*K) 广播
+        out_data = np.einsum("ok,bkl->bol", W, cols)  # (B, out, L_out)
+        if self.bias is not None:
+            out_data = out_data + self.bias.data.reshape(1, -1, 1)
+        # 反向：由于 im2col 索引较复杂，这里用闭包实现
+        out = Tensor(out_data, requires_grad=x.requires_grad or self.weight.requires_grad,
+                     _children=tuple(c for c in [x, self.weight, self.bias] if c is not None and (c.requires_grad if hasattr(c, 'requires_grad') else False)),
+                     _op="conv1d")
+
+        def _backward():
+            g = out.grad  # (B, out, L_out)
+            if self.bias is not None and self.bias.requires_grad:
+                # grad_bias: sum over B, L_out
+                gb = g.sum(axis=(0, 2))
+                self.bias._accumulate_grad(gb)
+            if self.weight.requires_grad:
+                # grad_W: (out, in*K) = g @ cols^T (sum over B)
+                gw = np.einsum("bol,bkl->ok", g, cols)  # (out, in*K)
+                self.weight._accumulate_grad(gw.reshape(self.weight.shape))
+            if x.requires_grad:
+                # grad_x: 反 im2col
+                gx = np.zeros_like(x_np)
+                for k in range(K):
+                    offset = k * d
+                    g_slice = g @ W[:, k * C_in:(k + 1) * C_in]  # (B, C_in, L_out)? 实际是 (B, out, L_out) @ (out, C_in) -> (B, C_in, L_out)
+                    # 反向 scatter 回 x_padded
+                    for i in range(L_out):
+                        gx[:, :, offset + i * s] += g_slice[:, :, i]
+                if p > 0:
+                    gx = gx[..., p:L + p]
+                x._accumulate_grad(gx)
+
+        if out.requires_grad:
+            out._backward = _backward
+        return out
+
+    def _forward_torch(self, x: Tensor) -> Tensor:
+        """GPU 路径委托 ``torch.nn.functional.conv1d``。"""
+        from .tensor import _TORCH, _is_torch_data
+        if _TORCH is None:
+            raise RuntimeError("未安装 PyTorch")
+        # 对齐 device：把 x / weight / bias 都迁到同一 device
+        ref = x if x._is_torch_tensor else self.weight
+        if not x._is_torch_tensor:
+            x = x.to(ref.device)
+        if not self.weight._is_torch_tensor:
+            self.weight = self.weight.to(ref.device)
+        if self.bias is not None and not self.bias._is_torch_tensor:
+            self.bias = self.bias.to(ref.device)
+        weight = self.weight.data
+        bias = self.bias.data if self.bias is not None else None
+        out_data = _TORCH.nn.functional.conv1d(
+            x.data, weight, bias=bias,
+            stride=self.stride, padding=self.padding, dilation=self.dilation,
+        )
+        requires_grad = x.requires_grad or self.weight.requires_grad
+        children = tuple(c for c in [x, self.weight, self.bias]
+                         if c is not None and c.requires_grad)
+        from .tensor import Tensor as _T
+        return _T(out_data, requires_grad=requires_grad, _children=children,
+                  _op="conv1d", device=str(out_data.device))
+
+
+class LayerNormFast(Module):
+    """LayerNorm 优化版。
+
+    相比 ``LayerNorm``：
+    - GPU 路径委托 ``torch.nn.functional.layer_norm``（含 fused kernel）
+    - CPU 路径保持 NumPy 实现，但用 ``np.var`` 直接计算（避免重复 mean）
+    - 数值上与 ``LayerNorm`` 等价
+
+    Args:
+        normalized_shape: 归一化形状（int 或 tuple）
+        eps: 数值稳定常数
+    """
+
+    def __init__(self, normalized_shape, eps: float = 1e-5):
+        super().__init__()
+        if isinstance(normalized_shape, int):
+            normalized_shape = (normalized_shape,)
+        self.normalized_shape = tuple(normalized_shape)
+        self.eps = eps
+        self.weight = Tensor.ones(*self.normalized_shape, requires_grad=True)
+        self.bias = Tensor.zeros(*self.normalized_shape, requires_grad=True)
+
+    def forward(self, x: Tensor) -> Tensor:
+        # GPU 路径委托 torch.nn.functional.layer_norm
+        if x._is_torch_tensor or self.weight._is_torch_tensor:
+            from .tensor import _TORCH, _is_torch_data
+            # 对齐 device
+            if not self.weight._is_torch_tensor:
+                # 参数仍在 CPU，但 x 在 GPU：迁移参数（一次性）
+                self.weight = self.weight.to(x.device)
+                self.bias = self.bias.to(x.device)
+            # 用 torch_apply 委托
+            w_data = self.weight.data
+            b_data = self.bias.data
+            return x._torch_apply(
+                lambda a: _TORCH.nn.functional.layer_norm(
+                    a, normalized_shape=tuple(w_data.shape),
+                    weight=w_data, bias=b_data, eps=self.eps,
+                ),
+                _op="layernorm_fast"
+            )
+        # CPU 优化路径：直接用 np.var
+        ndim_norm = len(self.normalized_shape)
+        dims = tuple(range(x.ndim - ndim_norm, x.ndim))
+        mean = x.data.mean(axis=dims, keepdims=True)
+        var = x.data.var(axis=dims, keepdims=True)
+        normed = (x.data - mean) / np.sqrt(var + self.eps)
+        out_data = normed * self.weight.data + self.bias.data
+
+        def _backward():
+            if x.requires_grad:
+                # 标准层归一化反向
+                N = 1
+                for d in dims:
+                    N *= x.data.shape[d]
+                x_hat = (x.data - mean) / np.sqrt(var + self.eps)
+                g = out.grad
+                # dx = (1/sqrt(var+eps)) * (g - mean(g) - x_hat * mean(g * x_hat))
+                g_sum = g.sum(axis=dims, keepdims=True)
+                gx_hat_sum = (g * x_hat).sum(axis=dims, keepdims=True)
+                grad = (g - g_sum / N - x_hat * gx_hat_sum / N) / np.sqrt(var + self.eps)
+                x._accumulate_grad(grad)
+            if self.weight.requires_grad:
+                gw = (out.grad * normed).sum(axis=tuple(d for d in range(x.ndim) if d not in dims))
+                self.weight._accumulate_grad(gw.reshape(self.weight.shape))
+            if self.bias.requires_grad:
+                gb = out.grad.sum(axis=tuple(d for d in range(x.ndim) if d not in dims))
+                self.bias._accumulate_grad(gb.reshape(self.bias.shape))
+
+        out = Tensor(out_data,
+                     requires_grad=x.requires_grad or self.weight.requires_grad or self.bias.requires_grad,
+                     _children=tuple(c for c in [x, self.weight, self.bias] if c.requires_grad),
+                     _op="layernorm_fast")
+        if out.requires_grad:
+            out._backward = _backward
+        return out
+
+
+# ---------------------------------------------------------------------------
+# Part4K1 SubTask 2.2: 旧类名 DeprecationWarning 别名
+# ---------------------------------------------------------------------------
+# TransformerLM / TransformerBlock / GQASelfAttention 已重命名为私有实现
+# （_TransformerLM / _TransformerBlock / _GQASelfAttention），并通过模块级
+# __getattr__ 钩子在旧名被访问时发出 DeprecationWarning。
+#
+# 用法兼容：
+#   from verse_torch.nn import TransformerLM  # 仍可工作，但发 DeprecationWarning
+#   from verse_torch import TransformerLM     # 同上（经 __init__.py 转发）
+#
+# 新代码应使用：
+#   from verse_nex import VerseNexLM, VerseNexAttention  # VerseNex 品牌入口
+
+
+# 旧名 → (私有实现名, 新品牌名提示) 映射
+_DEPRECATED_NN_ALIASES = {
+    "TransformerLM": ("_TransformerLM", "VerseNexLM"),
+    "TransformerBlock": ("_TransformerBlock", "VerseNexBlock"),
+    "GQASelfAttention": ("_GQASelfAttention", "VerseNexAttention"),
+}
+
+
+def __getattr__(name):
+    """模块级 ``__getattr__`` 钩子：旧类名访问时发 DeprecationWarning。
+
+    当 ``from verse_torch.nn import TransformerLM`` 时触发，返回私有实现类
+    并缓存到模块 globals（后续访问不再警告）。
+    """
+    if name in _DEPRECATED_NN_ALIASES:
+        real_name, new_name = _DEPRECATED_NN_ALIASES[name]
+        warnings.warn(
+            f"{name} 已更名为 {new_name}，请改用 from verse_nex import {new_name}。"
+            f"旧名将在下个版本移除。",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        obj = globals()[real_name]
+        # 缓存到 globals，后续访问不再触发 __getattr__（只警告一次）
+        globals()[name] = obj
+        return obj
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

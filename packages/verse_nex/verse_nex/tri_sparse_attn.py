@@ -5,6 +5,11 @@ SWA (Sliding Window) + Global Token + ALiBi 三路并行计算并加权融合。
 设计要点：
 - 路径 A (SWA)：chunk-wise 滑动窗口，每个 query chunk 只 attend 最近 window_size 个 key，
   避免构造 T² 全张量，内存 O(T * window_size)。
+  **Part4K1 Task 3 升级**：多 query chunk 并行计算（批量矩阵化），
+  消除原串行 for 循环。每个 chunk 的 attention 计算批量堆叠为
+  (n_chunks, B, H, W, K_max) 形式，一次 matmul/softmax 完成。
+  GPU 路径委托 torch.bmm / batched matmul；CPU 路径用 numpy 批量 matmul。
+  并行结果与原串行结果在 float32 下吻合到 1e-3（_swa_forward_serial 保留作对照）。
 - 路径 B (Global)：num_global_tokens 个可学习全局 sink token（Embedding），
   每个 query 只 attend 这些 token，内存 O(T * num_global_tokens)。
 - 路径 C (ALiBi)：标准 causal attention + ALiBi 位置偏置。
@@ -251,7 +256,7 @@ class TriSparseAttention(Module):
     # ------------------------------------------------------------------
 
     def _swa_forward(self, q, k, v, position_offset):
-        """chunk-wise 滑动窗口注意力。
+        """chunk-wise 滑动窗口注意力（多 query chunk 并行，批量矩阵化）。
 
         Args:
             q: (B, H, T_q, d) Tensor
@@ -260,9 +265,135 @@ class TriSparseAttention(Module):
         Returns:
             (B, H, T_q, d) Tensor
 
-        将 query 划分为大小 window_size 的 chunk，每个 chunk 只 gather
-        最近 window_size 个 key（约 2*window_size 个候选 key），计算局部
-        attention。总内存 O(T_q * window_size)，远低于 O(T_q * T_k)。
+        Part4K1 Task 3 升级：消除串行 for 循环，把 n_chunks 个 query chunk 批量
+        堆叠为 (n_chunks, B, H, W, d) 形式，一次 batched matmul/softmax 完成。
+        GPU 路径委托 torch.matmul（autograd 自动构建）；CPU 路径用 numpy 批量
+        matmul（self.data @ other.data 支持前导广播）。
+
+        并行 vs 串行数值一致：每个 chunk 的可见 key 数量 K_ci ≤ 2W-1，统一 pad 到
+        K_max=2W-1。padding 位置 mask 设为 -1e9（float32 下 exp(-1e9)=0），
+        softmax 归一化与串行版本数学等价，float32 下吻合到 1e-3。
+        """
+        B, H, T_q, d = q.shape
+        T_k = k.shape[2]
+        W = self.window_size
+        scale = 1.0 / (d ** 0.5)
+
+        # 计算 chunk 数（用于决定走并行还是串行 fallback）
+        n_chunks = (T_q + W - 1) // W
+
+        # 退化路径：单 chunk 直接走串行（无 batched 收益，避免额外开销）
+        # 注意：必须在 pad 之前判断，让 serial 自己处理 padding（serial 内部
+        # 也会基于 T_q 决定是否 pad；预先 pad 会导致 serial 误判 T_q）
+        if n_chunks == 1:
+            return self._swa_forward_serial(q, k, v, position_offset)
+
+        # 将 T_q pad 到 window_size 的整数倍（保持梯度路径）
+        T_q_padded = n_chunks * W
+        pad_len = T_q_padded - T_q
+        if pad_len > 0:
+            q = _pad_last_dim(q, pad_len, axis=2)
+
+        # 每个 chunk 最多可见的 key 数量上限 = 2W - 1
+        # （chunk 的 query 全局位置范围 [gq_lo, gq_hi-1]，可见 key 全局位置
+        #   [gq_lo - W + 1, gq_hi - 1]，跨度 (gq_hi - 1) - (gq_lo - W + 1) + 1 = 2W - 1）
+        K_max = 2 * W - 1
+
+        # 右侧 pad K, V 以容纳任意 chunk 的 [k_lo : k_lo + K_max] 切片
+        # （最坏情况 k_lo 接近 T_k - 1，slice 需延伸到 T_k + K_max - 2，
+        #   pad K_max 个 0 即可覆盖）
+        k_pad = _pad_last_dim(k, K_max, axis=2)  # (B, H, T_k + K_max, d)
+        v_pad = _pad_last_dim(v, K_max, axis=2)
+
+        # 预计算每个 chunk 的 q 切片 / k 切片 / v 切片 / mask（保持可微）
+        q_chunks = []   # 每个为 (1, B, H, W, d) Tensor
+        k_chunks = []   # 每个为 (1, B, H, K_max, d) Tensor
+        v_chunks = []
+        masks = []      # 每个为 (W, K_max) ndarray
+        for ci in range(n_chunks):
+            q_lo = ci * W
+            q_hi = q_lo + W
+            q_chunk = q[:, :, q_lo:q_hi, :]           # (B, H, W, d) Tensor
+            q_chunks.append(q_chunk.reshape(1, B, H, W, d))
+
+            # query 的全局位置范围：[gq_lo, gq_hi)
+            gq_lo = position_offset + q_lo
+            gq_hi = position_offset + q_hi  # exclusive
+
+            # 可见 key 的索引范围（在 T_k 维度）
+            k_lo = max(0, gq_lo - W + 1)
+            k_hi = min(T_k, gq_hi)
+            if k_lo >= k_hi:
+                # 极端边界：至少取最后一个 key
+                k_lo = max(0, k_hi - 1)
+            K_ci = k_hi - k_lo  # 当前 chunk 真实可见 key 数
+
+            # 统一长度 K_max 的切片：[k_lo : k_lo + K_max]
+            # 注意 k_pad 已右 pad K_max，保证 k_lo + K_max ≤ k_pad.shape[2]
+            k_chunk = k_pad[:, :, k_lo:k_lo + K_max, :]  # (B, H, K_max, d)
+            v_chunk = v_pad[:, :, k_lo:k_lo + K_max, :]
+            k_chunks.append(k_chunk.reshape(1, B, H, K_max, d))
+            v_chunks.append(v_chunk.reshape(1, B, H, K_max, d))
+
+            # causal + sliding window mask: (W, K_max)
+            # 对 [0, K_ci) 的真实 key 应用 causal+window；对 [K_ci, K_max) 的
+            # padding 位置统一置 -1e9（在 softmax 中权重为 0，与串行版本等价）
+            q_gpos = np.arange(W) + gq_lo           # (W,)
+            k_gpos = np.arange(K_max) + k_lo        # (K_max,)（超出 k_hi 的部分被下面覆盖）
+            causal = k_gpos[None, :] <= q_gpos[:, None]      # (W, K_max)
+            in_window = (q_gpos[:, None] - k_gpos[None, :]) < W
+            mask_2d = np.where(causal & in_window, 0.0, -1e9).astype(np.float32)
+            mask_2d[:, K_ci:] = -1e9  # padding 位置强制 -1e9
+            masks.append(mask_2d)
+
+        # 沿 chunk 轴 batched（_concat 可微，自动分流 CPU/GPU）
+        q_batched = _concat(q_chunks, dim=0)   # (n_chunks, B, H, W, d)
+        k_batched = _concat(k_chunks, dim=0)   # (n_chunks, B, H, K_max, d)
+        v_batched = _concat(v_chunks, dim=0)
+
+        mask_arr = np.stack(masks, axis=0)     # (n_chunks, W, K_max)
+        mask_t = Tensor(
+            mask_arr.reshape(n_chunks, 1, 1, W, K_max),
+            requires_grad=False,
+        )
+
+        # scores: (n_chunks, B, H, W, K_max) = q @ k^T
+        # numpy / torch 的 @ 都支持前导广播的 batched matmul
+        scores = (q_batched @ k_batched.transpose(-1, -2)) * scale
+        scores = scores + mask_t
+
+        attn = scores.softmax(dim=-1)
+        attn = self.dropout(attn)
+
+        # out: (n_chunks, B, H, W, d) = attn @ v
+        out_batched = attn @ v_batched
+
+        # reshape 回 (B, H, T_q_padded, d)
+        # (n_chunks, B, H, W, d) -> permute (B, H, n_chunks, W, d) -> reshape (B, H, T_q_padded, d)
+        out = out_batched.permute(1, 2, 0, 3, 4).reshape(B, H, T_q_padded, d)
+
+        # 裁剪到原 T_q（丢弃 pad 部分的输出）
+        if pad_len > 0:
+            out = out[:, :, :T_q, :]
+        return out
+
+    def _swa_forward_serial(self, q, k, v, position_offset):
+        """chunk-wise 滑动窗口注意力（串行版本，保留作并行实现的数值对照）。
+
+        Args:
+            q: (B, H, T_q, d) Tensor
+            k, v: (B, H, T_k, d) Tensor
+            position_offset: query 在全局序列中的起始位置
+        Returns:
+            (B, H, T_q, d) Tensor
+
+        将 query 划分为大小 window_size 的 chunk，**串行 for 循环**处理每个
+        query chunk。每个 chunk 只 gather 最近 window_size 个 key（约 2*window_size
+        个候选 key），计算局部 attention。总内存 O(T_q * window_size)，
+        远低于 O(T_q * T_k)。
+
+        此方法为 SubTask 3.1 升级前的原始实现，保留作 _swa_forward 并行版本
+        的数值一致性对照（测试 test_parallel_vs_serial_numerical_consistency）。
         """
         B, H, T_q, d = q.shape
         T_k = k.shape[2]

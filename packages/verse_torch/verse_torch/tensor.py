@@ -13,6 +13,46 @@ from __future__ import annotations
 
 import numpy as np
 
+from .device import (
+    has_torch,
+    has_torch_npu,
+    get_torch_module,
+    _parse_device,
+    is_cpu_device,
+    DEFAULT_DEVICE,
+)
+
+# 模块级缓存 torch 模块（无 torch 时为 None）
+_TORCH = get_torch_module()
+#: PyTorch 是否可用（用于快速短路判断）
+_TORCH_AVAILABLE = has_torch()
+
+
+def _is_torch_data(x) -> bool:
+    """判断 ``x`` 是否为 ``torch.Tensor``（无 torch 时恒为 False）。
+
+    作为 Tensor 的内部标记，用于在算子入口区分 CPU/NumPy 路径与 GPU/Torch 路径。
+    """
+    return _TORCH is not None and isinstance(x, _TORCH.Tensor)
+
+
+def _np_dtype_to_torch_dtype(np_dtype):
+    """把 numpy dtype 映射到 torch dtype（仅常见类型；未匹配返回 None）。"""
+    if _TORCH is None:
+        return None
+    mapping = {
+        np.dtype(np.float32): _TORCH.float32,
+        np.dtype(np.float64): _TORCH.float64,
+        np.dtype(np.float16): _TORCH.float16,
+        np.dtype(np.int64): _TORCH.int64,
+        np.dtype(np.int32): _TORCH.int32,
+        np.dtype(np.int16): _TORCH.int16,
+        np.dtype(np.int8): _TORCH.int8,
+        np.dtype(np.uint8): _TORCH.uint8,
+        np.dtype(np.bool_): _TORCH.bool,
+    }
+    return mapping.get(np.dtype(np_dtype), None)
+
 
 # ---------------------------------------------------------------------------
 # 全局梯度开关 (Task 1.12)
@@ -139,14 +179,34 @@ class Tensor:
 
     __array_priority__ = 1000  # 让 numpy 把反向算子优先转给 Tensor
 
-    def __init__(self, data, requires_grad: bool = False, dtype=None, _children=(), _op=""):
-        if isinstance(data, Tensor):
+    def __init__(self, data, requires_grad: bool = False, dtype=None, _children=(), _op="",
+                 device=None):
+        # GPU 路径：data 已是 torch.Tensor（委托 PyTorch autograd）
+        if _is_torch_data(data):
+            if dtype is not None:
+                t_dtype = dtype if _TORCH is not None and isinstance(dtype, _TORCH.dtype) \
+                    else _np_dtype_to_torch_dtype(dtype)
+                if t_dtype is not None:
+                    data = data.to(t_dtype)
+            self.data = data
+            self.requires_grad = bool(requires_grad)
+            # 让 torch 接管 requires_grad（仅在叶子节点上设置）
+            if requires_grad and data.is_leaf and not data.requires_grad:
+                data.requires_grad_(True)
+            self._device = str(data.device) if device is None else str(device)
+        elif isinstance(data, Tensor):
             # 复制语义：从 Tensor 构造时拷贝 data 与 requires_grad
             arr = data.data
             if dtype is not None:
-                arr = arr.astype(dtype, copy=False)
+                if _is_torch_data(arr):
+                    t_dtype = _np_dtype_to_torch_dtype(dtype)
+                    if t_dtype is not None:
+                        arr = arr.to(t_dtype)
+                else:
+                    arr = arr.astype(dtype, copy=False)
             self.data = arr
             self.requires_grad = bool(requires_grad)
+            self._device = data._device if device is None else str(device)
         else:
             if dtype is None:
                 # 类型推断策略：
@@ -169,6 +229,7 @@ class Tensor:
                 arr = np.asarray(data, dtype=dtype)
             self.data = arr
             self.requires_grad = bool(requires_grad)
+            self._device = "cpu" if device is None else str(device)
         self.grad = None
         # 闭包：调用时将上游梯度 * 链式因子累加到父节点
         self._backward = lambda: None
@@ -263,7 +324,147 @@ class Tensor:
         # 闭包 _backward 默认 lambda: None；若 _prev 为空则视为叶子
         return not self._prev
 
+    # --- 设备相关 (Task 1.2 device 升级) ---
+
+    @property
+    def device(self) -> str:
+        """返回当前 Tensor 所在的设备字符串。
+
+        CPU 路径返回 ``"cpu"``；GPU/NPU 路径返回 torch device 字符串
+        （如 ``"cuda:0"`` / ``"npu:0"`` / ``"mps"``）。
+        """
+        # 与 self._device 保持同步：若底层 data 是 torch.Tensor，以 data.device 为准
+        if _is_torch_data(self.data):
+            return str(self.data.device)
+        return self._device
+
+    @property
+    def _is_torch_tensor(self) -> bool:
+        """内部标记：底层 data 是否为 ``torch.Tensor``（GPU/Torch 路径）。
+
+        无 PyTorch 时恒为 False。算子入口用此属性快速分流 CPU/GPU 实现。
+        """
+        return _is_torch_data(self.data)
+
+    @property
+    def is_cuda(self) -> bool:
+        """是否在 CUDA 设备上（torch 路径下委托 ``data.is_cuda``）。"""
+        if not _is_torch_data(self.data):
+            return False
+        return bool(self.data.is_cuda)
+
+    def to(self, device, dtype=None) -> "Tensor":
+        """迁移到指定 device（可选同时转换 dtype），返回新的 Tensor。
+
+        - ``device="cpu"``：把 torch.Tensor 转回 numpy ndarray，回到自研 autograd 路径。
+        - ``device`` 为 GPU/NPU：把 ndarray 转成 torch.Tensor 并迁移到目标设备，
+          autograd 委托 PyTorch。
+        - 同 device 同 dtype 时直接返回 self（避免无谓拷贝）。
+
+        Args:
+            device: 目标设备字符串（``"cpu"`` / ``"cuda"`` / ``"cuda:0"`` /
+                ``"npu"`` / ``"mps"`` 等）。
+            dtype: 可选 dtype（numpy dtype 或 torch dtype）。
+
+        Returns:
+            迁移后的 Tensor（device 与 dtype 满足要求）。
+
+        Raises:
+            RuntimeError: 请求 GPU/NPU 但 PyTorch 不可用。
+        """
+        target_dev = str(device) if device is not None else "cpu"
+        target_dtype = _parse_device(target_dev)
+        # 同 device 且不要求改 dtype：直接返回 self
+        if (self.device == target_dev or
+                (_parse_device(self.device) == target_dtype and target_dtype != "cpu")):
+            if dtype is None:
+                return self
+            # 同 device 但要改 dtype
+            if _is_torch_data(self.data):
+                t_dtype = dtype if isinstance(dtype, _TORCH.dtype) else _np_dtype_to_torch_dtype(dtype)
+                if t_dtype is None or self.data.dtype == t_dtype:
+                    return self
+                new_data = self.data.to(t_dtype)
+                return Tensor(new_data, requires_grad=self.requires_grad,
+                              _children=(self,) if self.requires_grad else (), _op="to_dtype",
+                              device=target_dev)
+            else:
+                np_dt = dtype if isinstance(dtype, np.dtype) else np.dtype(dtype)
+                if self.data.dtype == np_dt:
+                    return self
+                return Tensor(self.data.astype(np_dt), requires_grad=self.requires_grad,
+                              device="cpu")
+
+        # CPU -> GPU/NPU
+        if target_dtype != "cpu":
+            if not _TORCH_AVAILABLE:
+                raise RuntimeError("未安装 PyTorch，无法使用 GPU")
+            if target_dtype == "npu" and not has_torch_npu():
+                raise RuntimeError("未安装 torch_npu，无法使用 NPU 设备")
+            torch_device = _TORCH.device(target_dev)
+            if _is_torch_data(self.data):
+                new_data = self.data.to(torch_device)
+            else:
+                # ndarray -> torch.Tensor（保留 dtype；非 float 用 from_numpy）
+                new_data = _TORCH.from_numpy(np.ascontiguousarray(self.data)).to(torch_device)
+            if dtype is not None:
+                t_dtype = dtype if isinstance(dtype, _TORCH.dtype) else _np_dtype_to_torch_dtype(dtype)
+                if t_dtype is not None:
+                    new_data = new_data.to(t_dtype)
+            # requires_grad 由调用方决定（保持原 requires_grad）
+            requires_grad = self.requires_grad
+            if requires_grad and new_data.is_leaf and not new_data.requires_grad:
+                new_data.requires_grad_(True)
+            return Tensor(new_data, requires_grad=requires_grad, device=target_dev)
+
+        # GPU/NPU -> CPU：把 torch.Tensor 转回 ndarray，回到自研 autograd 路径
+        if _is_torch_data(self.data):
+            arr = self.data.detach().cpu().numpy()
+            if dtype is not None:
+                np_dt = dtype if isinstance(dtype, np.dtype) else np.dtype(dtype)
+                arr = arr.astype(np_dt)
+            return Tensor(arr, requires_grad=self.requires_grad, device="cpu")
+        # CPU -> CPU：仅可能改 dtype（前面已处理 dtype 一致的情况）
+        if dtype is not None:
+            np_dt = dtype if isinstance(dtype, np.dtype) else np.dtype(dtype)
+            return Tensor(self.data.astype(np_dt), requires_grad=self.requires_grad, device="cpu")
+        return self
+
+    def cuda(self, device: str = "cuda") -> "Tensor":
+        """迁移到 CUDA 设备。
+
+        Args:
+            device: CUDA 设备字符串（默认 ``"cuda"``，等价于默认 GPU）。
+
+        Raises:
+            RuntimeError: 未安装 PyTorch。
+        """
+        if not _TORCH_AVAILABLE:
+            raise RuntimeError("未安装 PyTorch，无法使用 GPU")
+        return self.to(device)
+
+    def npu(self, device: str = "npu") -> "Tensor":
+        """迁移到 NPU（华为昇腾）设备。
+
+        Args:
+            device: NPU 设备字符串（默认 ``"npu"``）。
+
+        Raises:
+            RuntimeError: 未安装 PyTorch 或 torch_npu。
+        """
+        if not _TORCH_AVAILABLE:
+            raise RuntimeError("未安装 PyTorch，无法使用 NPU")
+        if not has_torch_npu():
+            raise RuntimeError("未安装 torch_npu，无法使用 NPU 设备")
+        return self.to(device)
+
+    def cpu(self) -> "Tensor":
+        """迁移到 CPU（返回 ndarray 路径的 Tensor）。"""
+        return self.to("cpu")
+
     def numpy(self) -> np.ndarray:
+        if self._is_torch_tensor:
+            return self.data.detach().cpu().numpy()
         return self.data
 
     def item(self):
@@ -290,6 +491,48 @@ class Tensor:
         out = Tensor(out_data, requires_grad=requires_grad, _children=_children, _op=_op)
         return out
 
+    # -----------------------------------------------------------------
+    # GPU 路径算子委托 (Task 1.2 device 升级)
+    # -----------------------------------------------------------------
+
+    def _torch_apply(self, op_fn, *others, _op="op", requires_grad=None) -> "Tensor":
+        """GPU 路径通用算子委托。
+
+        把 ``self.data`` 与 ``others`` 的 data（对齐 device 后）传给 ``op_fn``，
+        返回的新 ``torch.Tensor`` 包装成 Tensor。autograd 完全委托 PyTorch，
+        不再设置 ``_backward`` 闭包。
+
+        Args:
+            op_fn: 接收 ``(self_data, *other_data)`` 的可调用对象，返回 ``torch.Tensor``。
+            *others: Tensor 或标量（自动取 .data）。
+            _op: 操作名（仅用于调试）。
+            requires_grad: 显式指定是否需要梯度；None 时按父节点自动推断。
+        """
+        if not _TORCH_AVAILABLE:
+            raise RuntimeError("未安装 PyTorch，无法在 GPU 路径执行算子")
+        a = self.data
+        other_data = []
+        other_children = []
+        for o in others:
+            if isinstance(o, Tensor):
+                b = o.data
+                # 若两边都是 torch.Tensor 但 device 不同，对齐到 self 的 device
+                if _is_torch_data(a) and _is_torch_data(b) and a.device != b.device:
+                    b = b.to(a.device)
+                other_data.append(b)
+                other_children.append(o)
+            else:
+                other_data.append(o)
+        out_data = op_fn(a, *other_data)
+        if requires_grad is None:
+            requires_grad = _GRAD_ENABLED and (
+                self.requires_grad or any(c.requires_grad for c in other_children)
+            )
+        children = (self,) + tuple(other_children) if requires_grad else ()
+        out = Tensor(out_data, requires_grad=requires_grad, _children=children, _op=_op,
+                     device=str(out_data.device))
+        return out
+
     def _accumulate_grad(self, grad: np.ndarray):
         """把梯度累加到 self.grad（PyTorch 语义）。
 
@@ -307,6 +550,9 @@ class Tensor:
 
     def __add__(self, other) -> "Tensor":
         other = other if isinstance(other, Tensor) else Tensor(other)
+        # GPU 路径委托 torch（autograd 自动构建）
+        if self._is_torch_tensor or other._is_torch_tensor:
+            return self._torch_apply(lambda a, b: a + b, other, _op="+")
         out_data = self.data + other.data
 
         def _backward():
@@ -327,6 +573,8 @@ class Tensor:
 
     def __sub__(self, other) -> "Tensor":
         other = other if isinstance(other, Tensor) else Tensor(other)
+        if self._is_torch_tensor or other._is_torch_tensor:
+            return self._torch_apply(lambda a, b: a - b, other, _op="-")
         out_data = self.data - other.data
 
         def _backward():
@@ -348,6 +596,8 @@ class Tensor:
 
     def __mul__(self, other) -> "Tensor":
         other = other if isinstance(other, Tensor) else Tensor(other)
+        if self._is_torch_tensor or other._is_torch_tensor:
+            return self._torch_apply(lambda a, b: a * b, other, _op="*")
         out_data = self.data * other.data
 
         def _backward():
@@ -368,6 +618,8 @@ class Tensor:
 
     def __truediv__(self, other) -> "Tensor":
         other = other if isinstance(other, Tensor) else Tensor(other)
+        if self._is_torch_tensor or other._is_torch_tensor:
+            return self._torch_apply(lambda a, b: a / b, other, _op="/")
         out_data = self.data / other.data
 
         def _backward():
@@ -392,6 +644,9 @@ class Tensor:
         # 支持标量 power；如果 power 是 Tensor，按元素幂
         if isinstance(power, Tensor):
             other = power
+            # GPU 路径委托 torch
+            if self._is_torch_tensor or other._is_torch_tensor:
+                return self._torch_apply(lambda a, b: a ** b, other, _op="**")
             out_data = self.data ** other.data
 
             def _backward():
@@ -413,6 +668,9 @@ class Tensor:
             return out
         # 标量 power
         p = float(power)
+        # GPU 路径委托 torch
+        if self._is_torch_tensor:
+            return self._torch_apply(lambda a: a ** p, _op=f"**{p}")
         out_data = self.data ** p
 
         def _backward():
@@ -426,11 +684,16 @@ class Tensor:
         return out
 
     def __neg__(self) -> "Tensor":
+        # GPU 路径委托 torch
+        if self._is_torch_tensor:
+            return self._torch_apply(lambda a: -a, _op="neg")
         return self.__mul__(-1.0)
 
     # --- 数学函数 ---
 
     def exp(self) -> "Tensor":
+        if self._is_torch_tensor:
+            return self._torch_apply(lambda a: _TORCH.exp(a), _op="exp")
         out_data = np.exp(self.data)
 
         def _backward():
@@ -443,6 +706,8 @@ class Tensor:
         return out
 
     def log(self) -> "Tensor":
+        if self._is_torch_tensor:
+            return self._torch_apply(lambda a: _TORCH.log(a), _op="log")
         out_data = np.log(self.data)
 
         def _backward():
@@ -455,6 +720,8 @@ class Tensor:
         return out
 
     def sqrt(self) -> "Tensor":
+        if self._is_torch_tensor:
+            return self._torch_apply(lambda a: _TORCH.sqrt(a), _op="sqrt")
         out_data = np.sqrt(self.data)
 
         def _backward():
@@ -467,6 +734,8 @@ class Tensor:
         return out
 
     def relu(self) -> "Tensor":
+        if self._is_torch_tensor:
+            return self._torch_apply(lambda a: _TORCH.relu(a), _op="relu")
         out_data = np.maximum(self.data, 0)
 
         def _backward():
@@ -479,6 +748,11 @@ class Tensor:
         return out
 
     def gelu(self) -> "Tensor":
+        if self._is_torch_tensor:
+            # 委托 torch.nn.functional.gelu（tanh 近似，与 NumPy 路径一致）
+            return self._torch_apply(
+                lambda a: _TORCH.nn.functional.gelu(a, approximate="tanh"), _op="gelu"
+            )
         # 使用 GELU tanh 近似
         x = self.data
         c = np.sqrt(2.0 / np.pi)
@@ -501,6 +775,8 @@ class Tensor:
         return out
 
     def sigmoid(self) -> "Tensor":
+        if self._is_torch_tensor:
+            return self._torch_apply(lambda a: _TORCH.sigmoid(a), _op="sigmoid")
         # 数值稳定 sigmoid：用等价公式 0.5 * (1 + tanh(x/2))。
         # 旧版 np.where(x>=0, 1/(1+exp(-x)), exp(x)/(1+exp(x))) 虽然
         # 结果正确，但 NumPy 语义下两个分支都会被计算，导致
@@ -519,6 +795,8 @@ class Tensor:
         return out
 
     def tanh(self) -> "Tensor":
+        if self._is_torch_tensor:
+            return self._torch_apply(lambda a: _TORCH.tanh(a), _op="tanh")
         out_data = np.tanh(self.data)
 
         def _backward():
@@ -531,6 +809,8 @@ class Tensor:
         return out
 
     def silu(self) -> "Tensor":
+        if self._is_torch_tensor:
+            return self._torch_apply(lambda a: _TORCH.nn.functional.silu(a), _op="silu")
         # SiLU = x * sigmoid(x)
         # sigmoid 用 0.5 * (1 + tanh(x/2)) 等价公式避免 overflow warning
         x = self.data
@@ -549,6 +829,8 @@ class Tensor:
         return out
 
     def abs(self) -> "Tensor":
+        if self._is_torch_tensor:
+            return self._torch_apply(lambda a: _TORCH.abs(a), _op="abs")
         out_data = np.abs(self.data)
 
         def _backward():
@@ -566,6 +848,8 @@ class Tensor:
     def maximum(self, other) -> "Tensor":
         """逐元素最大值。"""
         other = other if isinstance(other, Tensor) else Tensor(other)
+        if self._is_torch_tensor or other._is_torch_tensor:
+            return self._torch_apply(lambda a, b: _TORCH.maximum(a, b), other, _op="maximum")
         a = self.data
         b = other.data
         out_data = np.maximum(a, b)
@@ -588,6 +872,8 @@ class Tensor:
     def minimum(self, other) -> "Tensor":
         """逐元素最小值。"""
         other = other if isinstance(other, Tensor) else Tensor(other)
+        if self._is_torch_tensor or other._is_torch_tensor:
+            return self._torch_apply(lambda a, b: _TORCH.minimum(a, b), other, _op="minimum")
         a = self.data
         b = other.data
         out_data = np.minimum(a, b)
@@ -609,6 +895,15 @@ class Tensor:
 
     def clamp(self, low=None, high=None) -> "Tensor":
         """逐元素 clamp 到 [low, high]。"""
+        if self._is_torch_tensor:
+            # torch.clamp 不允许 low/high 同时为 None
+            if low is None and high is None:
+                return self
+            t_low = low.data if isinstance(low, Tensor) else low
+            t_high = high.data if isinstance(high, Tensor) else high
+            return self._torch_apply(
+                lambda a: _TORCH.clamp(a, min=t_low, max=t_high), _op="clamp"
+            )
         out_data = self.data
         if low is not None:
             out_data = np.maximum(out_data, low)
@@ -630,6 +925,10 @@ class Tensor:
         return out
 
     def softmax(self, dim: int = -1) -> "Tensor":
+        if self._is_torch_tensor:
+            return self._torch_apply(
+                lambda a: _TORCH.softmax(a, dim=dim), _op="softmax"
+            )
         # 数值稳定 softmax
         x = self.data
         x_max = np.max(x, axis=dim, keepdims=True)
@@ -652,6 +951,10 @@ class Tensor:
         return out
 
     def log_softmax(self, dim: int = -1) -> "Tensor":
+        if self._is_torch_tensor:
+            return self._torch_apply(
+                lambda a: _TORCH.log_softmax(a, dim=dim), _op="log_softmax"
+            )
         x = self.data
         x_max = np.max(x, axis=dim, keepdims=True)
         shifted = x - x_max
@@ -679,6 +982,10 @@ class Tensor:
     def reshape(self, *shape) -> "Tensor":
         if len(shape) == 1 and isinstance(shape[0], (tuple, list)):
             shape = tuple(shape[0])
+        if self._is_torch_tensor:
+            return self._torch_apply(
+                lambda a: a.reshape(shape), _op="reshape"
+            )
         out_data = self.data.reshape(shape)
 
         def _backward():
@@ -695,6 +1002,15 @@ class Tensor:
         return self.reshape(*shape)
 
     def transpose(self, dim0=None, dim1=None) -> "Tensor":
+        if self._is_torch_tensor:
+            if dim0 is None and dim1 is None:
+                # 完全反转所有轴
+                return self._torch_apply(lambda a: a.permute(*reversed(range(a.ndim))), _op="transpose")
+            if dim0 is None:
+                dim0 = -2
+            if dim1 is None:
+                dim1 = -1
+            return self._torch_apply(lambda a: a.transpose(dim0, dim1), _op="transpose")
         if dim0 is None and dim1 is None:
             # 完全反转所有轴
             out_data = self.data.T
@@ -721,6 +1037,8 @@ class Tensor:
         if len(dims) == 1 and isinstance(dims[0], (tuple, list)):
             dims = tuple(dims[0])
         dims = tuple(int(d) for d in dims)
+        if self._is_torch_tensor:
+            return self._torch_apply(lambda a: a.permute(*dims), _op="permute")
         out_data = np.transpose(self.data, dims)
 
         def _backward():
@@ -735,6 +1053,8 @@ class Tensor:
         return out
 
     def squeeze(self, dim=None) -> "Tensor":
+        if self._is_torch_tensor:
+            return self._torch_apply(lambda a: a.squeeze(dim), _op="squeeze")
         out_data = np.squeeze(self.data, axis=dim)
 
         def _backward():
@@ -748,6 +1068,8 @@ class Tensor:
         return out
 
     def unsqueeze(self, dim: int) -> "Tensor":
+        if self._is_torch_tensor:
+            return self._torch_apply(lambda a: a.unsqueeze(dim), _op="unsqueeze")
         out_data = np.expand_dims(self.data, axis=dim)
 
         def _backward():
@@ -830,7 +1152,12 @@ class Tensor:
         """支持 int/slice/tuple/None/boolean mask 索引。
 
         反向是 scatter / padding：把上游梯度按相同索引放回原 shape 的零张量对应位置。
+        GPU 路径委托 torch 自动微分（索引操作可微）。
         """
+        if self._is_torch_tensor:
+            # 把 Tensor 形式的 idx 转成底层 data
+            t_idx = idx.data if isinstance(idx, Tensor) else idx
+            return self._torch_apply(lambda a: a[t_idx], _op="getitem")
         out_data = self.data[idx]
 
         def _backward():
@@ -850,6 +1177,10 @@ class Tensor:
     # -----------------------------------------------------------------
 
     def sum(self, dim=None, keepdim: bool = False) -> "Tensor":
+        if self._is_torch_tensor:
+            return self._torch_apply(
+                lambda a: a.sum(dim=dim, keepdim=keepdim), _op="sum"
+            )
         out_data = self.data.sum(axis=dim, keepdims=keepdim)
 
         def _backward():
@@ -876,6 +1207,10 @@ class Tensor:
         return out
 
     def mean(self, dim=None, keepdim: bool = False) -> "Tensor":
+        if self._is_torch_tensor:
+            return self._torch_apply(
+                lambda a: a.mean(dim=dim, keepdim=keepdim), _op="mean"
+            )
         out_data = self.data.mean(axis=dim, keepdims=keepdim)
         if dim is None:
             n = self.data.size
@@ -1076,6 +1411,9 @@ class Tensor:
 
     def __matmul__(self, other) -> "Tensor":
         other = other if isinstance(other, Tensor) else Tensor(other)
+        # GPU 路径委托 torch.matmul（autograd 自动构建）
+        if self._is_torch_tensor or other._is_torch_tensor:
+            return self._torch_apply(lambda a, b: _TORCH.matmul(a, b), other, _op="@")
         out_data = self.data @ other.data
 
         def _backward():
@@ -1140,12 +1478,54 @@ class Tensor:
     def backward(self, grad=None) -> None:
         """反向传播：拓扑排序后逆序调用每个节点的 _backward 闭包。
 
+        GPU/Torch 路径下委托 PyTorch autograd（调用 ``data.backward()``），
+        并把叶子节点的 ``data.grad`` 同步到 ``Tensor.grad``。
+
         参数:
             grad: 上游梯度。如果 self 是标量，默认为 1.0。
         """
         if not self.requires_grad:
             raise RuntimeError("Tensor does not require grad and cannot call backward().")
 
+        # GPU/Torch 路径：委托 PyTorch autograd
+        if self._is_torch_tensor:
+            if not self.data.requires_grad:
+                raise RuntimeError(
+                    "底层 torch.Tensor 未启用 requires_grad，无法 backward()"
+                )
+            if grad is None:
+                if self.data.numel() != 1:
+                    raise RuntimeError(
+                        f"grad can only be implicitly created for scalar outputs "
+                        f"(got shape {tuple(self.shape)})"
+                    )
+                grad_t = _TORCH.ones_like(self.data)
+            elif isinstance(grad, Tensor):
+                grad_t = grad.data if _is_torch_data(grad.data) else \
+                    _TORCH.as_tensor(grad.data, dtype=self.data.dtype, device=self.data.device)
+            else:
+                grad_t = _TORCH.as_tensor(grad, dtype=self.data.dtype, device=self.data.device)
+                if tuple(grad_t.shape) != tuple(self.shape):
+                    grad_t = grad_t.expand(self.shape)
+            # 调用 torch autograd 反向传播
+            self.data.backward(grad_t)
+            # 同步叶子节点的 .grad 到 Tensor.grad（便于优化器读取）
+            visited = set()
+            stack = [self]
+            while stack:
+                node = stack.pop()
+                if id(node) in visited:
+                    continue
+                visited.add(id(node))
+                nd = node.data
+                if _is_torch_data(nd) and nd.is_leaf and nd.requires_grad and nd.grad is not None:
+                    node.grad = nd.grad
+                for child in node._prev:
+                    if id(child) not in visited:
+                        stack.append(child)
+            return
+
+        # CPU/NumPy 路径（原有实现）
         if grad is None:
             if self.data.size != 1:
                 raise RuntimeError(
@@ -1193,14 +1573,22 @@ class Tensor:
 
     def zero_grad(self) -> None:
         """清空当前 Tensor 的 grad。"""
+        if self._is_torch_tensor and self.data.is_leaf and self.data.requires_grad:
+            self.data.grad = None
         self.grad = None
 
     def detach(self) -> "Tensor":
         """返回一个脱离计算图的副本（共享 data）。"""
+        if self._is_torch_tensor:
+            return Tensor(self.data.detach(), requires_grad=False,
+                          device=str(self.data.device))
         return Tensor(self.data, requires_grad=False)
 
     def clone(self) -> "Tensor":
         """返回一个深拷贝（数据复制）。"""
+        if self._is_torch_tensor:
+            return Tensor(self.data.clone(), requires_grad=self.requires_grad,
+                          device=str(self.data.device))
         return Tensor(self.data.copy(), requires_grad=self.requires_grad)
 
     # 注意：不重载 __eq__ 与 __hash__，使用 Python 默认的 id-based 语义，
@@ -1210,6 +1598,9 @@ class Tensor:
     # 便捷属性
     def cast(self, dtype) -> "Tensor":
         """类型转换（不可微，但保留 requires_grad）。"""
+        if self._is_torch_tensor:
+            t_dtype = dtype if isinstance(dtype, _TORCH.dtype) else _np_dtype_to_torch_dtype(dtype)
+            return self._torch_apply(lambda a: a.to(t_dtype), _op="cast")
         out_data = self.data.astype(dtype)
 
         def _backward():
@@ -1222,14 +1613,25 @@ class Tensor:
         return out
 
     def float(self) -> "Tensor":
+        if self._is_torch_tensor:
+            return self.cast(_TORCH.float32)
         return self.cast(np.float32)
 
     def long(self) -> "Tensor":
         # 整型转换：不可微
+        if self._is_torch_tensor:
+            return Tensor(self.data.to(_TORCH.int64), requires_grad=False,
+                          device=str(self.data.device))
         return Tensor(self.data.astype(np.int64), requires_grad=False)
 
     def int(self) -> "Tensor":
+        if self._is_torch_tensor:
+            return Tensor(self.data.to(_TORCH.int32), requires_grad=False,
+                          device=str(self.data.device))
         return Tensor(self.data.astype(np.int32), requires_grad=False)
 
     def bool(self) -> "Tensor":
+        if self._is_torch_tensor:
+            return Tensor(self.data.to(_TORCH.bool), requires_grad=False,
+                          device=str(self.data.device))
         return Tensor(self.data.astype(bool), requires_grad=False)

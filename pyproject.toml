@@ -10,12 +10,16 @@ members = [
   "packages/verse_torch",
   "packages/verse_nex",
   "packages/verse_awm",
-  "packages/verse_tokenizer",
-  "packages/verse_inference",
-  "packages/verse_compat",
+  "packages/verse_infra",
 ]
 
 # 每个 package 都是独立的可编辑安装单元，支持：
-#   pip install -e packages/verse_torch packages/verse_nex packages/verse_awm
+#   pip install -e packages/verse_torch packages/verse_nex packages/verse_awm packages/verse_infra
 # 也可用 uv sync 在 workspace 内统一安装：
 #   uv sync
+#
+# 兼容性说明：
+# - packages/verse_tokenizer / verse_inference / verse_compat / verse_trainer
+#   已迁入 packages/verse_infra，原位置保留 thin shim（发出 DeprecationWarning）。
+# - 这些 shim 目录不再是 workspace 成员（仅 verse_infra 声明全部子模块）。
+# - 旧路径 ``from verse_tokenizer import ...`` 仍可用（shim 转发 + DeprecationWarning）。

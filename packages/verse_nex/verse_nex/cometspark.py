@@ -2,7 +2,7 @@
 
 设计目标
 --------
-- **完全不依赖 TransformerLM**：仅使用 verse_torch.nn 的基础组件
+- **完全不依赖 TransformerLM（已更名为 VerseNexLM）**：仅使用 verse_torch.nn 的基础组件
   （Embedding / RMSNorm / Linear / SwiGLUMLP）+ verse_nex 原生注意力
   （TriSparseAttention）+ verse_nex 原生 MoD（MoDLayer）。
 - **layer_pattern 驱动**：用 ``list[str]`` 显式指定每层类型
@@ -664,14 +664,14 @@ class CometSparkNexLM(Module):
         Payload 结构::
 
             {
-                "arch": "verse_nex",
+                "arch": "versenex",
                 "config": dict,         # 构造参数
                 "state_dict": {name: ndarray},
             }
         """
         os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
         payload = {
-            "arch": "verse_nex",
+            "arch": "versenex",
             "config": self.get_config(),
             "state_dict": {k: np.asarray(v) for k, v in self.state_dict().items()},
         }
@@ -902,6 +902,14 @@ def CometSparkV02(
 
 
 # ---------------------------------------------------------------------------
+# VerseNexLM: 顶层 LM 品牌别名（Part4K1 SubTask 2.1）
+# ---------------------------------------------------------------------------
+# CometSparkNexLM 即 VerseNex 原生顶层 LM，此处暴露 VerseNexLM 作为品牌统一入口。
+# 后续代码应优先使用 from verse_nex import VerseNexLM。
+VerseNexLM = CometSparkNexLM
+
+
+# ---------------------------------------------------------------------------
 # 工具：softmax（与 model.py 中 _softmax 一致）
 # ---------------------------------------------------------------------------
 
@@ -915,6 +923,7 @@ def _softmax(x: np.ndarray) -> np.ndarray:
 
 __all__ = [
     "VerseNexBlock",
+    "VerseNexLM",
     "CometSparkNexLM",
     "CometSparkV02",
 ]

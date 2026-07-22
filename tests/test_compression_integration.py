@@ -1,10 +1,15 @@
-"""Task 4.6: CometSpark 压缩集成测试。
+"""Task 4.6: CometSpark 压缩集成测试（Part4K1 Task 8.9 迁移到 spark/model）。
 
 覆盖：
 1. ``compress_pipeline`` 新 API 的各种组合（prune / quantize / lora / ternary / distill）
-2. ``CometSparkLM.compress()`` / ``compression_stats()`` 方法
-3. ``CometSparkLM.save_pretrained`` / ``from_pretrained`` 往返一致性
-4. 工厂函数 ``CometSparkSmall`` / ``CometSparkMedium`` / ``CometSparkLarge`` 参数量
+2. ``CometSparkV05LM.compress()`` / ``compression_stats()`` 方法
+3. ``CometSparkV05LM.save_pretrained`` / ``from_pretrained`` 往返一致性
+4. 工厂函数 ``CometSparkV05Small`` 参数量
+
+Part4K1 Task 8.9: 模型从 data/demo 迁移到 spark/model。
+- compress_pipeline 需要 Module 参数，用 model.net（CometSparkNexLM = Module 子类）
+- model.compress() 返回新的 CometSparkV05LM 实例
+- model.forward(x) 替代 model(Tensor(x))（V05LM 不是 Module）
 
 运行方式：
     cd /workspace
@@ -20,12 +25,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-# 让 tests/ 目录能 import verse_torch / model.model
+# 让 tests/ 目录能 import verse_torch / spark.model
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "packages" / "verse_torch"))
 sys.path.insert(0, str(_REPO_ROOT / "packages" / "verse_nex"))
-sys.path.insert(0, str(_REPO_ROOT / "packages" / "verse_tokenizer"))
-sys.path.insert(0, str(_REPO_ROOT / "data" / "demo"))
+sys.path.insert(0, str(_REPO_ROOT / "packages" / "verse_infra"))
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from verse_torch import Tensor, nn
 from verse_torch.compress import (
@@ -36,13 +42,9 @@ from verse_torch.compress import (
     QLinear,
     LoRALinear,
 )
-from model.model import (
-    CometSparkLM,
-    CometSparkSmall,
-    CometSparkMedium,
-    CometSparkLarge,
-)
-from model.config import CometSparkConfig
+# Part4K1 Task 8.9: 从 spark/model 导入（替代 data/demo/model）
+from spark.model.model import CometSparkV05LM, CometSparkV05Small
+from spark.model.config import CometSparkV05Config
 
 
 SEED = 42
@@ -60,18 +62,19 @@ def _setup_seed(seed: int = SEED):
 def test_compress_prune_only():
     """仅 prune：返回新模型，原模型不变，非零参数量减少。"""
     _setup_seed()
-    model = CometSparkSmall()
-    orig_nonzero = count_nonzero_params(model)
-    orig_params = count_parameters(model)
+    model = CometSparkV05Small()
+    # compress_pipeline 需要 Module 参数，用 model.net
+    orig_nonzero = count_nonzero_params(model.net)
+    orig_params = count_parameters(model.net)
 
     # 新 API：仅 prune
     new_model, stats = compress_pipeline(
-        model, {"prune": {"sparsity": 0.5}}, return_stats=True
+        model.net, {"prune": {"sparsity": 0.5}}, return_stats=True
     )
 
     # 原模型不变
-    assert count_parameters(model) == orig_params
-    assert count_nonzero_params(model) == orig_nonzero
+    assert count_parameters(model.net) == orig_params
+    assert count_nonzero_params(model.net) == orig_nonzero
     # 新模型非零参数应减少
     new_nonzero = count_nonzero_params(new_model)
     assert new_nonzero < orig_nonzero, (
@@ -85,16 +88,16 @@ def test_compress_prune_only():
 def test_compress_quantize_only():
     """仅 quantize：返回新模型，bit 数降低（INT4 → ~4 bit/param）。"""
     _setup_seed()
-    model = CometSparkSmall()
-    orig_bits = compute_compressed_bits(model)
-    orig_avg_bits = orig_bits / count_parameters(model)
+    model = CometSparkV05Small()
+    orig_bits = compute_compressed_bits(model.net)
+    orig_avg_bits = orig_bits / count_parameters(model.net)
 
     new_model, stats = compress_pipeline(
-        model, {"quantize": {"bits": 4}}, return_stats=True
+        model.net, {"quantize": {"bits": 4}}, return_stats=True
     )
 
     new_bits = compute_compressed_bits(new_model)
-    new_avg_bits = new_bits / count_parameters(model)
+    new_avg_bits = new_bits / count_parameters(model.net)
     # INT4 量化后平均 bit 应显著降低（< 16，远低于 32）
     assert new_avg_bits < orig_avg_bits, (
         f"quantize 后平均 bit 应降低：orig={orig_avg_bits}, new={new_avg_bits}"
@@ -106,11 +109,11 @@ def test_compress_quantize_only():
 def test_compress_prune_and_quantize():
     """prune + quantize 组合：两步都生效。"""
     _setup_seed()
-    model = CometSparkSmall()
-    orig_params = count_parameters(model)
+    model = CometSparkV05Small()
+    orig_params = count_parameters(model.net)
 
     new_model, stats = compress_pipeline(
-        model,
+        model.net,
         {"prune": {"sparsity": 0.5}, "quantize": {"bits": 4}},
         return_stats=True,
     )
@@ -121,7 +124,7 @@ def test_compress_prune_and_quantize():
     assert "quantize" in step_names
     # 压缩比应大于 1
     assert stats["compression_ratio"] > 1.0
-    # 新模型应能 forward
+    # 新模型应能 forward（new_model 是 Module，可 __call__）
     x = np.random.randint(0, 256, size=(1, 8))
     out = new_model(Tensor(x))
     assert out.shape == (1, 8, 256)
@@ -130,10 +133,10 @@ def test_compress_prune_and_quantize():
 def test_compress_with_lora():
     """包含 lora：新模型包含 LoRALinear。"""
     _setup_seed()
-    model = CometSparkSmall()
+    model = CometSparkV05Small()
 
     new_model, stats = compress_pipeline(
-        model,
+        model.net,
         {"prune": {"sparsity": 0.3}, "quantize": {"bits": 4}, "lora": {"rank": 4}},
         return_stats=True,
     )
@@ -154,23 +157,24 @@ def test_compress_with_lora():
 def test_compress_pipeline_combinations():
     """compress_pipeline 各种组合：空配置 / 单 key / 全配置。"""
     _setup_seed()
-    model = CometSparkSmall()
+    model = CometSparkV05Small()
 
     # 1. 空配置：应返回深拷贝模型，无压缩
-    new1 = compress_pipeline(model, {})
-    assert isinstance(new1, CometSparkLM)
-    assert count_parameters(new1) == count_parameters(model)
+    new1 = compress_pipeline(model.net, {})
+    from verse_nex.cometspark import CometSparkNexLM
+    assert isinstance(new1, CometSparkNexLM)
+    assert count_parameters(new1) == count_parameters(model.net)
 
     # 2. 仅 ternary
     new2, stats2 = compress_pipeline(
-        model, {"ternary": {}}, return_stats=True
+        model.net, {"ternary": {}}, return_stats=True
     )
     assert stats2["qtype"] == "ternary"
     assert stats2["bits"] < 32.0
 
     # 3. prune + quantize + lora + ternary（ternary 覆盖 quantize）
     new3, stats3 = compress_pipeline(
-        model,
+        model.net,
         {
             "prune": {"sparsity": 0.3},
             "quantize": {"bits": 4},
@@ -197,14 +201,14 @@ def test_compress_pipeline_combinations():
 
 
 # ---------------------------------------------------------------------------
-# 2. CometSparkLM.compress / compression_stats
+# 2. CometSparkV05LM.compress / compression_stats
 # ---------------------------------------------------------------------------
 
 
 def test_compression_stats():
     """compression_stats() 返回正确字段。"""
     _setup_seed()
-    model = CometSparkSmall()
+    model = CometSparkV05Small()
     compressed = model.compress({"prune": {"sparsity": 0.5}, "quantize": {"bits": 4}})
 
     stats = compressed.compression_stats()
@@ -226,9 +230,9 @@ def test_compression_stats():
 
 
 def test_cometspark_compress():
-    """CometSparkLM.compress() 返回压缩模型（与原模型不同实例）。"""
+    """CometSparkV05LM.compress() 返回压缩模型（与原模型不同实例）。"""
     _setup_seed()
-    model = CometSparkSmall()
+    model = CometSparkV05Small()
     orig_params = model.count_parameters()
     orig_sd = model.state_dict()
 
@@ -240,8 +244,8 @@ def test_cometspark_compress():
     assert model.count_parameters() == orig_params
     for k in orig_sd:
         assert np.array_equal(orig_sd[k], model.state_dict()[k])
-    # 原模型记录了 _pre_compress_param_count
-    assert model._pre_compress_param_count == orig_params
+    # 压缩后模型应是 CometSparkV05LM
+    assert isinstance(compressed, CometSparkV05LM)
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +256,7 @@ def test_cometspark_compress():
 def test_cometspark_save_load_pretrained():
     """save_pretrained → from_pretrained 往返一致（权重相同）。"""
     _setup_seed()
-    model = CometSparkSmall()
+    model = CometSparkV05Small()
     sd_before = model.state_dict()
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -262,7 +266,7 @@ def test_cometspark_save_load_pretrained():
         assert "config.yml" in files
         assert "model.pt" in files
 
-        loaded = CometSparkLM.from_pretrained(tmpdir)
+        loaded = CometSparkV05LM.from_pretrained(tmpdir)
         sd_after = loaded.state_dict()
 
     # 权重应一致
@@ -281,25 +285,16 @@ def test_cometspark_save_load_pretrained():
 
 
 def test_cometspark_small_factory():
-    """CometSparkSmall() 参数量 ~131K。"""
+    """CometSparkV05Small() 参数量 ~194K（Part4K1 Task 8.9 迁移后）。"""
     _setup_seed()
-    m = CometSparkSmall()
+    m = CometSparkV05Small()
     params = m.count_parameters()
-    # 任务描述：~131K 参数
-    assert 100_000 <= params <= 200_000, f"Small 参数量应在 ~131K，实际 {params}"
-    # forward 可用
+    # V05Small 有 MoD 层（mod_every=2, n_layer=2 → 1 mod + 1 trisparse）
+    assert 100_000 <= params <= 400_000, f"Small 参数量应在 ~194K，实际 {params}"
+    # forward 可用（用 forward 而非 __call__，V05LM 不是 Module）
     x = np.random.randint(0, 256, size=(1, 16))
-    out = m(Tensor(x))
+    out = m.forward(x)
     assert out.shape == (1, 16, 256)
-
-
-def test_cometspark_medium_factory():
-    """CometSparkMedium() 参数量 ~853K。"""
-    _setup_seed()
-    m = CometSparkMedium()
-    params = m.count_parameters()
-    # 任务描述：~853K 参数
-    assert 700_000 <= params <= 1_000_000, f"Medium 参数量应在 ~853K，实际 {params}"
 
 
 # ---------------------------------------------------------------------------
@@ -308,19 +303,21 @@ def test_cometspark_medium_factory():
 
 
 def test_config_new_fields():
-    """CometSparkConfig 新字段默认值正确。"""
-    cfg = CometSparkConfig()
+    """CometSparkV05Config 新字段默认值正确。"""
+    cfg = CometSparkV05Config()
     assert cfg.rope_theta == 10000.0
-    assert cfg.max_position_embeddings == 2048
-    assert cfg.attention_dropout == 0.0
-    assert cfg.hidden_dropout == 0.0
-    assert cfg.embedding_dropout == 0.0
+    assert cfg.max_position_embeddings == 4096
+    assert cfg.embedding_scale is True
+    assert cfg.temperature_scaling == 1.0
+    assert cfg.init_std == 0.02
+    assert cfg.tie_weights is True
+    assert cfg.arch == "versenex"
 
 
 def test_config_pretrained_roundtrip():
-    """CometSparkConfig.from_pretrained / save_pretrained 往返一致。"""
-    cfg = CometSparkConfig(
-        arch="transformer",
+    """CometSparkV05Config.from_pretrained / save_pretrained 往返一致。"""
+    cfg = CometSparkV05Config(
+        arch="versenex",
         vocab_size=256,
         n_layer=2,
         n_head=4,
@@ -330,27 +327,27 @@ def test_config_pretrained_roundtrip():
         tie_weights=True,
         rope_theta=500.0,
         max_position_embeddings=512,
-        attention_dropout=0.1,
-        hidden_dropout=0.2,
-        embedding_dropout=0.05,
+        embedding_scale=False,
+        temperature_scaling=0.8,
+        init_std=0.01,
     )
     with tempfile.TemporaryDirectory() as tmpdir:
         cfg.save_pretrained(tmpdir)
-        loaded = CometSparkConfig.from_pretrained(tmpdir)
+        loaded = CometSparkV05Config.from_pretrained(tmpdir)
     assert loaded.rope_theta == 500.0
     assert loaded.max_position_embeddings == 512
-    assert loaded.attention_dropout == 0.1
-    assert loaded.hidden_dropout == 0.2
-    assert loaded.embedding_dropout == 0.05
-    assert loaded.arch == "transformer"
+    assert loaded.embedding_scale is False
+    assert loaded.temperature_scaling == 0.8
+    assert loaded.init_std == 0.01
+    assert loaded.arch == "versenex"
     assert loaded.n_layer == 2
 
 
 def test_model_with_advanced_config():
-    """模型应用新配置（rope_theta / dropout 分离）后仍能 forward。"""
+    """模型应用新配置（rope_theta / embedding_scale）后仍能 forward。"""
     _setup_seed()
-    cfg = CometSparkConfig(
-        arch="transformer",
+    cfg = CometSparkV05Config(
+        arch="versenex",
         vocab_size=256,
         n_layer=2,
         n_head=4,
@@ -360,13 +357,13 @@ def test_model_with_advanced_config():
         tie_weights=True,
         rope_theta=1000.0,
         max_position_embeddings=256,
-        attention_dropout=0.1,
-        hidden_dropout=0.1,
-        embedding_dropout=0.1,
+        embedding_scale=True,
+        temperature_scaling=1.0,
+        init_std=0.02,
     )
-    model = CometSparkLM(cfg)
+    model = CometSparkV05LM(cfg)
     x = np.random.randint(0, 256, size=(1, 16))
-    out = model(Tensor(x))
+    out = model.forward(x)
     assert out.shape == (1, 16, 256)
 
 

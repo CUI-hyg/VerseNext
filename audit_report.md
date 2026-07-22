@@ -495,3 +495,76 @@ python examples/compress_train_demo.py
 - demo README：`/workspace/data/demo/README.md`
 - spec tasks：`/workspace/.trae/specs/part3k2-major-upgrade/tasks.md`
 - spec checklist：`/workspace/.trae/specs/part3k2-major-upgrade/checklist.md`
+
+---
+
+## Part4K1：基础设施全面升级 + 模型能力升级 + 优化（2026-07-22）
+
+> 审计日期：2026-07-22
+> 审计范围：`/workspace` 全项目（verse_torch / verse_nex / verse_infra / spark / tests / docs）
+> 审计任务：SubTask 10.1 ~ 10.6（全项目 check-loop + 测试通过 + 审计报告 + 综合验收）
+> 审计目标：测试零失败 + 关键导入可用 + CLI 端到端跑通 + shim 警告 + 文档与实现一致
+
+### 变更概览
+- 基础设施：VerseTorch GPU/NPU 后端抽象、VerseInfra 总包聚合、VerseTrainer 独立训练包
+- 模型能力：VerseNex 重命名（TransformerLM→VerseNexLM）、MoD 完善、超稀疏并行注意力、NexRL（PPO+GAE+KL自适应）
+- Tokenizer：BPE 并行训练、WordPiece、BatchEncoding、Qwen3.5-35B-A3B 支持、NexTokenizerWrapper
+- CometSpark V0.5-1B：spark/ 目录、基于 VerseNexBlock、1B 参数、Qwen tokenizer
+- 文档：4 新 ADR + README/training/perf guide 全面更新
+
+### 新增/修改文件统计
+- 新增包：verse_infra（聚合）、verse_trainer（独立）
+- 新增目录：spark/
+- 删除目录：data/demo/
+- 新增测试文件：test_device_backend/test_mod_complete/test_parallel_sparse_attn/test_speculative_decode/test_nexrl/test_tokenizer_optimization/test_tokenizer_nex_wrapper/test_verse_trainer/test_verse_infra_imports/test_cometspark_v05（共约 280+ 新测试）
+- 测试结果：**788 passed, 13 skipped, 0 failed**（排除 ijepa/rssm 环境依赖测试；全量单跑会 OOM，按测试文件分 8 批跑通）
+
+### SubTask 10.1：全量测试零失败
+- 运行 `pytest tests/ -k "not ijepa and not rssm"`，全量单跑因内存不足触发 OOM（进程被 SIGKILL，EXIT=137）。
+- 改为按测试文件分 8 批串行执行，各批均 exit code 0：
+  | 批次 | 测试文件 | 结果 |
+  |---|---|---|
+  | 1 | device_backend / mod_complete / parallel_sparse_attn / speculative_decode / nexrl / verse_infra_imports | 221 passed, 11 skipped |
+  | 2 | training / training_optimization / training_nex / parallel_trainer / parallel / hybrid_stability | 138 passed, 1 skipped |
+  | 3 | compression_poc / compression_integration / p10_parallel_compress / optim_extras / scheduler_extras | 55 passed |
+  | 4 | tokenizer / tokenizer_standard / tokenizer_upgrade / verse_tokenizer / chat_data_loader | 83 passed |
+  | 5 | unit_operators / recursion_fix / nn_advanced / scoring / yaml_config / mamba2_memory / passkey / no_garbled / val_loss_curve | 108 passed |
+  | 6 | tokenizer_optimization / tokenizer_nex_wrapper / verse_trainer | 114 passed |
+  | 7 | cometspark_inference / cometspark_nex / end_to_end | 42 passed |
+  | 8 | cometspark_v05 | 27 passed, 1 skipped |
+- **合计：788 passed, 13 skipped, 0 failed**。13 个 skipped 均为环境依赖（无 GPU / 无网络 / matplotlib 不可用等），符合预期。
+
+### SubTask 10.2：关键导入验证 + 修复
+- 首次验证发现：`from verse_infra.verse_trainer import VerseTrainer` 失败（`ImportError: cannot import name 'VerseTrainer'`），该子包仅导出 `train` / `ParallelTrainerSafe` / `RLTrainer` 等，缺少 `VerseTrainer` 门面名。
+- **修复**：在 `packages/verse_infra/verse_infra/verse_trainer/__init__.py` 添加 `VerseTrainer = ParallelTrainerSafe` 别名（指向升级后的主训练器，含 `_safe_chunk_run` + 信号处理 + OOM 兜底 + 断点续训）并加入 `__all__`；同步在 `verse_infra/__init__.py` 便捷重导出补上 `VerseTrainer`。
+- 修复后重新验证：`verse_infra` / `verse_nex` / `verse_torch` / `spark` 全部关键导入成功，输出 `ALL IMPORTS OK`。重跑 test_verse_trainer / test_verse_infra_imports 无回归（56 passed）。
+
+### SubTask 10.3：verse-train CLI 端到端验证 + 修复
+- 5 个子命令（verse-train / verse-finetune / verse-posttrain / verse-eval / verse-tokenize）`--help` 均返回 rc=0，CLI 可用。
+- 首次端到端训练失败：`FileNotFoundError: tokenizer 文件不存在：.../checkpoints_small/tokenizer.json`。根因：`_load_tokenizer` 对所有 kind 一律要求 `tokenizer.json` 文件，但 byte tokenizer 无需训练文件（vocab 259 确定）。
+- **修复**：在 `verse_trainer/trainer.py:_load_tokenizer` 中，当 `kind == "byte"` 且文件不存在时直接构造 `ByteTokenizer`（调用 `load_tokenizer(kind="byte")`），让 `verse-train` 对 byte 配置开箱即用（small 调试配置场景）；bpe/wordpiece 等仍要求文件。
+- 修复后端到端验证：`verse-train --config spark/config/cometspark_v05_small.yml --device cpu --single-sample --prompt "你好世界" --completion "今天天气真好" --max-steps 5` 完整跑通，loss 5.6295→5.2890，模型保存至 `checkpoints_small/cometspark.pt`，END_RC=0。（1B 默认配置在沙箱内存下会 OOM，按任务要求用 small 配置验证，符合"若 OOM 用 small 配置"约束。）
+- 重跑 test_verse_trainer 无回归（36 passed）。
+
+### SubTask 10.4：旧路径 shim DeprecationWarning
+- 旧路径 `from verse_tokenizer import BPETokenizer`（经 `packages/verse_tokenizer/verse_tokenizer/__init__.py` shim 转发）成功触发 `DeprecationWarning: verse_tokenizer 已迁入 verse_infra.verse_tokenizer，请改用 from verse_infra.verse_tokenizer import ...`，且 `BPETokenizer` 经 shim 重导出仍可用。
+- 注：任务脚本中 `sys.path.insert(0, 'packages/verse_infra')` 路径有误（verse_infra 下无顶级 verse_tokenizer 模块），正确应为 `packages/verse_tokenizer`（shim 物理位置）；shim 内部已自举把 `packages/verse_infra` 加入 path。
+
+### 修复的问题
+- GPU/NPU 训练支持（DeviceBackend + PyTorch 委托 + 回退 NumPy）
+- 并行训练"莫名终止退出"（`_safe_chunk_run` + 信号处理 + OOM 兜底 + 断点续训）
+- 数据集加载耗时（CachedDataset `.npz` 缓存 + 流式 lazy load）
+- Loss 无法优化（plateau 重走 + NaN/Inf 跳过 + LR 组合策略）
+- 胡乱输出（embedding scale + tie weights + temperature scaling）
+- `config.yml` hybrid 模式 NaN（删除 hybrid，统一 versenex）
+- **Task 10 新增修复**：`verse_infra.verse_trainer` 缺 `VerseTrainer` 门面名（补别名）
+- **Task 10 新增修复**：`_load_tokenizer` 对 byte tokenizer 强制要求文件（改为即时构造）
+
+### 已知限制
+- GPU 混合精度训练一致性需在真实 GPU 环境验证
+- Qwen tokenizer 加载需网络（graceful skip 已实现）
+- 1B 模型完整训练需 GPU/CPU 较长时间（沙箱内存不足以单跑 1B 配置 CLI，已用 small 配置验证端到端）
+- 全量测试单跑会 OOM，需分批执行（已在审计中分 8 批跑通）
+
+### 综合验收结论
+Part4K1 Task 10 全项目 check-loop 通过：测试零失败（788 passed / 13 skipped / 0 failed）、关键导入全部成功、verse-train CLI 端到端跑通、旧路径 shim 发出 DeprecationWarning 但仍可工作、审计报告已更新。**VerseNext 框架 Part4K1 基础设施全面升级审计通过，可发布。**

@@ -16,7 +16,7 @@
 运行
 ----
     cd /workspace
-    PYTHONPATH=packages/verse_torch:packages/verse_nex:packages/verse_compat:packages/verse_tokenizer:packages/verse_inference \
+    PYTHONPATH=packages/verse_torch:packages/verse_nex:packages/verse_infra \
         python3 examples/cpu_inference_demo.py
 
 可选参数
@@ -98,8 +98,8 @@ def main():
     # 延迟导入，便于 --help 快速响应
     from verse_torch import Tensor, no_grad
     from verse_nex import HybridLM
-    from verse_tokenizer import CharTokenizer
-    from verse_inference import ModelLoader, Sampler, StreamingGenerator
+    from verse_infra.verse_tokenizer import CharTokenizer
+    from verse_infra.verse_inference import ModelLoader, Sampler, StreamingGenerator
 
     print("=" * 72)
     print("VerseInference 端到端 CPU 推理示例")

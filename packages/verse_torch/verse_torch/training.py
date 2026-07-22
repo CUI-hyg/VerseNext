@@ -27,8 +27,34 @@ from typing import Any, Callable, Iterable, Optional
 
 import numpy as np
 
-from .tensor import Tensor, no_grad
+from .tensor import Tensor, no_grad, _is_torch_data
 from .optim import Optimizer, LambdaLR, warmup_cosine_lr  # noqa: F401  重新导出方便用户
+from .device import has_torch, get_torch_module, _parse_device, is_cpu_device, DEFAULT_DEVICE
+
+# 模块级缓存 torch 模块（无 torch 时为 None）
+_TORCH = get_torch_module()
+
+
+def _get_autocast(device=None, enabled: bool = True):
+    """获取 autocast 上下文管理器（无 torch 或 CPU 时返回 no-op contextmanager）。
+
+    Args:
+        device: 设备字符串；``None`` / ``"cpu"`` 时返回 no-op。
+        enabled: 是否启用 autocast；``False`` 时返回 no-op。
+
+    Returns:
+        上下文管理器（``contextlib.contextmanager`` 或自定义 no-op）
+    """
+    if not enabled or _TORCH is None:
+        from contextlib import nullcontext
+        return nullcontext()
+    dev_type = _parse_device(device)
+    if dev_type == "cpu":
+        from contextlib import nullcontext
+        return nullcontext()
+    # GPU/NPU：委托 backend_torch.autocast
+    from .backend_torch import autocast as _autocast
+    return _autocast(device=device, enabled=enabled)
 
 # tqdm 为可选依赖：缺失时降级为无进度条的普通迭代器
 try:
@@ -608,6 +634,10 @@ class Trainer:
             - grad_accum: 梯度累积步数（默认 1）
             - log_interval: 日志打印间隔（默认 10）
             - loss_rate_window: loss 下降率滑动窗口（默认 50）
+            - autocast: 是否启用混合精度（默认 False；GPU 时启用 fp16）
+        device: 目标设备字符串（``"cpu"`` / ``"cuda"`` / ``"npu"`` / ...），
+            ``None`` 等价于 ``"cpu"``。传入非 CPU 设备时，``__init__`` 会
+            自动把 model 迁移到该设备，并在前向时启用 autocast（若 cfg.autocast=True）。
     """
 
     def __init__(
@@ -618,6 +648,7 @@ class Trainer:
         optimizer: Optimizer,
         scheduler=None,
         cfg=None,
+        device=None,
     ):
         self.model = model
         self.train_loader = train_loader
@@ -625,6 +656,16 @@ class Trainer:
         self.optimizer = optimizer
         self.scheduler = scheduler
         self.cfg = cfg if cfg is not None else {}
+
+        # 设备：None / "cpu" 走 NumPy 路径；GPU/NPU 走 torch 委托路径
+        self.device = str(device) if device is not None else DEFAULT_DEVICE
+        # 非 CPU 设备：迁移 model（若 model 实现 .to(device)）
+        if not is_cpu_device(self.device):
+            if hasattr(self.model, "to"):
+                try:
+                    self.model.to(self.device)
+                except Exception as e:
+                    print(f"[Trainer] 警告：迁移模型到 {self.device} 失败：{e}", flush=True)
 
         self.max_steps = int(_cfg_get(cfg, "max_steps", 100))
         self.eval_interval = int(_cfg_get(cfg, "eval_interval", 10))
@@ -641,6 +682,8 @@ class Trainer:
         self.enable_progress_bar = bool(_cfg_get(cfg, "enable_progress_bar", True))
         self.realtime_plot = bool(_cfg_get(cfg, "realtime_plot", True))
         self.eta_window = int(_cfg_get(cfg, "eta_window", 20))
+        # 混合精度：GPU 时启用 autocast（需显式开启或 device 非 CPU 时自动启用）
+        self.use_autocast = bool(_cfg_get(cfg, "autocast", False)) or not is_cpu_device(self.device)
 
         # 子控制器
         self.early_stopping = EarlyStopping(self.patience)
@@ -678,8 +721,15 @@ class Trainer:
                 x, y = batch
                 x = _as_tensor(x)
                 y = _as_tensor(y)
-                logits = self.model(x)
-                loss = cross_entropy_loss(logits, y)
+                # 非 CPU 设备：迁移输入到目标 device
+                if not is_cpu_device(self.device):
+                    if hasattr(x, "to"):
+                        x = x.to(self.device)
+                    if hasattr(y, "to"):
+                        y = y.to(self.device)
+                with _get_autocast(self.device, enabled=self.use_autocast):
+                    logits = self.model(x)
+                    loss = cross_entropy_loss(logits, y)
                 total_loss += _scalar(loss)
                 n_batches += 1
         if n_batches == 0:
@@ -729,11 +779,19 @@ class Trainer:
             x, y = batch
             x = _as_tensor(x)
             y = _as_tensor(y)
+            # 非 CPU 设备：迁移输入到目标 device
+            if not is_cpu_device(self.device):
+                if hasattr(x, "to"):
+                    x = x.to(self.device)
+                if hasattr(y, "to"):
+                    y = y.to(self.device)
 
-            logits = self.model(x)
-            loss = cross_entropy_loss(
-                logits, y, label_smoothing=self.label_smoothing
-            )
+            # 混合精度前向（autocast 在 CPU 时为 no-op）
+            with _get_autocast(self.device, enabled=self.use_autocast):
+                logits = self.model(x)
+                loss = cross_entropy_loss(
+                    logits, y, label_smoothing=self.label_smoothing
+                )
             loss.backward()
 
             self.grad_accum.step()
@@ -1184,6 +1242,7 @@ __all__ = [
     "BatchLoader",
     "clip_grad_norm",
     "ParallelTrainer",
+    "DistributedTrainer",
     # 重新导出 optim 中新增项，方便用户从 training 一次性导入
     "LambdaLR",
     "warmup_cosine_lr",
@@ -1579,3 +1638,181 @@ class ParallelTrainer:
         print(f"[parallel] 训练完成 best_val_loss={self.best_val_loss:.4f}",
               flush=True)
         return self.history
+
+
+# ---------------------------------------------------------------------------
+# Task 1.7: DistributedTrainer —— 多卡数据并行训练器（占位接口）
+# ---------------------------------------------------------------------------
+
+
+class DistributedTrainer:
+    """多卡数据并行训练器（占位接口，API 预留）。
+
+    本类为分布式训练预留统一 API。当前实现为**单进程串行回退**：
+    - 若可用 PyTorch 分布式（``torch.distributed``），后续可扩展为真正的
+      DDP（DistributedDataParallel）多卡训练。
+    - 当前版本在单卡 / CPU 上行为与 ``Trainer`` 一致，仅添加了 rank/world_size
+      等分布式元信息与屏障同步接口。
+
+    设计目标
+    ========
+    - **API 对齐 PyTorch DDP**：``world_size`` / ``rank`` / ``local_rank`` /
+      ``barrier()`` / ``all_reduce()`` 等接口，便于后续无缝迁移。
+    - **优雅降级**：无 torch.distributed 时自动回退到单进程，不报错。
+    - **数据并行预留**：``DistributedSampler`` 风格的数据分片接口预留
+      （当前实现为全量数据，不做分片）。
+
+    Args:
+        model: ``nn.Module`` 模型
+        train_loader: 训练数据加载器
+        val_loader: 验证数据加载器
+        optimizer: 优化器
+        scheduler: 可选学习率调度器
+        cfg: 训练配置 dict（同 ``Trainer``，额外支持 ``world_size`` / ``rank``）
+        device: 设备字符串（``"cpu"`` / ``"cuda:0"`` / ``"npu:0"`` ...）
+        world_size: 世界大小（进程数），默认 1
+        rank: 当前进程 rank，默认 0
+        local_rank: 本机 local rank，默认 0
+        backend: 分布式后端（``"nccl"`` / ``"gloo"`` / ``"hccl"``），默认 None
+
+    用法:
+        >>> trainer = DistributedTrainer(model, train_loader, val_loader, opt,
+        ...                              device="cuda:0", world_size=1, rank=0)
+        >>> trainer.fit()
+
+    注意:
+        当前版本为占位实现，不启动真正的多进程。真正的 DDP 训练需配合
+        ``torchrun`` / ``torch.distributed.init_process_group`` 使用，
+        将在后续版本中实现。
+    """
+
+    def __init__(
+        self,
+        model,
+        train_loader,
+        val_loader,
+        optimizer: Optimizer,
+        scheduler=None,
+        cfg=None,
+        device=None,
+        world_size: int = 1,
+        rank: int = 0,
+        local_rank: int = 0,
+        backend: str = None,
+    ):
+        self.world_size = int(world_size)
+        self.rank = int(rank)
+        self.local_rank = int(local_rank)
+        self.backend = backend
+        self.device = str(device) if device is not None else DEFAULT_DEVICE
+        # 检测 torch.distributed 可用性
+        self._dist_available = has_torch() and _TORCH is not None and _TORCH.distributed.is_available()
+        self._dist_initialized = False
+        # 内部委托一个 Trainer 实例处理实际训练逻辑
+        self._trainer = Trainer(
+            model=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            cfg=cfg,
+            device=self.device,
+        )
+        # 暴露内部 trainer 的属性以便外部访问
+        self.model = self._trainer.model
+        self.optimizer = self._trainer.optimizer
+
+    def init_process_group(self, backend: str = None, init_method: str = None):
+        """初始化分布式进程组（占位接口）。
+
+        若 PyTorch 分布式可用且 ``world_size > 1``，调用
+        ``torch.distributed.init_process_group``；否则跳过（单进程回退）。
+
+        Args:
+            backend: 后端类型（``"nccl"`` / ``"gloo"`` / ``"hccl"``）
+            init_method: 初始化方法（默认 ``"env://"``）
+        """
+        if not self._dist_available or self.world_size <= 1:
+            if self.rank == 0:
+                print("[DistributedTrainer] 单进程模式（world_size=1），"
+                      "跳过 init_process_group", flush=True)
+            return
+        if backend is not None:
+            self.backend = backend
+        if self.backend is None:
+            self.backend = "nccl" if "cuda" in self.device else "gloo"
+        if init_method is None:
+            init_method = "env://"
+        try:
+            _TORCH.distributed.init_process_group(
+                backend=self.backend,
+                init_method=init_method,
+                world_size=self.world_size,
+                rank=self.rank,
+            )
+            self._dist_initialized = True
+            if self.rank == 0:
+                print(f"[DistributedTrainer] 初始化进程组 backend={self.backend} "
+                      f"world_size={self.world_size} rank={self.rank}", flush=True)
+        except Exception as e:
+            print(f"[DistributedTrainer] 警告：init_process_group 失败：{e}",
+                  flush=True)
+
+    def barrier(self):
+        """分布式屏障同步（单进程时为 no-op）。"""
+        if self._dist_initialized:
+            _TORCH.distributed.barrier()
+
+    def all_reduce(self, tensor, op=None):
+        """All-reduce 聚合（单进程时直接返回原 tensor）。
+
+        Args:
+            tensor: 待聚合的 Tensor（或标量）
+            op: 规约操作（默认 ``SUM``）
+        """
+        if not self._dist_initialized:
+            return tensor
+        if op is None:
+            op = _TORCH.distributed.ReduceOp.SUM
+        # 把 Tensor 的 data 转成 torch.Tensor 进行 all_reduce
+        if isinstance(tensor, Tensor):
+            t_data = tensor.data
+            if _is_torch_data(t_data):
+                _TORCH.distributed.all_reduce(t_data, op=op)
+            return tensor
+        # 标量 / ndarray：包装成 torch.Tensor 再 reduce
+        if _TORCH is not None:
+            t = _TORCH.tensor(float(tensor))
+            _TORCH.distributed.all_reduce(t, op=op)
+            return float(t.item()) / self.world_size
+        return tensor
+
+    def fit(self):
+        """主训练循环（委托内部 Trainer，训练前后加 barrier 同步）。"""
+        self.barrier()
+        if self.rank == 0:
+            print(f"[DistributedTrainer] 开始训练 world_size={self.world_size} "
+                  f"rank={self.rank} device={self.device}", flush=True)
+        result = self._trainer.fit()
+        self.barrier()
+        if self.rank == 0:
+            print("[DistributedTrainer] 训练完成", flush=True)
+        return result
+
+    def evaluate(self):
+        """评估（委托内部 Trainer）。"""
+        return self._trainer.evaluate()
+
+    @property
+    def is_main_process(self) -> bool:
+        """当前是否为主进程（rank == 0）。"""
+        return self.rank == 0
+
+    def destroy_process_group(self):
+        """销毁分布式进程组（单进程时为 no-op）。"""
+        if self._dist_initialized:
+            try:
+                _TORCH.distributed.destroy_process_group()
+                self._dist_initialized = False
+            except Exception:
+                pass

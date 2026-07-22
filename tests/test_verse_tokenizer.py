@@ -23,7 +23,7 @@
 17. **向后兼容：QwenTokenizer 是 VerseTokenizer 的别名**
 
 运行方式：
-    cd /workspace && PYTHONPATH=packages/verse_tokenizer python -m pytest tests/test_verse_tokenizer.py -v
+    cd /workspace && PYTHONPATH=packages/verse_infra python -m pytest tests/test_verse_tokenizer.py -v
 """
 
 from __future__ import annotations
@@ -37,11 +37,11 @@ from unittest.mock import patch
 
 import pytest
 
-# 让 tests/ 目录能 import verse_tokenizer
+# 让 tests/ 目录能 import verse_infra.verse_tokenizer
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_REPO_ROOT / "packages" / "verse_tokenizer"))
+sys.path.insert(0, str(_REPO_ROOT / "packages" / "verse_infra"))
 
-from verse_tokenizer import (
+from verse_infra.verse_tokenizer import (
     VerseTokenizer,
     QwenTokenizer,  # 向后兼容别名
     QWEN_IM_START,
@@ -51,7 +51,7 @@ from verse_tokenizer import (
     render_prompt_qwen,
     split_prompt_completion_qwen,
 )
-from verse_tokenizer.verse import _import_transformers
+from verse_infra.verse_tokenizer.verse import _import_transformers
 
 
 # ---------------------------------------------------------------------------
@@ -194,10 +194,10 @@ class MockQwenTokenizer:
 def _make_verse_tokenizer(**kwargs) -> VerseTokenizer:
     """用 MockQwenTokenizer 构造一个 VerseTokenizer 实例（绕过真实下载）。
 
-    通过 patch ``verse_tokenizer.verse._import_transformers`` 返回
+    通过 patch ``verse_infra.verse_tokenizer.verse._import_transformers`` 返回
     ``MockQwenTokenizer`` 类，然后调用 ``VerseTokenizer()``。
     """
-    with patch("verse_tokenizer.verse._import_transformers", return_value=MockQwenTokenizer):
+    with patch("verse_infra.verse_tokenizer.verse._import_transformers", return_value=MockQwenTokenizer):
         return VerseTokenizer(**kwargs)
 
 
@@ -212,7 +212,7 @@ def test_lazy_import():
     只有用 ``VerseTokenizer()`` 构造才会触发 ``_import_transformers`` 调用。
     """
     import importlib
-    import verse_tokenizer.verse as verse_module
+    import verse_infra.verse_tokenizer.verse as verse_module
     importlib.reload(verse_module)
     assert hasattr(verse_module, "VerseTokenizer")
     assert hasattr(verse_module, "_import_transformers")
@@ -235,7 +235,7 @@ def test_import_transformers_missing():
     assert "pip install" in msg
 
     with patch(
-        "verse_tokenizer.verse._import_transformers",
+        "verse_infra.verse_tokenizer.verse._import_transformers",
         side_effect=ImportError("VerseTokenizer 需要 transformers 库。"),
     ):
         with pytest.raises(ImportError):
@@ -354,13 +354,13 @@ def test_save_load_roundtrip():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         save_dir = os.path.join(tmpdir, "verse_tok")
-        with patch("verse_tokenizer.verse._import_transformers", return_value=MockQwenTokenizer):
+        with patch("verse_infra.verse_tokenizer.verse._import_transformers", return_value=MockQwenTokenizer):
             tok.save(save_dir)
         assert os.path.isdir(save_dir)
         assert os.path.exists(os.path.join(save_dir, "tokenizer.json"))
 
         new_tok = _make_verse_tokenizer()
-        with patch("verse_tokenizer.verse._import_transformers", return_value=MockQwenTokenizer):
+        with patch("verse_infra.verse_tokenizer.verse._import_transformers", return_value=MockQwenTokenizer):
             new_tok.load(save_dir)
         assert new_tok.eos_id == original_eos
         assert new_tok.pad_id == original_pad
@@ -369,7 +369,7 @@ def test_save_load_roundtrip():
 
         # 测试 .json 元信息形式保存
         meta_path = os.path.join(tmpdir, "verse_meta.json")
-        with patch("verse_tokenizer.verse._import_transformers", return_value=MockQwenTokenizer):
+        with patch("verse_infra.verse_tokenizer.verse._import_transformers", return_value=MockQwenTokenizer):
             tok.save(meta_path)
         assert os.path.isfile(meta_path)
         with open(meta_path, "r", encoding="utf-8") as f:
@@ -427,7 +427,7 @@ def test_encode_decode_passthrough():
 
 def test_from_pretrained_from_local():
     """from_pretrained / from_local 便捷构造方法。"""
-    with patch("verse_tokenizer.verse._import_transformers", return_value=MockQwenTokenizer):
+    with patch("verse_infra.verse_tokenizer.verse._import_transformers", return_value=MockQwenTokenizer):
         tok1 = VerseTokenizer.from_pretrained()
         assert tok1._model_id == "Qwen/Qwen3-32B"
 
@@ -686,7 +686,7 @@ def test_qwen_tokenizer_backward_compat():
     """QwenTokenizer 是 VerseTokenizer 的别名，确保旧代码不破坏。"""
     assert QwenTokenizer is VerseTokenizer
     # 通过 QwenTokenizer 也能构造
-    with patch("verse_tokenizer.verse._import_transformers", return_value=MockQwenTokenizer):
+    with patch("verse_infra.verse_tokenizer.verse._import_transformers", return_value=MockQwenTokenizer):
         tok = QwenTokenizer()
         assert isinstance(tok, VerseTokenizer)
         assert isinstance(tok, QwenTokenizer)

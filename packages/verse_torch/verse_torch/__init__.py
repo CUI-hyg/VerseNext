@@ -18,6 +18,22 @@ from .tensor import (
     unbroadcast,
 )
 
+# 设备抽象层 (Task 1.1 / 1.3)
+from .device import (
+    DeviceBackend,
+    NumpyBackend,
+    get_backend,
+    has_torch,
+    has_torch_npu,
+    DEFAULT_DEVICE,
+)
+# TorchBackend 仅在 torch 可用时导入（无 torch 时跳过，避免硬依赖）
+from .device import has_torch as _has_torch
+if _has_torch():
+    from .backend_torch import TorchBackend
+else:
+    TorchBackend = None
+
 # Parameter 别名（与 PyTorch 习惯一致：Parameter = Tensor，通过 requires_grad=True 标识）
 Parameter = Tensor
 from . import nn
@@ -53,12 +69,22 @@ from .nn import (
     Sequential,
     ModuleList,
     SwiGLUMLP,
-    GQASelfAttention,
-    TransformerBlock,
-    TransformerLM,
+    # Part4K1 SubTask 2.2: 旧名重命名为私有实现，此处直接导入私有名以避免
+    # import verse_torch 时触发 DeprecationWarning（仅 from verse_torch.nn
+    # import TransformerLM 等直接访问 nn 模块时才发警告）
+    _GQASelfAttention as GQASelfAttention,
+    _TransformerBlock as TransformerBlock,
+    _TransformerLM as TransformerLM,
     SlidingWindowAttention,
     ALiBi,
     DeepNorm,
+    RotaryEmbedding,
+    KVCache,
+    StaticCache,
+    DynamicCache,
+    GroupNorm,
+    Conv1d,
+    LayerNormFast,
     repeat_kv,
     kaiming_uniform_,
     xavier_uniform_,
@@ -72,6 +98,8 @@ from .optim import (
     SGD,
     Adam,
     AdamW,
+    NAdamW,
+    RMSProp,
     LRScheduler,
     StepLR,
     ExponentialLR,
@@ -102,6 +130,8 @@ from .losses import (
     l1_loss,
     kl_div_loss,
     focal_loss,
+    contrastive_loss,
+    perplexity,
 )
 from .training import (
     cross_entropy_loss,
@@ -114,6 +144,7 @@ from .training import (
     BatchLoader,
     clip_grad_norm,
     ParallelTrainer,
+    DistributedTrainer,
 )
 from .training_nex import (
     VerseNexTrainer,
@@ -162,6 +193,14 @@ __all__ = [
     "set_grad_enabled",
     "is_grad_enabled",
     "unbroadcast",
+    # 设备抽象层 (Task 1.1 / 1.3)
+    "DeviceBackend",
+    "NumpyBackend",
+    "TorchBackend",
+    "get_backend",
+    "has_torch",
+    "has_torch_npu",
+    "DEFAULT_DEVICE",
     # 子模块
     "nn",
     "optim",
@@ -185,6 +224,13 @@ __all__ = [
     "SlidingWindowAttention",
     "ALiBi",
     "DeepNorm",
+    "RotaryEmbedding",
+    "KVCache",
+    "StaticCache",
+    "DynamicCache",
+    "GroupNorm",
+    "Conv1d",
+    "LayerNormFast",
     "repeat_kv",
     "kaiming_uniform_",
     "xavier_uniform_",
@@ -197,6 +243,8 @@ __all__ = [
     "SGD",
     "Adam",
     "AdamW",
+    "NAdamW",
+    "RMSProp",
     "LRScheduler",
     "StepLR",
     "ExponentialLR",
@@ -223,6 +271,8 @@ __all__ = [
     "l1_loss",
     "kl_div_loss",
     "focal_loss",
+    "contrastive_loss",
+    "perplexity",
     # training 模块
     "cross_entropy_loss",
     "EarlyStopping",
@@ -234,6 +284,7 @@ __all__ = [
     "BatchLoader",
     "clip_grad_norm",
     "ParallelTrainer",
+    "DistributedTrainer",
     # training_nex 模块（Part4）
     "VerseNexTrainer",
     "LoRATrainer",

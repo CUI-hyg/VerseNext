@@ -8,10 +8,15 @@
 
 - 线性复杂度：O(N) 训练 + O(1) 推理状态，适配长上下文。
 - parallel / recurrent 双模式，float32 下输出吻合到 1e-3。
-- 多种架构：Mamba-2 / RWKV-7 / RetNet / Sparse Attention / Hybrid / VerseNex 原生架构。
+- 多种架构：Mamba-2 / RWKV-7 / RetNet / Sparse Attention / Hybrid（已 deprecated）/ VerseNex 原生架构。
 - **Part4 新增：VerseNex 原生架构**：TriSparseAttention（三路并行稀疏注意力）+ MoD（多稠密分区）+ CometSparkNexLM（顶层 LM）。
+- **Part4K1 新增**：
+  - **品牌落地**：`TransformerLM` → `VerseNexLM`、`GQASelfAttention` → `VerseNexAttention`、`VerseNexBlock` 统一为唯一名（旧名作为 `DeprecationWarning` 别名）
+  - **MoD 完善**：`load_balance_loss` + `router z-loss` 稳定训练
+  - **超稀疏并行注意力**：多 query chunk 并行 + `SpeculativeDecoder`（Medusa 风格）+ `ParallelKVCache`
+  - **NexRL 强化学习**：五要素抽象（`NexAgent` / `NexEnv` / `NexState` / `NexAction` / `NexReward`）+ `NexTrainer`（PPO + GAE + KL 自适应）
 - 位置编码：RoPE / ALiBi / NoPE，统一接口。
-- 纯 Python + NumPy 友好，无重型深度学习框架硬依赖。
+- 纯 Python + NumPy 友好，无重型深度学习框架硬依赖（GPU/NPU 通过 `verse_torch.device.DeviceBackend` 可选委托）。
 
 ## 安装
 
@@ -44,7 +49,9 @@ pip install -e packages/verse_nex
 - `TopKChunkSparseAttention`：top-k chunk 稀疏注意力。
 - 在 chunk 内全量 + 跨 chunk top-k，平衡全局感受野与计算成本。
 
-### Hybrid Block / LM
+### Hybrid Block / LM（Part4K1 deprecated）
+
+> **Part4K1 标记 deprecated**：`HybridBlock` / `HybridLM` 保留只读兼容。新代码请用 `VerseNexLM`（TriSparse + MoD 已覆盖 Hybrid 的所有能力，且更高效）。`config.yml` 的 `arch: hybrid` 会自动映射为 `arch: versenex` + `DeprecationWarning`。
 
 - `HybridBlock`：SSM（mamba2 / rwkv7）+ Sparse Attention 混合 block。
 - `HybridLM`：完整 LM（Embedding → N × HybridBlock → LayerNorm → Head）。
@@ -74,7 +81,9 @@ Part4 在 Hybrid 基础上引入 **VerseNex 原生架构**——不依赖 SSM，
 - **双层门控**：
   - `part_router`（soft routing）：所有 DensePart 都参与计算，权重通过 softmax 归一化
   - `expert_router`（hard routing，top-k）：每个 DensePart 内仅 top-k 个 Expert 被激活（默认 top-3）
-- **Switch Transformer 风格 aux loss**：负载均衡损失，避免 Expert 坍缩
+- **Switch Transformer 风格 aux loss**（Part4K1 完善）：
+  - `load_balance_loss`：负载均衡损失，避免 Expert 坍缩
+  - `router z-loss`：router logits 平方和惩罚，稳定训练（防止 router 输出过大导致 softmax 饱和）
 - **参数预算**：每个 Expert 是独立的 SwiGLU MLP（w_gate + w_up + w_down）
 
 数学形式：
@@ -119,6 +128,69 @@ print(model.count_parameters())  # ≈ 537,591,264
 ```
 
 层模式生成：`_build_v02_pattern(n_layer=32, mod_every=4)` → `["mod", "trisparse", "trisparse", "trisparse"] × 8`（共 8 MoD + 24 trisparse）。
+
+### VerseNexLM 重命名（Part4K1）
+
+Part4K1 完成品牌落地：`TransformerLM` → `VerseNexLM`、`GQASelfAttention` → `VerseNexAttention`、`VerseNexBlock` 统一为唯一名。
+
+- **新名（推荐）**：
+
+```python
+from verse_nex import VerseNexLM, VerseNexAttention, MoDLayer, TriSparseAttention
+```
+
+- **旧名（DeprecationWarning，保留一个版本）**：`verse_torch.nn` 仍保留 `TransformerLM` / `TransformerBlock` / `GQASelfAttention` 作为别名，导入时发出 `DeprecationWarning: TransformerLM 已更名为 VerseNexLM`。
+- **`config.yml` `arch` 字段统一**：仅保留 `arch: versenex` 唯一值；旧值 `transformer` / `hybrid` / `verse_nex` 自动映射 + DeprecationWarning。
+- **`HybridBlock` / `HybridLM` deprecated**：保留只读兼容，新代码请用 `VerseNexLM`（TriSparse + MoD 已覆盖 Hybrid 的所有能力）。
+
+### 超稀疏并行注意力（Part4K1）
+
+Part4K1 对 `TriSparseAttention` 与推理路径做了三层并行加速：
+
+| 组件 | 文件 | 说明 |
+|---|---|---|
+| 多 query chunk 并行 | `tri_sparse_attn.py` | 把 query 序列按 chunk 切分后批量 matmul，消除串行循环；GPU 下走 PyTorch 原生 kernel |
+| `SpeculativeDecoder` | `speculative.py` | Medusa 风格：draft head 并行生成 k 个候选 token + 主模型一次前向验证 + verify-then-commit（接受最长正确前缀） |
+| `ParallelKVCache` | `kv_cache_parallel.py` | 批量更新 KV cache（`batch_update`），预分配 buffer，避免顺序拷贝 |
+
+- **数值一致**：并行实现与串行实现在 float32 下吻合到 1e-3（`tests/test_parallel_sparse_attn.py` 验证）
+- **GPU 加速**：seq_len ≥ 512 下并行实现吞吐量 ≥ 2×（GPU 后端）
+- **Speculative Decoding**：接受率 ≥ 75% 时吞吐量提升约 2-3×
+
+```python
+from verse_nex.speculative import SpeculativeDecoder
+
+decoder = SpeculativeDecoder(model, draft_head, k=4)
+output = decoder.generate(prompt_ids, max_new_tokens=128)
+```
+
+详见 [ADR-008 超稀疏并行注意力](../../docs/architecture/adr-008-parallel-sparse-attention.md)。
+
+### NexRL 强化学习（Part4K1）
+
+`verse_nex.nexrl` 子包实现 VerseNex 强化学习算法，五要素抽象 + PPO 训练器：
+
+| 要素 | 类 | 职责 |
+|---|---|---|
+| `NexAgent` | `nexrl/agent.py` | 策略网络（VerseNexLM）+ 参考网络（冻结，KL 约束） |
+| `NexEnv` | `nexrl/env.py` | 任务环境：`ChatEnv` / `MathEnv` / `CodeEnv` |
+| `NexState` | `nexrl/state.py` | RL 状态：prompt + tokens + KV cache + logprobs |
+| `NexAction` | `nexrl/action.py` | 动作采样：ε-greedy / softmax / nucleus + 探索衰减 + 重复惩罚 |
+| `NexReward` | `nexrl/reward.py` | 多维奖励：correctness + fluency + safety + length_penalty + 归一化 + shaping |
+
+训练组件：
+- `ParallelRolloutCollector`：多 prompt / 多 rollout 并行采样（batched，GPU 批量前向）
+- `NexTrainer`：PPO clipped surrogate + GAE + KL 自适应 + value function（纯策略梯度 fallback）
+
+```python
+from verse_nex.nexrl import NexAgent, NexTrainer, NexReward, NexEnv
+
+agent = NexAgent(policy_model=verse_nex_lm, ref_model=ref_lm)
+trainer = NexTrainer(agent=agent, env=env, reward=reward, cfg={...})
+trainer.fit()
+```
+
+CLI 集成：`verse-posttrain --rl nexrl`。详见 [ADR-007 NexRL 设计](../../docs/architecture/adr-007-nexrl-design.md)。
 
 ### 位置编码
 
@@ -174,11 +246,21 @@ print("max abs diff:", np.abs(p - r).max())   # 期望 < 1e-3
 
 ## 测试
 
-- `tests/test_mamba2_memory.py`：Mamba-2 长序列内存与一致性。
-- `tests/test_passkey.py`：passkey 检索能力评测。
+| 文件 | 覆盖范围 |
+|---|---|
+| [test_mamba2_memory.py](../../tests/test_mamba2_memory.py) | Mamba-2 长序列内存与一致性 |
+| [test_passkey.py](../../tests/test_passkey.py) | passkey 检索能力评测 |
+| [test_mod_complete.py](../../tests/test_mod_complete.py) | **Part4K1** MoD 前向 / 反向 / aux loss 收敛 / parallel-vs-recurrent 一致性 |
+| [test_parallel_sparse_attn.py](../../tests/test_parallel_sparse_attn.py) | **Part4K1** 多 chunk 并行 vs 串行数值一致（float32 吻合 1e-3）+ GPU 吞吐 |
+| [test_speculative_decode.py](../../tests/test_speculative_decode.py) | **Part4K1** k=4 候选预测 + 接受最长正确前缀 + 拒绝处重 draft |
+| [test_nexrl.py](../../tests/test_nexrl.py) | **Part4K1** 多维奖励 / 并行 rollout / KL 防崩溃 / 动作采样策略 |
 
 ## 相关文档
 
 - [ADR-002 线性复杂度](../../docs/architecture/adr-002-linear-complexity.md)
 - [ADR-003 世界模型路线](../../docs/architecture/adr-003-world-model-route.md)
-- [CometSparkLM 使用 HybridLM](../../data/demo/model/model.py)
+- [ADR-007 NexRL 设计](../../docs/architecture/adr-007-nexrl-design.md)（**Part4K1 新增**）
+- [ADR-008 超稀疏并行注意力](../../docs/architecture/adr-008-parallel-sparse-attention.md)（**Part4K1 新增**）
+- [CometSpark V0.5-1B](../../spark/README.md)（基于 VerseNexLM 的 1B 参数 LM）
+- [Verse 训练指南](../../docs/training_guide.md)
+- [主 README](../../README.md)

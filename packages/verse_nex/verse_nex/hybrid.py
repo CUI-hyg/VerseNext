@@ -1,6 +1,14 @@
-"""VerseNex: Hybrid Block (Task 3.6).
+"""VerseNex: Hybrid Block (Task 3.6) — **DEPRECATED**.
 
-可配置 SSM : Sparse Attention 层数比例的 Hybrid 架构，参考
+.. deprecated:: Part4K1 SubTask 2.5
+    ``HybridBlock`` / ``HybridLM`` 已标记 deprecated。Part4K1 起
+    ``config.yml`` 的 ``arch`` 字段统一为 ``"versenex"``（原 ``"hybrid"``
+    自动映射为 ``"versenex"`` 并发 :class:`DeprecationWarning`）。
+    原 transformer 路径已由 ``VerseNexLM``（``CometSparkNexLM``）统一接管。
+    本模块保留只读兼容（类可正常实例化与使用，但每次实例化会发
+    :class:`DeprecationWarning`），下个大版本将删除。
+
+原设计：可配置 SSM : Sparse Attention 层数比例的 Hybrid 架构，参考
 RWKV-X / Nemotron-H / Samba 的混合设计。
 
 核心思想：
@@ -20,6 +28,8 @@ RWKV-X / Nemotron-H / Samba 的混合设计。
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 
 from verse_torch import Tensor, no_grad
@@ -30,13 +40,31 @@ from .rwkv7 import RWKV7Block
 from .sparse_attention import TopKChunkSparseAttention
 
 
+# Part4K1 SubTask 2.5: 模块级 deprecation 提示
+# 直接 import 本模块时发一次 DeprecationWarning（提示用户改用 VerseNexLM）
+warnings.warn(
+    "verse_nex.hybrid 模块已 deprecated（Part4K1 SubTask 2.5）。"
+    "HybridBlock/HybridLM 保留只读兼容，"
+    "请改用 verse_nex.CometSparkNexLM（VerseNexLM）作为顶层 LM，"
+    "下个大版本将删除本模块。",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
+
 # ---------------------------------------------------------------------------
 # HybridBlock: 单层封装
 # ---------------------------------------------------------------------------
 
 
 class HybridBlock(Module):
-    """单层 Hybrid Block，可选 SSM 或 Sparse Attention 类型。
+    """单层 Hybrid Block，可选 SSM 或 Sparse Attention 类型 — **DEPRECATED**.
+
+    .. deprecated:: Part4K1 SubTask 2.5
+        ``HybridBlock`` 已 deprecated。请在 ``config.yml`` 中使用
+        ``arch: versenex``（原 ``hybrid`` 自动映射 + DeprecationWarning），
+        原 hybrid 路径已由 VerseNexLM 统一接管。本类保留只读兼容，
+        实例化时会发 :class:`DeprecationWarning`，下个大版本删除。
 
     Args:
         block_type: "ssm" 或 "sparse_attn"
@@ -54,6 +82,14 @@ class HybridBlock(Module):
         ssm_kwargs: dict = None,
         sparse_kwargs: dict = None,
     ):
+        # Part4K1 SubTask 2.5: 实例化时发 DeprecationWarning
+        warnings.warn(
+            "HybridBlock 已 deprecated（Part4K1 SubTask 2.5）。"
+            "请改用 VerseNexBlock（TriSparse / MoD）或 arch='versenex'，"
+            "下个大版本将删除本类。",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         super().__init__()
         if block_type not in ("ssm", "sparse_attn"):
             raise ValueError(f"block_type must be 'ssm' or 'sparse_attn', got {block_type!r}")
@@ -113,7 +149,14 @@ class HybridBlock(Module):
 
 
 class HybridLM(Module):
-    """Hybrid Language Model.
+    """Hybrid Language Model — **DEPRECATED**.
+
+    .. deprecated:: Part4K1 SubTask 2.5
+        ``HybridLM`` 已 deprecated。请在 ``config.yml`` 中使用
+        ``arch: versenex``（原 ``hybrid`` 自动映射 + DeprecationWarning），
+        原 hybrid 路径已由 VerseNexLM（``CometSparkNexLM``）统一接管。
+        本类保留只读兼容，实例化时会发 :class:`DeprecationWarning`，
+        下个大版本删除。
 
     结构: Embedding -> N × HybridBlock -> LayerNorm -> LM Head
 
@@ -141,6 +184,15 @@ class HybridLM(Module):
         sparse_placement: str = "spread",
         tie_weights: bool = False,
     ):
+        # Part4K1 SubTask 2.5: 实例化时发 DeprecationWarning
+        warnings.warn(
+            "HybridLM 已 deprecated（Part4K1 SubTask 2.5）。"
+            "请改用 verse_nex.CometSparkNexLM（VerseNexLM）"
+            "或 config.yml 中 arch: versenex，"
+            "下个大版本将删除本类。",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         super().__init__()
         if not 0.0 <= sparse_ratio <= 1.0:
             raise ValueError(f"sparse_ratio must be in [0, 1], got {sparse_ratio}")

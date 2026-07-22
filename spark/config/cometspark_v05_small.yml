@@ -1,0 +1,76 @@
+# CometSpark V0.5 Small 调试配置（Part4K1 Task 8.6）
+#
+# 用于 3 核 CPU / 5GB 内存沙箱下快速跑通端到端流程（训练 / 生成 / 打分）。
+# - vocab_size=256（ByteTokenizer，无网络依赖）
+# - n_embd=64, n_layer=2, n_head=4, n_kv_head=2
+# - mod_every=2 + n_layer=2 → 1 mod + 1 trisparse（极小 MoD）
+# - num_dense_parts=2, num_experts_per_part=2, top_k=1
+# - 200 步约 10-30 秒可完成，内存占用 < 500MB
+
+model:
+  arch: versenex
+  vocab_size: 256
+  n_layer: 2
+  n_embd: 64
+  n_head: 4
+  n_kv_head: 2
+  seq_len: 64
+  dropout: 0.0
+  tie_weights: true
+
+  # VerseNex / TriSparse / MoD（极小配置）
+  mod_every: 2
+  num_dense_parts: 2
+  num_experts_per_part: 2
+  top_k: 1
+  expert_hidden: null
+  window_size: 32
+  num_global_tokens: 4
+  use_alibi: true
+  use_rope: false
+  rope_theta: 10000.0
+  max_position_embeddings: 256
+  aux_loss_weight: 0.01
+
+  # tokenizer（调试用 byte，无网络）
+  tokenizer_repo: Qwen/Qwen3.5-35B-A3B
+
+  # Task 8.7：VerseNex 优化
+  embedding_scale: true
+  temperature_scaling: 1.0
+  init_std: 0.02
+
+  # 训练 / 设备
+  device: cpu
+  parallel_chunks: 1
+
+training:
+  batch_size: 8
+  micro_batch: 4
+  lr: 0.003
+  weight_decay: 0.01
+  no_decay: true
+  grad_clip: 1.0
+  label_smoothing: 0.1
+  max_steps: 200
+  warmup: 20
+  eval_interval: 20
+  patience: 5
+  grad_accum: 1
+  log_interval: 10
+  seed: 42
+  enable_progress_bar: true
+  realtime_plot: true
+  eta_window: 20
+  parallel_chunks: 1
+
+tokenizer:
+  kind: byte
+  vocab_size: 259
+
+data:
+  train_path: data/train.jsonl
+  val_path: data/val.jsonl
+
+checkpoint:
+  save_dir: checkpoints_small
