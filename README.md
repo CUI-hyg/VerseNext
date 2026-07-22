@@ -1,24 +1,78 @@
 # VerseNext
 
-> **VerseNext** —— 纯 Python / 纯 CPU 的深度学习与大语言模型框架（VerseTorch + VerseNex + VerseAWM），不强制依赖 PyTorch / Transformers，可在消费级 CPU、嵌入式设备与树莓派上开箱即用。
+> **VerseNext** —— 纯 Python / 纯 CPU 的深度学习与大语言模型框架（VerseTorch + VerseNex + VerseAWM），不强制依赖 PyTorch / Transformers，可在消费级 CPU、嵌入式设备与树莓派上开箱即用；可选 GPU/NPU 后端用于大规模训练。
 
-VerseNext 的目标是用 **线性复杂度架构（SSM / Mamba / RWKV / Linear Attention）** 替代或混合 Transformer，根治自注意力 O(N²) 与 KV Cache 线性膨胀问题；并为下一代 **世界模型（JEPA、RSSM、H-JEPA）** 与端侧高能力 LLM 提供原生支撑，同时尽可能兼容 HuggingFace / PyTorch 生态以降低迁移成本。
+VerseNext 的目标是用 **线性复杂度架构（SSM / Mamba / RWKV / Linear Attention）** 与 **VerseNex 原生架构（TriSparse + MoD）** 替代或混合 Transformer，根治自注意力 O(N²) 与 KV Cache 线性膨胀问题；并为下一代 **世界模型（JEPA、RSSM、H-JEPA）** 与端侧高能力 LLM 提供原生支撑，同时尽可能兼容 HuggingFace / PyTorch 生态以降低迁移成本。
 
-## 三包定位
+## 包定位
 
 | 包 | PyPI 名 | 定位 | 关键能力 |
 |---|---|---|---|
-| **VerseTorch** | `verse-torch` | 纯 Python + NumPy 的张量与自动微分引擎（PyTorch 替代） | `Tensor` 类、动态计算图、反向模式 autograd、`nn.Module`、优化器栈（SGD/Adam/AdamW）、INT4/INT8/1.58-bit 量化、可读 PyTorch `state_dict` |
-| **VerseNex** | `verse-nex` | Transformer 替代架构库（线性复杂度优先） | Mamba-2 selective scan、RWKV-7 time/channel mixing、RetNet 风格 Linear Attention、SSM + Sparse Attention Hybrid Block、RoPE/ALiBi/NoPE |
+| **VerseTorch** | `verse-torch` | 纯 Python + NumPy 的张量与自动微分引擎（PyTorch 替代） | `Tensor` 类、动态计算图、反向模式 autograd、`nn.Module`、优化器栈（SGD/Adam/AdamW/NAdamW/RMSProp）、INT4/INT8/1.58-bit 量化、可读 PyTorch `state_dict`、`DeviceBackend` 抽象（CPU/GPU/NPU） |
+| **VerseNex** | `verse-nex` | Transformer 替代架构库 + VerseNex 原生架构 | Mamba-2 / RWKV-7 / RetNet Linear Attention / Sparse Attention / Hybrid / **TriSparseAttention** / **MoDLayer**（5 DensePart × 8 Expert × top-3）/ **VerseNexLM** / **NexRL** 强化学习 |
 | **VerseAWM** | `verse-awm` | 世界模型专用包（Autonomous World Model） | I-JEPA / V-JEPA 潜在空间预测、RSSM（Dreamer 风格）、H-JEPA 层次化规划、EMA target encoder、energy-based loss |
+| **VerseInfra** | `verse-infra` | 总包：聚合 verse_tokenizer / verse_compat / verse_inference / verse_trainer 四个子模块 | 单包安装 + 子模块结构 + 便捷重导出 + shim 兼容旧导入路径 |
+| **CometSpark** | `spark/`（仓库内置） | CometSpark V0.5-1B 端到端 LM 训练仓库 | 基于 `VerseNexBlock` 的 1B 参数模型 + Qwen3.5-35B-A3B tokenizer + VerseTrainer CLI 一键训练 |
 
-辅助包：
+### VerseInfra（总包）
 
-| 包 | PyPI 名 | 定位 |
+`verse_infra` 聚合了原本独立的四个辅助包为子模块，便于一键安装与版本对齐：
+
+| 子模块 | 旧路径（已废弃，仍可工作） | 新路径（推荐） |
 |---|---|---|
-| `verse-tokenizer` | `verse-tokenizer` | 轻量 BPE/Unigram 分词器，无 `tokenizers` / `sentencepiece` 重依赖时仍可运行 |
-| `verse-inference` | `verse-inference` | 模型加载、KV/状态缓存、流式生成、OpenAI 兼容 HTTP server（可选 FastAPI） |
-| `verse-compat` | `verse-compat` | HuggingFace `transformers` / `torch` 兼容适配层（仅在用户已安装时启用） |
+| `verse_tokenizer` | `from verse_tokenizer import BPETokenizer` | `from verse_infra.verse_tokenizer import BPETokenizer` |
+| `verse_compat` | `from verse_compat import load_hf_state_dict` | `from verse_infra.verse_compat import load_hf_state_dict` |
+| `verse_inference` | `from verse_inference import ModelLoader` | `from verse_infra.verse_inference import ModelLoader` |
+| `verse_trainer` | （新模块） | `from verse_infra.verse_trainer import train` |
+
+旧路径仍可工作（通过 thin shim 转发 + `DeprecationWarning`），详见 [VerseInfra README](packages/verse_infra/README.md)。
+
+### VerseTrainer（训练 CLI）
+
+`verse_trainer` 提供 5 个 CLI 入口（注册为 console_scripts）：
+
+| 命令 | 用途 |
+|---|---|
+| `verse-train` | 预训练（支持 `--device cpu/cuda/npu`、`--parallel-chunks N`、`--single-sample`、`--resume`、`--amp`、`--loss-optimizer`） |
+| `verse-finetune` | 微调（`--method lora` / `--method full`） |
+| `verse-posttrain` | 后训练（`--rl nexrl` / `--rl sft` / `--rl dpo`） |
+| `verse-eval` | 评估 + 打分（`--score --references-file`） |
+| `verse-tokenize` | tokenizer 训练 / 加载 / 转换（`--from-hf Qwen/Qwen3.5-35B-A3B`） |
+
+### NexRL（RL 算法）
+
+`verse_nex.nexrl` 子包实现 VerseNex 强化学习算法，五要素抽象：
+
+- `NexAgent`：策略网络（VerseNexLM）+ 参考网络（KL 约束）
+- `NexEnv`：任务环境（ChatEnv / MathEnv / CodeEnv）
+- `NexState`：RL 状态（prompt + tokens + KV cache）
+- `NexAction`：动作采样（ε-greedy / softmax / nucleus）+ 探索衰减 schedule + 重复惩罚
+- `NexReward`：多维奖励（correctness + fluency + safety + length_penalty）+ 归一化 + reward shaping
+
+训练组件：`ParallelRolloutCollector`（并行 rollout）+ `NexTrainer`（PPO clipped surrogate + GAE + KL 自适应 + value function）。详见 [ADR-007 NexRL 设计](docs/architecture/adr-007-nexrl-design.md)。
+
+### CometSpark V0.5-1B
+
+`spark/` 目录承载基于 VerseNex 原生架构的 1B 参数 LM 训练仓库：
+
+- **CometSparkV05LM**：组合 `verse_nex.CometSparkNexLM`（内部 `VerseNexBlock` = TriSparse + MoD），不重造底层 block
+- **1B 参数预算**：`n_embd=1024, n_layer=20, 5 MoD + 15 trisparse, 4 DensePart × 4 Expert × top-2` + `tie_weights=True` + `embedding_scale=True` ≈ 1.12B 参数
+- **Qwen tokenizer**：`vocab=248320`（Qwen3.5-35B-A3B）
+- **解决胡乱输出**：embedding scale + tie_weights + temperature scaling + 合理初始化
+- **训练/推理 CLI**：`verse-train --config spark/config/cometspark_v05.yml`，详见 [spark/README.md](spark/README.md)
+
+### GPU/NPU 支持（DeviceBackend）
+
+`verse_torch.device.DeviceBackend` 提供设备后端抽象：
+
+- `NumpyBackend`（默认 CPU）：所有算子用 NumPy 实现，与自研 autograd 完全等价
+- `TorchBackend`（PyTorch 委托）：CUDA kernel 走 PyTorch 原生实现，NPU 通过 `torch_npu` 扩展支持；**不自研 kernel**
+- `autocast`：fp16 混合精度上下文管理器（CPU 时 no-op）
+- `Tensor.device` / `.to(device)` / `.cuda()` / `.npu()` / `.cpu()`：API 与 PyTorch 一致
+- `Module.to(device)`：迁移所有参数到目标设备
+- 无 PyTorch 环境下 `Tensor.cuda()` 抛 `RuntimeError`，CPU 路径完全不变
+
+详见 [ADR-005 GPU/NPU 后端抽象](docs/architecture/adr-005-gpu-npu-backend.md)。
 
 ## 安装
 
@@ -29,7 +83,10 @@ VerseNext 的目标是用 **线性复杂度架构（SSM / Mamba / RWKV / Linear 
 git clone <repo-url> verse && cd verse
 
 # 2a) 方式一：pip 可编辑安装（按需选择包）
-pip install -e packages/verse_torch packages/verse_nex packages/verse_awm
+pip install -e packages/verse_torch \
+            -e packages/verse_nex \
+            -e packages/verse_awm \
+            -e packages/verse_infra
 
 # 2b) 方式二：uv workspace 一次性安装全部成员
 uv sync
@@ -38,11 +95,17 @@ uv sync
 pip install "verse-nex[speed]"  # 安装 numba 加速 selective scan（推荐）
 pip install "safetensors>=0.4"   # 加载 .safetensors 权重
 pip install "fastapi>=0.110"     # OpenAI 兼容 HTTP server
+pip install "torch>=2.2"         # GPU/NPU 后端（CUDA kernel + autocast）
+pip install "torch_npu>=2.2"     # 华为 NPU 后端（昇腾设备）
 ```
 
 > **numba 加速说明**：`verse-nex[speed]` 会安装 `numba>=0.60`，对 Mamba-2 / Hybrid 的 selective scan 递推循环做 JIT 编译，recurrent 模式生成吞吐量提升约 1.8× ~ 3.2×。numba 是可选依赖——不安装也能运行，只是 `@njit` 装饰器退化为 no-op。详见 [性能调优指南](docs/performance_tuning.md)。
+>
+> **GPU/NPU 说明**：`torch` 是可选依赖——CPU 路径无需安装；仅在调用 `Tensor.cuda()` / `Tensor.npu()` / `autocast` / `--device cuda` 时才会触发 PyTorch 委托后端。无 torch 环境下 CPU 路径完全不变（向后兼容）。
 
-## 最小示例
+## 快速开始
+
+### 最小 autograd 示例
 
 ```python
 from verse_torch import Tensor
@@ -54,7 +117,51 @@ print(y)                 # 5.0
 print(x.grad)            # [2. 4.]  与 PyTorch 一致
 ```
 
-实测：上述代码与 PyTorch 数值一致到 1e-6（已通过 462 项单元测试 + 有限差分梯度检查）。
+实测：上述代码与 PyTorch 数值一致到 1e-6（已通过 786 项单元测试 + 有限差分梯度检查）。
+
+### 推荐导入路径
+
+```python
+# 1. VerseTorch：张量 / autograd / nn / optim
+from verse_torch import Tensor, nn, optim, losses
+
+# 2. VerseNex：原生架构
+from verse_nex import VerseNexLM, VerseNexAttention, MoDLayer
+
+# 3. VerseInfra：tokenizer / inference / compat / trainer（推荐）
+from verse_infra.verse_tokenizer import BPETokenizer
+from verse_infra.verse_inference import ModelLoader, StreamingGenerator
+from verse_infra.verse_trainer import train
+
+# 4. NexRL：强化学习
+from verse_nex.nexrl import NexAgent, NexTrainer, NexReward
+
+# 5. CometSpark：1B 模型工厂
+from spark.model.model import CometSparkV05, CometSparkV05Small
+```
+
+### 一键训练 CometSpark V0.5-1B
+
+```bash
+# CPU 预训练（小配置，快速验证）
+verse-train --config spark/config/cometspark_v05_small.yml --device cpu --max-steps 10
+
+# 1B 模型预训练（CPU / GPU / NPU）
+verse-train --config spark/config/cometspark_v05.yml --device cpu
+verse-train --config spark/config/cometspark_v05.yml --device cuda --amp
+verse-train --config spark/config/cometspark_v05.yml --device npu
+
+# 并行训练（chunks > 1）
+verse-train --config spark/config/cometspark_v05.yml --parallel-chunks 4
+
+# 断点续训
+verse-train --config spark/config/cometspark_v05.yml --resume
+
+# 后训练（NexRL / SFT / DPO）
+verse-posttrain --config spark/config/cometspark_v05.yml --rl nexrl
+verse-posttrain --config spark/config/cometspark_v05.yml --rl sft
+verse-posttrain --config spark/config/cometspark_v05.yml --rl dpo
+```
 
 更多示例见 [`examples/`](examples/)：
 
@@ -67,15 +174,17 @@ print(x.grad)            # [2. 4.]  与 PyTorch 一致
 
 | 决策 | 选择 | 理由 |
 |---|---|---|
-| 张量后端 | **NumPy** + 可选 Numba/Cython | CPU 优先、零重型依赖、用户已可安装、跨平台 |
-| Autograd | 反向模式 VJP、动态计算图 | 与 PyTorch API 一致、易于审计与调试 |
+| 张量后端 | **NumPy** + 可选 Numba/Cython + DeviceBackend（CPU/GPU/NPU 抽象） | CPU 优先、零重型依赖、可选 PyTorch 委托 GPU/NPU |
+| Autograd | 反向模式 VJP、动态计算图；GPU 下委托 PyTorch autograd | 与 PyTorch API 一致、易于审计与调试 |
 | 主推架构 | **Mamba-2 + RWKV-7 + Hybrid + VerseNex**（SSM + Sparse Attention + TriSparse + MoD） | 已公开、工业验证（MiniMax-01、混元 T1、Nemotron-H、RWKV-X） |
 | 原生注意力 | **TriSparseAttention**（SWA + Global sink + ALiBi 三路并行稀疏，sigmoid gate 融合） | 线性/亚二次复杂度 + 长程依赖兼顾，CPU 友好 |
-| 原生 FFN | **MoD（Mixture of Dense Parts）**：5 DensePart × N Experts × top-k | 灵感来源于大脑分区，结构化稀疏 + 双层门控 |
+| 原生 FFN | **MoD（Mixture of Dense Parts）**：5 DensePart × N Experts × top-k + aux loss | 灵感来源于大脑分区，结构化稀疏 + 双层门控 |
 | 量化默认 | **INT4 (W4A16) + 1.58-bit ternary** | BitNet.cpp 在 CPU 上已验证 6.17× 提速；端侧友好 |
-| 兼容策略 | 初期可读 PyTorch `state_dict`，运行时无 PyTorch 依赖 | 生态友好但运行时零依赖 |
+| 兼容策略 | 初期可读 PyTorch `state_dict`，运行时无 PyTorch 依赖；GPU/NPU 走可选委托后端 | 生态友好但运行时零依赖；GPU 路径 API 一致 |
 | 世界模型主线 | **JEPA（非生成式）+ RSSM（生成式）** | 兼顾 LeCun 路线与 Dreamer 路线 |
-| GPU 后端 | 阶段 0–1 不支持，延后到后续 spec | 先在 CPU 上正确实现并优化；详见 [ADR-001](docs/architecture/adr-001-cpu-first.md) |
+| GPU/NPU 后端 | `DeviceBackend` 抽象（PyTorch 委托 + NumpyBackend 回退） | CUDA kernel 走 PyTorch 原生实现；NPU 走 `torch_npu`；详见 [ADR-005](docs/architecture/adr-005-gpu-npu-backend.md) |
+| 后训练路线 | **NexRL**（PPO + GAE + KL 自适应）+ SFT + DPO | 五要素抽象 + 并行 rollout；详见 [ADR-007](docs/architecture/adr-007-nexrl-design.md) |
+| 加速路线 | **超稀疏并行注意力 + Speculative Decoding** | 多 chunk 并行 + verify-then-commit；详见 [ADR-008](docs/architecture/adr-008-parallel-sparse-attention.md) |
 
 详细架构决策记录见 [`docs/architecture/`](docs/architecture/)。
 
@@ -93,12 +202,14 @@ print(x.grad)            # [2. 4.]  与 PyTorch 一致
 
 | 包 | 文档 | 定位 |
 |---|---|---|
-| VerseTorch | [README](packages/verse_torch/README.md) | 张量 / autograd / nn / optim / losses / training / quantize / parallel / compress |
-| VerseNex | [README](packages/verse_nex/README.md) | Mamba-2 / RWKV-7 / RetNet / Sparse Attention / Hybrid / 位置编码 |
+| VerseTorch | [README](packages/verse_torch/README.md) | 张量 / autograd / nn / optim / losses / training / quantize / parallel / compress / **DeviceBackend（GPU/NPU）** |
+| VerseNex | [README](packages/verse_nex/README.md) | Mamba-2 / RWKV-7 / RetNet / Sparse Attention / Hybrid / **TriSparseAttention** / **MoDLayer** / **VerseNexLM** / **NexRL** |
 | VerseAWM | [README](packages/verse_awm/README.md) | I-JEPA / V-JEPA / H-JEPA / RSSM 世界模型 |
-| VerseTokenizer | [README](packages/verse_tokenizer/README.md) | BPE / Byte / Char 分词器 |
-| VerseInference | [README](packages/verse_inference/README.md) | 模型加载 / 状态缓存 / 流式生成 / HTTP server |
-| VerseCompat | [README](packages/verse_compat/README.md) | HuggingFace / PyTorch 兼容层 |
+| VerseInfra | [README](packages/verse_infra/README.md) | 总包结构 / 导入路径迁移指南 / shim 兼容（**Part4K1 新增**） |
+| ├ verse_tokenizer | [README](packages/verse_infra/verse_infra/verse_tokenizer/README.md) | BPE / Unigram / WordPiece / Qwen tokenizer / NexTokenizerWrapper |
+| ├ verse_inference | [README](packages/verse_infra/verse_infra/verse_inference/README.md) | 模型加载 / 状态缓存 / 流式生成 / HTTP server |
+| └ verse_compat | [README](packages/verse_infra/verse_infra/verse_compat/README.md) | HuggingFace / PyTorch 兼容层 |
+| CometSpark | [README](spark/README.md) | CometSpark V0.5-1B 模型说明 + 配置 + 训练 CLI（**Part4K1 新增**） |
 
 ### 设计文档
 
@@ -115,72 +226,61 @@ print(x.grad)            # [2. 4.]  与 PyTorch 一致
 - [量化基准](docs/benchmarks/quantize_benchmark.md)
 - [v0.1 整体基准](docs/benchmarks/benchmark-v0.1.md)
 
-## CometSpark 端到端训练仓库
+### 架构决策记录（ADR）
 
-[`data/demo/`](data/demo/) —— **CometSpark-v0.1** 是基于 VerseNext 的端到端 LM 训练仓库，纯 Python / 纯 CPU 一键训练，运行时无 PyTorch / TensorFlow / JAX / transformers 依赖。
+- [ADR-001 CPU 优先](docs/architecture/adr-001-cpu-first.md)
+- [ADR-002 线性复杂度架构](docs/architecture/adr-002-linear-complexity.md)
+- [ADR-003 世界模型路线](docs/architecture/adr-003-world-model-route.md)
+- [ADR-004 CPU 并行](docs/architecture/adr-004-cpu-parallel.md)
+- [ADR-005 GPU/NPU 后端抽象](docs/architecture/adr-005-gpu-npu-backend.md)（**Part4K1 新增**）
+- [ADR-006 VerseInfra 总包聚合](docs/architecture/adr-006-verse-infra-aggregation.md)（**Part4K1 新增**）
+- [ADR-007 NexRL 设计](docs/architecture/adr-007-nexrl-design.md)（**Part4K1 新增**）
+- [ADR-008 超稀疏并行注意力](docs/architecture/adr-008-parallel-sparse-attention.md)（**Part4K1 新增**）
 
-```bash
-cd data/demo && python run.py
-```
+### Part4K1 重大升级摘要
 
-详见 [`data/demo/README.md`](data/demo/README.md)。
+Part4K1 在 Part4 基础上完成 8 大升级，正式推出 **VerseInfra 总包**、**VerseTrainer CLI**、**NexRL 强化学习**、**CometSpark V0.5-1B** 与 **GPU/NPU 后端**：
 
-### 第二次进化摘要
+- **VerseTorch GPU/NPU 设备抽象**：新增 `device.py`（`DeviceBackend` 抽象 + `NumpyBackend` 默认 + `TorchBackend` PyTorch 委托）+ `backend_torch.py`（CUDA kernel 走 PyTorch 原生 + NPU via `torch_npu` + `autocast`）；`Tensor.device` / `.to(device)` / `.cuda()` / `.npu()`；`Module.to(device)`；新组件 `RotaryEmbedding` / `KVCache` / `StaticCache` / `DynamicCache` / `GroupNorm` / `Conv1d` / `NAdamW` / `RMSProp` / `contrastive_loss` / `perplexity` / `DistributedTrainer`。
+- **VerseNex 品牌落地**：`TransformerLM` → `VerseNexLM`、`GQASelfAttention` → `VerseNexAttention`（旧名作为 `DeprecationWarning` 别名）；`MoDLayer` 完善（5 DensePart × 8 Expert × top-3 + `load_balance_loss` + router z-loss）；`config.yml` `arch` 字段统一为 `versenex`（旧值映射 + 警告）；`HybridBlock` / `HybridLM` deprecated。
+- **超稀疏并行注意力**：`tri_sparse_attn.py` 多 query chunk 并行；`speculative.py`（`SpeculativeDecoder` Medusa 风格 draft + verify-then-commit）；`kv_cache_parallel.py`（`ParallelKVCache`）。
+- **NexRL 强化学习包**：`verse_nex/nexrl/` 五要素（`NexAgent` / `NexEnv` / `NexState` / `NexAction` / `NexReward`）+ `ParallelRolloutCollector` + `NexTrainer`（PPO clipped + GAE + KL 自适应 + value function）。
+- **VerseTokenizer 升级**：BPE 并行 merge + `WordPieceTokenizer` + `BatchEncoding`（`add_bos`/`add_eos` + truncation/padding）+ `BPETokenizer.from_pretrained("Qwen/Qwen3.5-35B-A3B")`（vocab 248320）+ `NexTokenizerWrapper`（reward-weighted token preference）。
+- **VerseTrainer 独立包**：CLI（`verse-train` / `verse-finetune` / `verse-posttrain` / `verse-eval` / `verse-tokenize`）+ `CachedDataset` + `LossOptimizer`（plateau 重走 + NaN/Inf 跳过）+ `_safe_chunk_run` + 断点续训 + `RLTrainer`。
+- **VerseInfra 总包聚合**：`verse_tokenizer` / `verse_compat` / `verse_inference` / `verse_trainer` 四包聚合为子模块；旧路径通过 thin shim 转发 + `DeprecationWarning`；全项目导入路径更新为 `from verse_infra.verse_xxx import`。
+- **CometSpark V0.5-1B**：`spark/` 目录承载基于 `VerseNexBlock` 的 1B 参数 LM（n_embd=1024, n_layer=20, 5 MoD + 15 trisparse）；`CometSparkV05Config` / `CometSparkV05LM` / 工厂 `CometSparkV05()` / `CometSparkV05Small()`；`cometspark_v05.yml` 默认配置 + `cometspark_v05_small.yml` 调试配置；解决胡乱输出（embedding scale + tie_weights + temperature scaling）。
+- **删除 `data/demo/`**：训练能力迁入 VerseTrainer，模型能力迁入 spark/，data/demo/ 整个目录删除。
+- 全量测试 786 passed。
 
-CometSpark-v0.1 是 Verse 框架"第二次进化"的产物，覆盖以下能力：
+### 第二次进化 / Part3K2 / Part4 摘要
 
-- **多步训练 + cross_entropy + loss 曲线**：`verse_torch.training` 提供 `Trainer` / `EarlyStopping` / `GradientAccumulator` / `CheckpointManager` / `LambdaLR`（warmup + cosine）/ `compute_loss_rate` / `plot_loss_curve`，自动保存 `best.pt` / `last.pt` / `loss_history.json` / `loss_curve.txt`。
-- **BPE / ByteTokenizer**：`verse_tokenizer` 完善 `BPETokenizer.train` / `save` / `load` / `add_special_tokens`，新增 `ByteTokenizer`（vocab=259）与 `load_tokenizer(kind, path)` 工厂。
-- **TransformerLM**：`verse_torch.nn` 补齐 `SwiGLUMLP` / `GQASelfAttention`（含 KV cache）/ `TransformerBlock` / `TransformerLM`（含 weight tying），支持 GQA 与 RoPE。
-- **CPU 并行**：`verse_torch.parallel` 提供 `parallel_matmul` / `ParallelLinear` / `parallel_map`，对 batch >= 阈值启用 multiprocessing。
-- **模型压缩 PoC**：`verse_torch.compress` 提供 `OutlierSafePruner` / `LoRALinear` / `KnowledgeDistiller` / `QLinear` / `compress_pipeline`，在 1M 参数 TransformerLM 上验证压缩比 ≥ 10×、loss 差异 ≤ 5%。
-- **推理兼容**：`verse_inference` 新增 `cometspark` arch 分支，`StreamingGenerator` 兼容 CometSparkLM（100 tokens ≤ 5s）。
-
-### Part3K2 重大升级摘要
-
-Part3K2 在第二次进化基础上完成 7 大升级，详见 [审计报告](audit_report.md)：
-
-- **训练数据格式现代化（BREAKING）**：`TextDataset` 支持 **chat 数组** 与 **prompt-completion** 双格式自动检测，loss mask 自动屏蔽 prompt 部分（`ignore_index=-100`），仅 completion 参与损失；旧版 `{"text":"..."}` 格式已废弃。
-- **Tokenizer 全面升级**：新增 `preprocess.py`（GPT-4 风格正则预分词，中文整字独立成块 + NFKC 归一化 + UTF-8 边界修复）、`chat_template.py`（`render_chat` / `render_prompt` / `split_prompt_completion`）、`unigram.py`（SentencePiece Unigram，EM 训练 + Viterbi 解码）；`BPETokenizer` 接入预分词、`vocab_size` 自适应、`add_special_tokens` 编码开关。
-- **对齐 PyTorch 能力**：新增 `Lion` / `Adafactor` 优化器、`OneCycleLR` / `ReduceLROnPlateau` / `CosineRestartsLR` 调度器、`GeGLU` / `Mish` / `SiLU` 激活、`SlidingWindowAttention` / `ALiBi` / `DeepNorm` 层、`focal_loss`，`cross_entropy` 支持 `ignore_index` + `label_smoothing`。
-- **CometSpark 架构升级 + 压缩深度集成**：`CometSparkConfig` 新增 `rope_theta` / 分离 dropout / `max_position_embeddings`；`CometSparkLM` 新增 `from_pretrained` / `save_pretrained` / `compress(compress_config)` / `compression_stats()` 方法与 `CometSparkSmall/Medium/Large` 工厂函数。
-- **并行训练 `ParallelTrainer`**：步数拆分为 N 个 chunk，合并策略「差前好后」串行重训 + 整体 fine-tune；**修复 val_loss 漏洞**（`_eval_full_val` 基于完整 val 数据集而非单 batch 更新）。
-- **推理 + 自由温度 + 打分**：`Trainer.inference(prompts, temperature, top_k, top_p, max_tokens)` 批量生成；`ScoringEvaluator` 实现 `exact_match` / `prefix_accuracy` / `char_f1` / `bleu` / `rouge_l` 五指标；`run.py` 新增 `--score` / `--references-file` / `--top-p` / `--parallel-chunks` 参数。
-- **全项目 check-loop 审计**：修复 sigmoid/silu/BCE overflow、硬编码路径等 6 项问题，全量测试 377 passed。
-
-### Part4 重大升级摘要
-
-Part4 在 Part3K2 基础上完成 11 大升级，正式推出 **CometSpark-V0.2（0.5B 参数）** 与 **VerseNex 原生架构**，详见 [Part4 升级报告](docs/part4_upgrade_report.md)：
-
-- **VerseNex 原生架构**：新增 `TriSparseAttention`（SWA + Global sink + ALiBi 三路并行稀疏注意力，sigmoid gate 融合，T≤1024 直接构造、T>1024 降级）与 `MoDLayer`（Mixture of Dense Parts：5 DensePart × 8 Experts × top-3，双层门控 soft + hard routing，Switch Transformer 风格 aux loss）。
-- **CometSparkNexLM**：VerseNex 原生顶层架构，`layer_pattern` 驱动每层类型（`"trisparse"` / `"mod"`），Pre-Norm + 残差结构，`forward_with_aux` 返回 `(logits, aux_loss)` 专为训练设计，`generate` 支持 greedy + recurrent 双路径。
-- **CometSpark-V0.2**：32 层 VerseNex（8 MoD + 24 trisparse），d_model=384，n_head=8，n_kv_head=4，约 0.5B 参数；`CometSparkV02()` 工厂函数一键构建。
-- **CometSparkLM 三架构统一**：`arch="hybrid"` / `"transformer"` / `"verse_nex"` 三选一，对外接口完全一致（`forward` / `generate` / `save` / `load` / `from_pretrained` / `save_pretrained`）。
-- **VerseTokenizer**：原 QwenTokenizer 改名为 VerseTokenizer，9 项 Qwen 优化（高效 BPE merge、特殊 token 管理、UTF-8 边界修复、chat template 等），替代旧版 `tokenizer.json`。
-- **训练体系全面升级**：新增 `training_nex.py` 模块——`VerseNexTrainer`（aux_loss-aware）/ `LoRATrainer`（LoRA 包装 + `merge_lora` 合并）/ `SFTTrainer`（chat 数据 + ignore_index）/ `DPOTrainer`（DPO loss + reference model 冻结 + 偏好对数据），共 4 个训练器 + 2 个数据集。
-- **并行训练支持原生 VerseNex**：`ParallelTrainer` 自动检测 `forward_with_aux`，启用 aux_loss 路径（`loss = cross_entropy + aux_loss_weight * aux`），与 `VerseNexTrainer` 协同工作。
-- **MoD Expert 压缩**：新增 `compress_mod_experts` 函数，按 Expert 参数 L2 范数排序，丢弃低利用率 Expert，同步修改 router 权重与 `top_k`，实现 MoD 结构化剪枝。
-- **数据下载与处理脚本**：`data/demo/scripts/` 下 3 个脚本——`download_datasets.py`（7 个数据源，3 种下载方式回退）/ `process_datasets.py`（统一 schema + chat template + 过滤去重）/ `build_tokenizer.py`（Qwen3-32B tokenizer 下载）。
-- **verse_nex 专用 config**：`config_verse_nex.yml`（0.5B 参数预训练配置）+ `config_verse_nex_small.yml`（沙箱验证用）；`run.py --arch verse_nex` 一键启动。
-- **全项目 check-loop 审计**：462 passed + 1 skipped，16 个关键文件语法检查 OK，端到端 verse_nex_small 训练验证（loss 5.54 → 3.08 持续下降），LoRA + merge / DPO 数值稳定性 / 0.5B 参数预算全部验证通过。
+详见 [审计报告](audit_report.md) 与 [Part4 升级报告](docs/part4_upgrade_report.md)。
 
 ## 仓库结构
 
 ```
 /workspace/
 ├── packages/
-│   ├── verse_torch/        # 张量与 autograd 引擎
-│   ├── verse_nex/          # 线性复杂度架构库
+│   ├── verse_torch/        # 张量与 autograd 引擎（含 device.py / backend_torch.py GPU/NPU 后端）
+│   ├── verse_nex/          # 线性复杂度架构库 + VerseNex 原生架构 + NexRL
+│   │   └── verse_nex/
+│   │       └── nexrl/      # NexRL 强化学习包（Part4K1）
 │   ├── verse_awm/          # 世界模型包
-│   ├── verse_tokenizer/    # 轻量分词器
-│   ├── verse_inference/    # 推理引擎
-│   └── verse_compat/       # HF/PyTorch 兼容层
-├── data/                   # CometSpark-v0.1 端到端 LM 训练仓库（demo 入口）
-│   └── demo/               # run.py / model / train / config / checkpoints
+│   └── verse_infra/        # 总包：聚合 verse_tokenizer/verse_compat/verse_inference/verse_trainer
+│       └── verse_infra/
+│           ├── verse_tokenizer/  # BPE/Unigram/WordPiece 分词器
+│           ├── verse_compat/     # HF/PyTorch 兼容层
+│           ├── verse_inference/  # 推理引擎
+│           └── verse_trainer/    # 训练 CLI（verse-train/finetune/posttrain/eval/tokenize）
+├── spark/                  # CometSpark V0.5-1B 端到端 LM 训练仓库（Part4K1）
+│   ├── config/             # cometspark_v05.yml / cometspark_v05_small.yml
+│   ├── model/              # CometSparkV05LM + CometSparkV05Config
+│   └── src/                # data_loader / trainer / evaluate / utils
 ├── datasets/               # raw / cleaned / tokenizer
 ├── docs/                   # papers / architecture / benchmarks
+│   └── architecture/       # ADR-001 ~ ADR-008
 ├── verse_data/             # designs / experiments / migration_notes（内部材料）
-├── tests/                  # 单元测试 + 数值梯度检查 + 端到端用例
+├── tests/                  # 单元测试 + 数值梯度检查 + 端到端用例（786 passed）
 ├── examples/               # MNIST / 最小 LM / CPU 推理 demo / JEPA demo
 ├── pyproject.toml          # workspace 级配置（PEP 621 + uv workspace）
 └── README.md

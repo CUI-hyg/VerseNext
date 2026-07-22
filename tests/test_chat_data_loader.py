@@ -25,20 +25,19 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-# 让 tests/ 目录能 import verse_tokenizer（ByteTokenizer）
+# 让 tests/ 目录能 import verse_infra.verse_tokenizer（ByteTokenizer）
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-for _pkg in ("verse_tokenizer", "verse_torch"):
+for _pkg in ("verse_infra", "verse_torch"):
     _p = _REPO_ROOT / "packages" / _pkg
     if _p.is_dir():
         sys.path.insert(0, str(_p))
 
-# 把 data/demo 目录加入 sys.path，使 src.data_loader 可被 import
-_DEMO_DIR = _REPO_ROOT / "data" / "demo"
-if _DEMO_DIR.is_dir():
-    sys.path.insert(0, str(_DEMO_DIR))
+# Part4K1 Task 8.9: 从 spark/src 导入 data_loader（替代 data/demo/src）
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-from verse_tokenizer import ByteTokenizer  # noqa: E402
-from src.data_loader import (  # noqa: E402
+from verse_infra.verse_tokenizer import ByteTokenizer  # noqa: E402
+from spark.src.data_loader import (  # noqa: E402
     TextDataset,
     collate_fn,
     BatchLoader,

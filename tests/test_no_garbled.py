@@ -20,12 +20,12 @@ from pathlib import Path
 
 import pytest
 
-# 让 tests/ 目录能 import verse_tokenizer
+# 让 tests/ 目录能 import verse_infra.verse_tokenizer
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_REPO_ROOT / "packages" / "verse_tokenizer"))
+sys.path.insert(0, str(_REPO_ROOT / "packages" / "verse_infra"))
 
-from verse_tokenizer import BPETokenizer, ByteTokenizer
-from verse_tokenizer.bpe import _trim_to_utf8_boundary
+from verse_infra.verse_tokenizer import BPETokenizer, ByteTokenizer
+from verse_infra.verse_tokenizer.bpe import _trim_to_utf8_boundary
 
 
 # 中文 "你" = 0xE4 0xBD 0xA0（3 字节 UTF-8 字符）
@@ -240,7 +240,7 @@ def test_bpe_decode_mixed_complete_and_truncated():
     # 末尾加一个截断字节（"好" 的首字节 0xE5）
     # 注意：BPE encode 后的 id 是 byte-level 字符的 id，不是字节本身
     # 所以我们需要用 byte-level 字符的 id
-    from verse_tokenizer.bpe import _BYTE_ENCODER
+    from verse_infra.verse_tokenizer.bpe import _BYTE_ENCODER
     truncated_byte_char = _BYTE_ENCODER[0xE5]
     truncated_id = tok.vocab.get(truncated_byte_char)
     if truncated_id is not None:

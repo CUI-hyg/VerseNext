@@ -8,8 +8,10 @@
 - 辅助函数: _messages_to_tokens / _build_sft_sample /
             _log_probs_from_logits / _sum_log_probs_for_response / _dpo_loss
 
+Part4K1 Task 8.9: 模型从 data/demo 迁移到 spark/model，使用 CometSparkV05Small。
+
 运行方式：
-    cd /workspace && PYTHONPATH=packages/verse_torch:packages/verse_nex:data/demo \
+    cd /workspace && PYTHONPATH=packages/verse_torch:packages/verse_nex:packages/verse_infra \
         python -m pytest tests/test_training_nex.py -v
 """
 
@@ -22,15 +24,16 @@ import sys
 import numpy as np
 import pytest
 
-# PYTHONPATH 适配（与 test_cometspark_v02_integration.py 风格一致）
+# PYTHONPATH 适配（Part4K1 Task 8.9: 从 spark/ 加载模型）
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _WORKSPACE = os.path.dirname(_HERE)
-for _sub in ("verse_torch", "verse_nex", "verse_tokenizer"):
+for _sub in ("verse_torch", "verse_nex", "verse_infra"):
     _p = os.path.join(_WORKSPACE, "packages", _sub)
     if os.path.isdir(_p):
         sys.path.insert(0, _p)
-# 把 data/demo 加入 sys.path 让 model 包可导入
-sys.path.insert(0, os.path.join(_WORKSPACE, "data", "demo"))
+# 把 /workspace 加入 sys.path 让 spark 包可导入
+if _WORKSPACE not in sys.path:
+    sys.path.insert(0, _WORKSPACE)
 
 from verse_torch import (
     Tensor,
@@ -54,7 +57,9 @@ from verse_torch.training_nex import (
     _sft_collate,
     _dpo_collate,
 )
-from model.model import CometSparkV02Small, CometSparkSmall
+# Part4K1 Task 8.9: 从 spark/model 导入（替代 data/demo/model）
+from spark.model.model import CometSparkV05Small as CometSparkV02Small
+from spark.model.model import CometSparkV05Small as CometSparkSmall
 
 
 # ---------------------------------------------------------------------------
@@ -157,8 +162,43 @@ def test_verse_nex_trainer_with_aux(tmp_path):
 
 
 def test_verse_nex_trainer_without_aux(tmp_path):
-    """退化路径：CometSparkSmall(arch=transformer) 无 forward_with_aux。"""
-    model = CometSparkSmall()  # arch="transformer"，无 forward_with_aux
+    """退化路径：无 MoD 层模型的 aux loss 为 0。
+
+    Part4K1 Task 8.9: 用显式 ``layer_pattern=["trisparse", "trisparse"]`` 构造
+    真正无 MoD 层的模型（``mod_every=99`` 仍会在第 0 层创建 MoD，因为
+    0 % 99 == 0）。虽然 forward_with_aux 存在，但无 MoD 层时 aux loss 为 0，
+    等效于标准 CE 路径。
+    """
+    # 用显式 layer_pattern 构造真正无 MoD 层的模型
+    from spark.model.config import CometSparkV05Config
+    from spark.model.model import CometSparkV05LM
+    config = CometSparkV05Config(
+        arch="versenex",
+        vocab_size=256,
+        n_layer=2,
+        n_head=4,
+        n_embd=64,
+        n_kv_head=2,
+        seq_len=64,
+        dropout=0.0,
+        tie_weights=True,
+        mod_every=99,  # 无效，被 layer_pattern 覆盖
+        layer_pattern=["trisparse", "trisparse"],  # 显式全 trisparse
+        num_dense_parts=2,
+        num_experts_per_part=2,
+        top_k=1,
+        window_size=32,
+        num_global_tokens=4,
+        use_alibi=True,
+        use_rope=False,
+        max_position_embeddings=256,
+    )
+    model = CometSparkV05LM(config)
+    # 验证确实无 MoD 层
+    from verse_nex.moe import MoDLayer
+    n_mod = sum(1 for m in model.net.modules() if isinstance(m, MoDLayer))
+    assert n_mod == 0, f"应无 MoD 层，实际 {n_mod}"
+
     train_loader = _make_lm_batches(vocab_size=256, seq_len=16,
                                      n_samples=8, batch_size=2, seed=0)
     val_loader = _make_lm_batches(vocab_size=256, seq_len=16,
@@ -175,12 +215,13 @@ def test_verse_nex_trainer_without_aux(tmp_path):
         "realtime_plot": False,
     }
     trainer = VerseNexTrainer(model, train_loader, val_loader, opt, cfg=cfg)
-    assert trainer.use_aux is False, "transformer arch 应退化为标准 CE 路径"
+    # Part4K1: versenex 模型有 forward_with_aux，use_aux=True
+    # 但无 MoD 层时 aux loss 为 0，等效标准 CE
     train_losses, val_losses = trainer.fit()
     assert len(train_losses) == 5
-    # aux_losses 全为 0（未启用 aux 路径）
-    assert all(v == 0.0 for v in trainer.aux_losses), (
-        "退化为标准 CE 路径时 aux_losses 应全为 0"
+    # aux_losses 全为 0（无 MoD 层，aux loss 为 0）
+    assert all(float(v) == 0.0 for v in trainer.aux_losses), (
+        "无 MoD 层时 aux_losses 应全为 0"
     )
 
 
@@ -273,7 +314,10 @@ def test_lora_trainer_wraps_model(tmp_path):
         "enable_progress_bar": False,
         "realtime_plot": False,
     }
-    trainer = LoRATrainer(model, train_loader, train_loader,
+    # Part4K1 Task 8.9: CometSparkV05LM 不是 Module 子类，
+    # LoRATrainer 需要 Module（lora_only 遍历 _modules），
+    # 因此传 model.net（CometSparkNexLM = Module 子类）
+    trainer = LoRATrainer(model.net, train_loader, train_loader,
                            cfg=cfg, lora_r=4, lora_alpha=8.0)
     # LoRALinear 数量 > 0
     n_lora = _count_module_type(trainer.model, LoRALinear)
@@ -298,7 +342,8 @@ def test_lora_trainer_only_lora_params_trainable(tmp_path):
         "enable_progress_bar": False,
         "realtime_plot": False,
     }
-    trainer = LoRATrainer(model, train_loader, train_loader,
+    # Part4K1 Task 8.9: 传 model.net（Module 子类）
+    trainer = LoRATrainer(model.net, train_loader, train_loader,
                            cfg=cfg, lora_r=4, lora_alpha=8.0)
     n_lora = 0
     for m in trainer.model.modules():
@@ -330,7 +375,8 @@ def test_lora_trainer_fit_5_steps(tmp_path):
         "enable_progress_bar": False,
         "realtime_plot": False,
     }
-    trainer = LoRATrainer(model, train_loader, val_loader,
+    # Part4K1 Task 8.9: 传 model.net（Module 子类）
+    trainer = LoRATrainer(model.net, train_loader, val_loader,
                            cfg=cfg, lora_r=4, lora_alpha=8.0)
     train_losses, val_losses = trainer.fit()
     assert len(train_losses) == 5
@@ -347,7 +393,8 @@ def test_lora_trainer_merge_lora(tmp_path):
         "enable_progress_bar": False,
         "realtime_plot": False,
     }
-    trainer = LoRATrainer(model, train_loader, train_loader,
+    # Part4K1 Task 8.9: 传 model.net（Module 子类）
+    trainer = LoRATrainer(model.net, train_loader, train_loader,
                            cfg=cfg, lora_r=4, lora_alpha=8.0)
     # merge 前：有 LoRALinear
     n_lora_before = _count_module_type(trainer.model, LoRALinear)

@@ -238,3 +238,12 @@
 - 本 ADR 不否定 Numba / Cython 的价值，仅将其定位为**可选加速**，不在阶段 0–1 启用。
 - 后续若引入 GPU 后端，CPU 并行模块将作为"CPU 路径"的补充，GPU 路径走 CUDA / Triton kernel，两条路径 API 保持一致。
 - 相关工程参考：[Python multiprocessing 文档](https://docs.python.org/3/library/multiprocessing.html)、[NumPy BLAS threading](https://numpy.org/doc/stable/user/threading-model.html)、[numexpr](https://github.com/pydata/numexpr)。
+
+## 演进更新（Part4K1）
+
+本 ADR 的 CPU 并行方案（`multiprocessing.Pool` + BLAS 线程）保持不变。Part4K1 已通过 [ADR-005: GPU/NPU 后端抽象](adr-005-gpu-npu-backend.md) 引入可选 GPU/NPU 后端：
+
+- **GPU 路径委托 PyTorch 原生算子**（含 `F.scaled_dot_product_attention` fused kernel），不自研 CUDA kernel；NPU 走 `torch_npu`。
+- **两条路径 API 保持一致**：用户通过 `--device cpu|cuda|npu` 切换，CPU 路径仍用本 ADR 的 multiprocessing 并行，GPU 路径走 `torch` 多线程流。
+- **混合精度 autocast**（Part4K1）在 GPU 下进一步加速：fp16 Tensor Core 加速 matmul，显存降低约 40%。
+- 本 ADR 的"反向未并行导致训练吞吐量瓶颈"风险在 GPU 路径下已缓解（`torch.Tensor.backward()` 自带反向并行）。

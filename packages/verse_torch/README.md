@@ -36,13 +36,34 @@
 - **`ParallelTrainer` 升级**：自动检测 `forward_with_aux`，启用 aux_loss 路径与 `VerseNexTrainer` 协同
 - **MoD Expert 压缩**：`compress_mod_experts` 函数，按 Expert 参数 L2 范数排序，丢弃低利用率 Expert，同步修改 router 权重与 `top_k`
 
+### Part4K1 新增能力
+
+- **GPU/NPU 设备抽象（`device.py` + `backend_torch.py`）**：
+  - `DeviceBackend` 抽象基类 + `NumpyBackend`（默认 CPU，零依赖）+ `TorchBackend`（PyTorch 委托，支持 `cuda` / `mps` / `npu`，NPU 通过 `torch_npu` 扩展）
+  - **不自研 CUDA kernel**，全部 GPU 算子走 PyTorch 原生（含 `F.scaled_dot_product_attention` fused 路径）
+  - `get_backend(device)` 工厂函数 + backend 实例缓存 + 无 torch 环境下安全 import
+- **Tensor / Module 设备迁移**：
+  - `Tensor.device` 属性 + `.to(device)` / `.cuda()` / `.npu()` / `.cpu()` 方法
+  - GPU 下 autograd 委托给 `torch.Tensor` 原生 autograd；CPU 下保持自研 autograd
+  - `Module.to(device)` / `Module.device` 递归迁移所有参数与子模块
+- **新组件（`nn.py`）**：`RotaryEmbedding` / `KVCache` / `StaticCache` / `DynamicCache` / `GroupNorm` / `Conv1d` / `LayerNorm` 优化版
+- **新优化器（`optim.py`）**：`NAdamW`（NAdam + 解耦 weight decay）/ `RMSProp`
+- **新损失（`losses.py`）**：`contrastive_loss`（RL/DPO 备选）/ `perplexity`
+- **新训练设施（`training.py`）**：`DistributedTrainer` 占位接口（多卡数据并行 API 预留）/ `autocast` 混合精度上下文（GPU 后端，CPU 时 no-op）
+- **可选依赖**：`pyproject.toml` 把 `torch` 声明为可选 extra（`pip install -e packages/verse_torch[gpu]`）
+
 ## 安装
 
 ```bash
+# 基础安装（CPU-only，零重型依赖）
 pip install -e packages/verse_torch
+
+# GPU/NPU 加速（可选）：安装 PyTorch 后端
+pip install -e packages/verse_torch[gpu]      # 等价于额外安装 torch
+# NPU（华为昇腾）还需：pip install torch_npu
 ```
 
-唯一运行时依赖是 `numpy>=1.26`；`matplotlib` 为可选依赖（缺失时 `plot_loss_curve` 自动降级为 ASCII 曲线）。
+唯一运行时依赖是 `numpy>=1.26`；`matplotlib` 为可选依赖（缺失时 `plot_loss_curve` 自动降级为 ASCII 曲线）。`torch` 为 Part4K1 新增的可选依赖（仅在使用 `--device cuda/npu` 或 `autocast` 时需要）。
 
 ## 快速开始
 
@@ -148,6 +169,8 @@ Tensor.eye(n)
 
 **梯度上下文**：`no_grad()` / `enable_grad()` / `set_grad_enabled(mode)` / `is_grad_enabled()`。
 
+**设备迁移（Part4K1）**：`Tensor.device`（属性，返回 `"cpu"` / `"cuda"` / `"npu"` / `"mps"`）、`Tensor.to(device)`、`Tensor.cuda(device=None)`、`Tensor.npu(device=None)`、`Tensor.cpu()`。CPU 后端保持自研 autograd（`data` 为 `np.ndarray`）；GPU/NPU 后端 `data` 切换为 `torch.Tensor`，反向传播委托 `torch.Tensor.backward()`，所有算子经 `DeviceBackend` 转发。无 PyTorch 时调用 `.cuda()` / `.npu()` 抛 `RuntimeError`，`.cpu()` 与 `.to("cpu")` 始终可用。
+
 **`Parameter`**：`Parameter = Tensor` 别名（按 PyTorch 习惯，通过 `requires_grad=True` 标识为可训练参数）。
 
 ```python
@@ -162,10 +185,67 @@ out.backward()
 print(a.grad.shape)    # (3, 3)
 ```
 
+### device — 设备抽象与后端工厂（Part4K1）
+
+`device.py` 定义设备抽象层，把"算子在哪种设备上执行"与"算子怎么算"解耦。CPU-first 引擎默认走 `NumpyBackend`；当用户安装 PyTorch 并请求 `cuda` / `mps` / `npu` 时，工厂延迟导入 `TorchBackend`，所有算子委托给 `torch`，CUDA kernel 走 PyTorch 原生实现（**不自研 kernel**）。
+
+| 组件 | 作用 |
+|---|---|
+| `DeviceBackend`（abc.ABC） | 抽象基类，定义 `matmul` / `linear` / `softmax` / `layernorm` / `rmsnorm` / `rope` / `attention` 等算子接口与只读 `device_type` 属性 |
+| `NumpyBackend` | 默认 CPU 后端，所有算子用 NumPy 实现，与 `Tensor` 自研 autograd 路径行为一致 |
+| `TorchBackend`（见 `backend_torch.py`） | PyTorch 委托后端，支持 `cuda` / `mps` / `npu`（NPU 经 `torch_npu` 扩展），算子委托 `torch.Tensor`，attention 优先走 `F.scaled_dot_product_attention` fused 路径 |
+| `get_backend(device=None)` | 工厂函数：按 device 字符串返回 backend 实例（带缓存）；非 CPU 设备需 torch 可用，NPU 还需 `torch_npu` |
+| `has_torch()` / `has_torch_npu()` | 检测 PyTorch / torch_npu 是否可用（模块级缓存，避免重复 import） |
+| `DEFAULT_DEVICE` | 模块级常量 `"cpu"`（CPU-first 默认） |
+| `_parse_device(device)` / `is_cpu_device(device)` | 设备字符串规范化（`"cuda:0"` → `"cuda"`）与 CPU 判断 |
+
+**设备字符串**：`"cpu"` / `"cuda"` / `"cuda:0"` / `"cuda:1"` / `"mps"` / `"npu"` / `"npu:0"`。`None` 等价于 `"cpu"`。
+
+**向后兼容**：无 PyTorch 环境下 `device.py` 仍可正常 import；只有调用 `get_backend("cuda")` 等请求非 CPU 设备时才抛 `RuntimeError("未安装 PyTorch，无法使用 device 'cuda'（仅支持 CPU）")`。详见 [ADR-005 GPU/NPU 后端抽象](../../docs/architecture/adr-005-gpu-npu-backend.md)。
+
+```python
+from verse_torch.device import get_backend, has_torch, DEFAULT_DEVICE
+
+print(DEFAULT_DEVICE)               # "cpu"
+print(has_torch())                  # False（未装 torch）或 True
+
+backend = get_backend("cpu")        # NumpyBackend 实例
+out = backend.matmul(a, b)          # 等价于 np.matmul(a, b)
+out = backend.softmax(x, dim=-1)    # 数值稳定 softmax
+
+# GPU 路径（需 torch）：
+# backend = get_backend("cuda:0")   # TorchBackend 实例
+# out = backend.attention(q, k, v)  # 走 F.scaled_dot_product_attention fused kernel
+```
+
+### backend_torch — PyTorch 委托后端（Part4K1）
+
+`backend_torch.py` 仅在 PyTorch 可用时被 `device.get_backend` 延迟导入，避免 `device.py` 硬依赖 `torch`。提供 `TorchBackend` 类、`autocast` 上下文管理器与 `to_torch` / `to_numpy` 转换工具。
+
+**`TorchBackend(device="cuda")`**：继承 `DeviceBackend`，构造时把字符串 device 解析为 `torch.device` 实例；算子委托 `torch.matmul` / `F.linear` / `torch.softmax` / `F.layer_norm` / 自实现 RMSNorm / GPT-NeoX 风格 RoPE / `F.scaled_dot_product_attention`（mask 形状不兼容时回退手动 softmax）。`from_numpy(x)` 把 `ndarray` / 标量 / `torch.Tensor` 迁到本后端 device；`to_numpy(t)` 反向转换（detach + cpu + numpy）。
+
+**`autocast(device=None, dtype=None, enabled=True)`**：fp16 混合精度上下文管理器。GPU（cuda / mps / npu）下启用 `torch.autocast`（默认 `torch.float16`）；CPU 下为 no-op；无 PyTorch 同样 no-op。用法对齐 `torch.autocast`。
+
+**`to_torch(ndarray, device="cpu", dtype=None)` / `to_numpy(torch_tensor)`**：`ndarray` ↔ `torch.Tensor` 互转，处理 dtype 映射与 device 迁移。
+
+```python
+from verse_torch.backend_torch import autocast, to_torch, to_numpy
+
+# 混合精度训练（GPU 时启用 fp16，CPU 时 no-op）
+with autocast(device="cuda", enabled=True):
+    out = model(x)               # 内部走 torch.autocast
+
+# ndarray -> torch.Tensor（GPU）
+t = to_torch(np_array, device="cuda:0", dtype=np.float32)
+
+# torch.Tensor -> ndarray（自动 detach + cpu）
+arr = to_numpy(t)
+```
+
 ### nn — 神经网络层
 
 **`Module` 基类**：通过 `__setattr__` 自动注册 `Tensor` 参数与子 `Module`。
-关键方法：`parameters()`、`named_parameters()`、`modules()` / `named_modules()`、`children()`、`state_dict()`、`load_state_dict(sd, strict=True)`、`train()` / `eval()`、`zero_grad()`、`apply(fn)`。
+关键方法：`parameters()`、`named_parameters()`、`modules()` / `named_modules()`、`children()`、`state_dict()`、`load_state_dict(sd, strict=True)`、`train()` / `eval()`、`zero_grad()`、`apply(fn)`、`to(device)`（Part4K1，递归迁移所有参数与子模块到目标 device）、`device`（Part4K1 只读属性，返回首个参数所在设备或 `"cpu"`）。
 
 **基础层**：`Linear(in, out, bias=True)`、`Embedding(num, dim)`、`LayerNorm(shape, eps=1e-5)`、`RMSNorm(shape, eps=1e-6)`、`Dropout(p=0.5)`、`Sequential(*modules)`、`ModuleList(list)`。
 
@@ -177,6 +257,46 @@ print(a.grad.shape)    # (3, 3)
 - `repeat_kv(x, n_rep)`：把 KV head 复制到 query head 数（GQA 工具）。
 
 **初始化辅助**（原地修改）：`kaiming_uniform_(t, a=0, mode="fan_in", nonlinearity="leaky_relu")`、`xavier_uniform_(t, gain=1.0)`、`normal_(t, mean=0, std=1)`、`zeros_(t)`、`ones_(t)`、`uniform_(t, low=0, high=1)`。
+
+#### 新组件（Part4K1）
+
+`nn.py` 在 Part4K1 补齐了与 PyTorch / HF 对齐的关键组件，支撑 VerseNex 原生架构与 KV cache 推理路径：
+
+| 类 | 说明 |
+|---|---|
+| `RotaryEmbedding(dim, max_seq_len=2048, base=10000.0)` | 独立 RoPE 模块。预计算 `(max_seq_len, dim)` 的 `cos` / `sin` 表，`forward(x, position_ids=None)` 对 `x` 后两维做 GPT-NeoX 风格 `rotate_half`。与 `GQASelfAttention` 内置 RoPE 等价，但可作为独立 `nn.Module` 嵌入任意注意力实现 |
+| `KVCache`（抽象基类） | KV cache 统一接口：`update(k, v)` / `get()` / `reset()` / `__len__`。子类实现具体存储策略 |
+| `StaticCache(batch_size, n_kv_head, max_seq_len, head_dim)` | 预分配固定大小 cache（`np.zeros`），按位置写入；适合 batch_size 与 max_seq_len 已知场景，零分配开销 |
+| `DynamicCache()` | 动态增长的 cache，每次 `update` 沿 seq 维度 `concat`；适合变长生成场景，与 HF `DynamicCache` 行为对齐 |
+| `GroupNorm(num_groups, num_channels, eps=1e-5)` | Group Normalization：把 channels 拆成 `num_groups` 组，每组独立计算 mean/var 归一化后仿射。常用于 Conv / diffusion 模型 |
+| `Conv1d(in_channels, out_channels, kernel_size, stride=1, padding=0, bias=True)` | 1D 卷积层（NumPy 实现，autograd 兼容），用于 Mamba / SSM 的 causal depthwise conv |
+| `LayerNorm`（优化版） | 原有 `LayerNorm` 在 Part4K1 做了数值稳定性优化：方差计算用 unbiased=False（与 PyTorch 默认一致）、eps 加在 sqrt 外、`weight` / `bias` 默认值与形状校验对齐 PyTorch |
+
+```python
+from verse_torch import nn, Tensor
+import numpy as np
+
+# 独立 RoPE
+rope = nn.RotaryEmbedding(dim=64, max_seq_len=512)
+x = Tensor(np.random.randn(2, 32, 64).astype(np.float32))
+x_rot = rope(x)                    # (2, 32, 64)，已应用 RoPE
+
+# DynamicCache（变长生成）
+cache = nn.DynamicCache()
+cache.update(k_step, v_step)       # 单步写入
+k_full, v_full = cache.get()       # 取累积 KV
+cache.reset()                      # 清空
+
+# StaticCache（定长 batch 推理）
+static = nn.StaticCache(batch_size=4, n_kv_head=8, max_seq_len=512, head_dim=64)
+
+# GroupNorm
+gn = nn.GroupNorm(num_groups=4, num_channels=64)
+out = gn(x)                        # (2, 32, 64)
+
+# Conv1d（Mamba causal conv）
+conv = nn.Conv1d(in_channels=64, out_channels=64, kernel_size=3, padding=2)
+```
 
 #### 新型注意力与归一化（Part3K2）
 
@@ -253,6 +373,8 @@ logits = model(idx)            # (2, 32, 256)
 - `SGD(params, lr=1e-2, momentum=0.0, dampening=0.0, weight_decay=0.0, nesterov=False)` — 标准 momentum + 可选 Nesterov。
 - `Adam(params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.0)` — 耦合式 weight decay（L2）。
 - `AdamW(params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.01)` — 解耦 weight decay。
+- `NAdamW(params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.01)`（Part4K1）— NAdam + 解耦 weight decay：用 Nesterov momentum 更新（先按 momentum 预测下一位置再计算梯度），其余与 AdamW 一致。在 Transformer / SSM 训练上常比 AdamW 稍稳定。
+- `RMSProp(params, lr=1e-2, alpha=0.99, eps=1e-8, weight_decay=0.0, momentum=0.0, centered=False)`（Part4K1）— RMSProp：用指数加权 moving average of squared gradients 自适应学习率；`momentum>0` 加 RMSProp momentum；`centered=True` 用 centered variance（减去 mean of squared gradients）。
 
 **学习率调度器**（基类 `LRScheduler(optimizer, last_epoch=-1)`，每 `step()` 后修改 `optimizer.lr`）：
 - `StepLR(opt, step_size, gamma=0.1)` — 每 `step_size` 步乘以 `gamma`。
@@ -362,6 +484,8 @@ for step in range(1000):
 | `l1_loss(pred, target)` | 平均绝对误差 |
 | `kl_div_loss(log_probs, target_probs)` | KL 散度 `sum(t*(log t - log_probs))` |
 | `focal_loss(logits, targets, gamma=2.0, alpha=0.25, ignore_index=-100, label_smoothing=0.0)` | **Part3K2**。Focal Loss `FL(p_t) = -alpha * (1 - p_t)^gamma * log(p_t)`，类别不均衡场景使用。`gamma` 越大对易分样本抑制越强；`alpha` 是类别平衡因子（`alpha=1.0` 退化为无加权）。支持 `ignore_index` mask 与 `label_smoothing`。论文: https://arxiv.org/abs/1708.02002 |
+| `contrastive_loss(anchor, positive, negative, temperature=0.07, margin=0.0)` | **Part4K1**。对比学习 / RL 偏好学习损失（InfoNCE 风格）：`-log(exp(sim(a,p)/τ) / (exp(sim(a,p)/τ) + exp(sim(a,n)/τ)))`，`sim` 为点积或余弦相似度。`margin>0` 时加 triplet margin 项。可用于 RL/DPO 候选对训练、句嵌入对比学习 |
+| `perplexity(logits, targets, ignore_index=-100)` | **Part4K1**。困惑度 `PPL = exp(CE)`，先调 `cross_entropy` 算平均 loss 再 `exp`。`ignore_index` 屏蔽 padding。返回标量 `Tensor`（非 loss 张量，仅供评估） |
 
 ```python
 from verse_torch import Tensor, losses
@@ -529,6 +653,40 @@ results = trainer.inference(prompts, temperature=1.0, top_k=5, max_tokens=30)
 # results: list[list[int]]，每条是完整 ID 序列
 ```
 
+#### DistributedTrainer + autocast — 分布式与混合精度（Part4K1）
+
+`training.py` 在 Part4K1 预留了多卡数据并行 API 与 GPU 混合精度支持：
+
+| 组件 | 说明 |
+|---|---|
+| `DistributedTrainer(model, world_size=1, rank=0, backend="gloo", ...)` | 多卡数据并行训练器**占位接口**。当前实现为单进程 fallback（参数 `world_size` / `rank` 仅作 API 预留，向后兼容 `Trainer` 行为）。未来接入 `torch.distributed` 后将启用真实 DDP 路径：每张卡持有完整模型副本，按 `DistributedSampler` 切分 batch，反向后 all-reduce 梯度 |
+| `autocast(device=None, dtype=None, enabled=True)` | fp16 混合精度上下文（重导出自 `backend_torch`）。GPU（cuda / mps / npu）下启用 `torch.autocast`，CPU 下为 no-op，无 PyTorch 同样 no-op。配合 `GradScaler` 使用时需自行在 optimizer.step 前 unscale（当前未内置 scaler） |
+
+```python
+from verse_torch import nn, optim, training
+from verse_torch.backend_torch import autocast
+
+model = nn.TransformerLM(vocab_size=256, n_layer=4, n_head=8, n_embd=128)
+model = model.to("cuda")               # 迁移到 GPU（需 torch）
+optimizer = optim.AdamW(model.parameters(), lr=3e-4)
+
+# 混合精度训练循环
+for step in range(1000):
+    optimizer.zero_grad()
+    with autocast(device="cuda", enabled=True):
+        logits = model(x)              # fp16 前向
+        loss = training.cross_entropy_loss(logits, y)
+    loss.backward()                    # 反向走 torch autograd
+    optimizer.step()
+
+# 分布式占位接口（当前 fallback 为单进程）
+dist_trainer = training.DistributedTrainer(
+    model=model, world_size=1, rank=0,
+    train_loader=..., val_loader=...,
+    optimizer=optimizer, cfg=dict(max_steps=100),
+)
+```
+
 ### scoring — 生成质量打分（Part3K2）
 
 `scoring` 子模块提供生成文本质量打分，包含 5 个独立指标函数与一个聚合打分器 `ScoringEvaluator`，仅依赖 NumPy + 标准库（`collections.Counter` / `math`）。
@@ -670,9 +828,10 @@ print(f"loss 差异: {report['loss_diff_pct']:.2f}%")
 ## 设计原则
 
 - **CPU-first**：所有运算基于 NumPy + BLAS，不依赖 GPU（参考 [ADR-001](../../docs/architecture/adr-001-cpu-first.md)）。
-- **零重型依赖**：运行时仅 NumPy + 标准库；`matplotlib` / `numba` 均为可选加速。
+- **GPU/NPU 可选委托（Part4K1）**：CPU-first 不变，PyTorch 仅作为可选加速后端；GPU 路径委托 `torch` 原生算子，不自研 kernel（参考 [ADR-005](../../docs/architecture/adr-005-gpu-npu-backend.md)）。
+- **零重型依赖**：运行时仅 NumPy + 标准库；`matplotlib` / `numba` / `torch` 均为可选加速。
 - **PyTorch API 兼容**：`Tensor` / `nn.Module` / `optim` / `losses` 命名与签名贴近 PyTorch，降低迁移成本。
-- **数值正确性**：所有算子均通过有限差分梯度检查（见 `tests/test_unit_operators.py`）。
+- **数值正确性**：所有算子均通过有限差分梯度检查（见 `tests/test_unit_operators.py`）；GPU 后端与 CPU 后端语义等价。
 
 ## 测试
 
@@ -687,6 +846,7 @@ print(f"loss 差异: {report['loss_diff_pct']:.2f}%")
 | [test_scheduler_extras.py](../../tests/test_scheduler_extras.py) | **Part3K2** OneCycleLR / ReduceLROnPlateau / CosineRestartsLR 调度器 |
 | [test_parallel_trainer.py](../../tests/test_parallel_trainer.py) | **Part3K2** ParallelTrainer 端到端（chunk 拆分 / 合并 / val_loss 修复） |
 | [test_scoring.py](../../tests/test_scoring.py) | **Part3K2** 5 个指标（exact_match / prefix_accuracy / char_f1 / bleu / rouge_l） |
+| [test_device_backend.py](../../tests/test_device_backend.py) | **Part4K1** NumpyBackend / TorchBackend / Tensor 设备迁移 / 无 PyTorch 回退 / autocast |
 
 运行：
 
@@ -697,12 +857,18 @@ python -m pytest tests/test_nn_advanced.py tests/test_training.py \
 # Part3K2 新增测试
 python -m pytest tests/test_optim_extras.py tests/test_scheduler_extras.py \
     tests/test_parallel_trainer.py tests/test_scoring.py -v
+
+# Part4K1 新增测试
+python -m pytest tests/test_device_backend.py -v
 ```
 
 ## 相关文档
 
 - [ADR-001 CPU-first](../../docs/architecture/adr-001-cpu-first.md)
 - [ADR-004 CPU 并行](../../docs/architecture/adr-004-cpu-parallel.md)
+- [ADR-005 GPU/NPU 后端抽象（Part4K1）](../../docs/architecture/adr-005-gpu-npu-backend.md)
+- [VerseInfra 总包 README](../verse_infra/README.md)
+- [VerseNex README](../verse_nex/README.md)
+- [CometSpark V0.5-1B README](../../spark/README.md)
 - [压缩管线设计](../../verse_data/designs/compression_pipeline_design.md)
 - [压缩技术参考](../../docs/papers/compression_references.md)
-- [CometSpark 训练仓库](../../data/demo/README.md)

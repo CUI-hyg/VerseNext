@@ -5,24 +5,25 @@
     python examples/compress_train_demo.py
 
 或显式指定 PYTHONPATH（无需 pip install）：
-    PYTHONPATH=packages/verse_torch:packages/verse_nex:packages/verse_tokenizer:data/demo \
+    PYTHONPATH=packages/verse_torch:packages/verse_nex:packages/verse_infra \
         python examples/compress_train_demo.py
 """
 import os
 import sys
 
-# 优先使用已安装的 verse_torch / verse_nex / verse_tokenizer（pip install -e .）
+# 优先使用已安装的 verse_torch / verse_nex / verse_infra（pip install -e .）
 # 若未安装，则回退到 PYTHONPATH 风格的路径
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _WORKSPACE = os.path.dirname(_HERE)
-for _sub in ("verse_torch", "verse_nex", "verse_tokenizer"):
+for _sub in ("verse_torch", "verse_nex", "verse_infra"):
     _p = os.path.join(_WORKSPACE, "packages", _sub)
     if os.path.isdir(_p):
         sys.path.insert(0, _p)
-sys.path.insert(0, os.path.join(_WORKSPACE, "data", "demo"))
+# spark 是顶层包，需要 _WORKSPACE 在 sys.path
+if _WORKSPACE not in sys.path:
+    sys.path.insert(0, _WORKSPACE)
 
-from model.model import CometSparkSmall, CometSparkLM
-from verse_torch.compress import compress_pipeline, count_parameters, compute_compressed_bits
+from spark.model.model import CometSparkV05Small, CometSparkV05LM
 
 
 def main():
@@ -31,9 +32,9 @@ def main():
     print("=" * 60)
 
     # 1. 创建基准模型
-    print("\n[1] 创建基准模型 CometSparkSmall...")
-    model = CometSparkSmall()
-    baseline_params = count_parameters(model)
+    print("\n[1] 创建基准模型 CometSparkV05Small...")
+    model = CometSparkV05Small()
+    baseline_params = model.count_parameters()
     print(f"    参数量: {baseline_params}")
 
     # 2. 压缩：50% 稀疏度 + INT4 量化
@@ -42,7 +43,8 @@ def main():
         "prune": {"sparsity": 0.5},
         "quantize": {"bits": 4},
     }
-    compressed, stats = compress_pipeline(model, compress_config, return_stats=True)
+    compressed = model.compress(compress_config)
+    stats = compressed.compression_stats()
 
     # 3. 显示统计
     print("\n[3] 压缩统计:")
@@ -57,7 +59,7 @@ def main():
     import numpy as np
     x = np.random.randint(0, 256, size=(1, 16))
     from verse_torch import Tensor
-    out = compressed(Tensor(x))
+    out = compressed.forward(Tensor(x))
     print(f"    输入 shape: {x.shape}")
     print(f"    输出 shape: {out.shape}")
 

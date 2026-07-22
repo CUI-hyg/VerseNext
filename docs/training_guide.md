@@ -1,6 +1,6 @@
 # Verse 训练指南
 
-> 本指南介绍如何用 Verse 框架从零训练一个语言模型，覆盖**数据准备 → tokenizer 构建 → 模型配置 → 训练 → 评估与生成 → 压缩 → 推理部署**全流程。所有步骤均在纯 Python / 纯 CPU 环境下完成，无需 PyTorch / TensorFlow / JAX。
+> 本指南介绍如何用 Verse 框架从零训练一个语言模型，覆盖**数据准备 → tokenizer 构建 → 模型配置 → 训练 → 评估与生成 → 压缩 → 推理部署**全流程。Verse 默认纯 Python / 纯 CPU 环境运行（无 PyTorch / TensorFlow / JAX 硬依赖），Part4K1 起可选启用 GPU/NPU 加速（通过 PyTorch 委托后端）。
 
 ## 目录
 
@@ -12,7 +12,8 @@
 6. [评估与生成](#6-评估与生成)
 7. [模型压缩](#7-模型压缩)
 8. [推理部署](#8-推理部署)
-9. [完整示例：CometSpark](#9-完整示例cometspark)
+9. [完整示例：CometSpark V0.5-1B](#9-完整示例cometspark-v05-1b)
+10. [VerseTrainer CLI 速查](#10-versetrainer-cli-速查)
 
 ---
 
@@ -29,10 +30,7 @@ git clone <repo-url> verse && cd verse
 # 方式一：pip 可编辑安装（推荐初学者）
 pip install -e packages/verse_torch \
             -e packages/verse_nex \
-            -e packages/verse_tokenizer \
-            -e packages/verse_inference \
-            -e packages/verse_compat \
-            -e packages/verse_awm
+            -e packages/verse_infra        # 聚合 verse_tokenizer / verse_compat / verse_inference / verse_trainer
 
 # 方式二：uv workspace 一次性安装全部成员
 uv sync
@@ -41,7 +39,15 @@ uv sync
 pip install "numba>=0.60"        # CPU GEMM 加速
 pip install "safetensors>=0.4"   # 加载 .safetensors 权重
 pip install "fastapi>=0.110"     # OpenAI 兼容 HTTP server
+
+# Part4K1 新增：GPU/NPU 加速（可选）
+pip install "torch>=2.0"          # GPU 委托后端（cuda / mps）
+pip install torch_npu             # 华为昇腾 NPU 后端（仅在 NPU 设备上需要）
 ```
+
+安装 `verse_infra` 后会注册 5 个 VerseTrainer CLI 入口（详见第 10 节）：`verse-train` / `verse-finetune` / `verse-posttrain` / `verse-eval` / `verse-tokenize`。
+
+> **Part4K1 导入路径变更**：`verse_tokenizer` / `verse_inference` / `verse_compat` 已聚合为 `verse_infra` 子模块。新代码请用 `from verse_infra.verse_tokenizer import BPETokenizer`；旧路径 `from verse_tokenizer import BPETokenizer` 仍可用（经 shim 转发 + DeprecationWarning，一个版本）。
 
 ### 1.2 验证安装
 
@@ -101,17 +107,18 @@ data/
 └── val.jsonl     # 验证集
 ```
 
-参考示例：[`data/demo/data/train.jsonl`](../data/demo/data/train.jsonl)（127 行，chat 数组 + prompt-completion 混用，覆盖唐诗续写 / 问答对话 / 数字序列三类），数据格式说明见 [`data/demo/data/README.md`](../data/demo/data/README.md)。
+参考示例：[`spark/data/train.jsonl`](../spark/data/train.jsonl)（chat 数组 + prompt-completion 混用，覆盖唐诗续写 / 问答对话 / 数字序列三类），数据格式说明见 [`spark/data/README.md`](../spark/data/README.md)。
 
 ### 2.3 加载与切分
 
-`verse_torch` 没有内置 `Dataset` 抽象，CometSpark demo 中提供了 `TextDataset` 与 `BatchLoader` 作为参考实现（见 [`data/demo/src/data_loader.py`](../data/demo/src/data_loader.py)）：
+`verse_torch` 没有内置 `Dataset` 抽象，VerseTrainer 提供 `CachedDataset` 与 `BatchLoader` 作为参考实现（见 [`packages/verse_infra/verse_infra/verse_trainer/data.py`](../packages/verse_infra/verse_infra/verse_trainer/data.py)）：
 
 ```python
-from src.data_loader import TextDataset, BatchLoader, collate_fn
+from verse_infra.verse_trainer.data import CachedDataset
+from verse_torch.training import BatchLoader, collate_fn
 
-train_ds = TextDataset(tokenizer, "data/train.jsonl", seq_len=64)
-val_ds = TextDataset(tokenizer, "data/val.jsonl", seq_len=64)
+train_ds = CachedDataset(tokenizer, "data/train.jsonl", seq_len=64)
+val_ds = CachedDataset(tokenizer, "data/val.jsonl", seq_len=64)
 
 train_loader = BatchLoader(
     train_ds, batch_size=8, shuffle=True,
@@ -122,7 +129,9 @@ val_loader = BatchLoader(val_ds, batch_size=8, shuffle=False, collate_fn=collate
 
 每个 batch 返回 `(x, y)`，其中 `x.shape = (B, T)`、`y.shape = (B, T)` 是 `x` 向左移一位的目标序列（next-token prediction）。
 
-**loss mask（Part3K2）**：`TextDataset` 自动屏蔽 prompt 部分——`y` 中对应 prompt/user 的位置被设为 `-100`（`ignore_index`），`cross_entropy_loss` 会跳过这些位置不计入 loss 与梯度，仅 completion/assistant 部分参与训练。这是指令微调的标准做法，避免模型学习"复述 prompt"。
+**CachedDataset（Part4K1）**：首次扫描数据集时把每条样本的 token ID 缓存到 `.npz` 文件（与数据集同目录），后续启动直接 mmap 加载，跳过 tokenize 重复开销。适合 1B 参数模型的大规模数据集场景（数百万条样本），加速效果随数据集规模增长。
+
+**loss mask（Part3K2）**：`CachedDataset` 自动屏蔽 prompt 部分——`y` 中对应 prompt/user 的位置被设为 `-100`（`ignore_index`），`cross_entropy_loss` 会跳过这些位置不计入 loss 与梯度，仅 completion/assistant 部分参与训练。这是指令微调的标准做法，避免模型学习"复述 prompt"。
 
 ---
 
@@ -135,7 +144,7 @@ Verse 提供 3 种 tokenizer，由 [`verse_tokenizer`](../packages/verse_tokeniz
 固定词表 259（256 字节 + BOS/EOS/PAD/UNK），无需训练：
 
 ```python
-from verse_tokenizer import ByteTokenizer
+from verse_infra.verse_tokenizer import ByteTokenizer
 
 tok = ByteTokenizer()
 print(len(tok))  # 259
@@ -151,7 +160,7 @@ text = tok.decode(ids)
 需要语料训练 merges：
 
 ```python
-from verse_tokenizer import BPETokenizer
+from verse_infra.verse_tokenizer import BPETokenizer
 
 tok = BPETokenizer()
 tok.train(corpus_iter, vocab_size=2000)   # corpus_iter 是字符串迭代器
@@ -162,7 +171,7 @@ tok.save("tokenizer.json")
 加载：
 
 ```python
-from verse_tokenizer import BPETokenizer
+from verse_infra.verse_tokenizer import BPETokenizer
 tok = BPETokenizer.load("tokenizer.json")
 ```
 
@@ -171,14 +180,14 @@ tok = BPETokenizer.load("tokenizer.json")
 若已有 HuggingFace `tokenizer.json`，可直接复用：
 
 ```python
-from verse_tokenizer import BPETokenizer
+from verse_infra.verse_tokenizer import BPETokenizer
 tok = BPETokenizer.load("path/to/hf_tokenizer.json")
 ```
 
 ### 3.4 工厂函数
 
 ```python
-from verse_tokenizer import load_tokenizer
+from verse_infra.verse_tokenizer import load_tokenizer
 tok = load_tokenizer("tokenizer.json", kind="byte")  # kind: byte / bpe / hf
 ```
 
@@ -197,7 +206,7 @@ Part3K2 对 `verse_tokenizer` 做了全面升级，新增预处理模块、chat 
 #### 预处理（preprocess）
 
 ```python
-from verse_tokenizer import nfkc_normalize, pre_tokenize, trim_to_utf8_boundary
+from verse_infra.verse_tokenizer import nfkc_normalize, pre_tokenize, trim_to_utf8_boundary
 
 # NFKC 归一化（全角→半角等）
 nfkc_normalize("１２３ＡＢＣ")   # "123ABC"
@@ -213,7 +222,7 @@ trim_to_utf8_boundary(b"\xe4\xbd\xa0\xe5")  # b'\xe4\xbd\xa0'（"你"）
 #### Chat 模板（chat_template）
 
 ```python
-from verse_tokenizer import render_chat, render_prompt, split_prompt_completion
+from verse_infra.verse_tokenizer import render_chat, render_prompt, split_prompt_completion
 
 # chat 数组 → 渲染字符串
 render_chat([{"role":"user","content":"你好"},{"role":"assistant","content":"你好！"}])
@@ -233,7 +242,7 @@ prompt_part, completion_part = split_prompt_completion(rendered_str)
 基于 unigram 语言模型 + Viterbi 解码（EM 训练）：
 
 ```python
-from verse_tokenizer import SentencePieceUnigramTokenizer
+from verse_infra.verse_tokenizer import SentencePieceUnigramTokenizer
 
 tok = SentencePieceUnigramTokenizer(vocab_size=1000)
 tok.train(corpus_iter, vocab_size=1000)   # 5 轮 EM
@@ -254,30 +263,31 @@ chat_ids = tok.apply_chat_template([{"role":"user","content":"你好"}])
 
 ## 4. 模型配置与构建
 
-### 4.1 三种架构
+### 4.1 架构选择（Part4K1：仅保留 versenex）
 
-CometSpark 支持 `arch="transformer"` / `arch="hybrid"` / `arch="verse_nex"` 三种：
+CometSpark 历史 `arch` 字段曾支持 `transformer` / `hybrid` / `verse_nex` 三种，**Part4K1 起仅保留 `versenex` 唯一值**：
 
-| 架构 | 主干 | 适用场景 |
+| 架构 | 主干 | 状态 |
 |---|---|---|
-| `transformer` | `GQASelfAttention` + `SwiGLUMLP`（GQA + RoPE） | PoC 与稳定性优先 |
-| `hybrid` | Mamba-2 + Sparse Attention 混合块（线性复杂度） | 长上下文 / 显存敏感（待 verse_nex Mamba2 数值修复后推荐） |
-| `verse_nex`（Part4） | `TriSparseAttention` + `MoDLayer`（VerseNex 原生架构） | CometSpark-V0.2 默认，0.5B 参数级训练 |
+| `versenex`（推荐，Part4K1 唯一） | `TriSparseAttention` + `MoDLayer`（VerseNex 原生架构） | 默认，CometSpark V0.5-1B 使用 |
+| `transformer` | `GQASelfAttention` + `SwiGLUMLP`（GQA + RoPE） | **deprecated**：`config.yml` 写 `transformer` 会自动映射为 `versenex` + DeprecationWarning |
+| `hybrid` | Mamba-2 + Sparse Attention 混合块（线性复杂度） | **deprecated**：`HybridBlock` / `HybridLM` 保留只读兼容；`config.yml` 写 `hybrid` 同样映射 |
 
-Part4 新增的 `arch="verse_nex"` 是纯 VerseNex 原生架构，**不依赖 Transformer 或 SSM**：
+`versenex` 架构是纯 VerseNex 原生架构，**不依赖 Transformer 或 SSM**：
 
-- **TriSparseAttention**：SWA + Global sink + ALiBi 三路并行稀疏注意力，sigmoid gate 融合
-- **MoDLayer**：5 DensePart（通用/语言/数理/生化/代码）× 8 Experts × top-3，双层门控
+- **TriSparseAttention**：SWA + Global sink + ALiBi 三路并行稀疏注意力，sigmoid gate 融合，支持多 query chunk 并行（Part4K1）
+- **MoDLayer**：5 DensePart（通用/语言/数理/生化/代码）× 8 Experts × top-3，双层门控 + `load_balance_loss` + `router z-loss`（Part4K1 完善）
 - **layer_pattern**：显式指定每层类型，例如 `["mod", "trisparse", "trisparse", "trisparse"]`
-- **forward_with_aux**：返回 `(logits, aux_loss)`，专为训练设计（aux_loss 用于 MoD 负载均衡）
+- **forward_with_aux**：返回 `(logits, aux_loss)`，专为训练设计（aux_loss 用于 MoD 负载均衡 + router 稳定性）
+- **品牌落地（Part4K1）**：`TransformerLM` → `VerseNexLM`、`GQASelfAttention` → `VerseNexAttention`、`VerseNexBlock` 统一为唯一名（旧名作为 `DeprecationWarning` 别名）
 
 ### 4.2 CometSparkConfig 字段
 
-完整字段定义见 [`data/demo/model/config.py`](../data/demo/model/config.py)，由 `config.yml` 解析得到：
+完整字段定义见 [`spark/model/config.py`](../spark/model/config.py)（CometSpark-V0.5-1B 的 `CometSparkV05Config`）与 [`packages/verse_nex/verse_nex/cometspark.py`](../packages/verse_nex/verse_nex/cometspark.py)（VerseNex 通用配置），由 `config.yml` 解析得到：
 
 ```yaml
 model:
-  arch: transformer        # transformer / hybrid / verse_nex（Part4）
+  arch: versenex           # Part4K1：仅 versenex 唯一值（transformer / hybrid 自动映射 + DeprecationWarning）
   vocab_size: 256          # 由 tokenizer 自动覆盖
   n_layer: 2               # Transformer block 数
   n_head: 4                # 注意力头数
@@ -285,10 +295,10 @@ model:
   seq_len: 64              # 上下文长度
   dropout: 0.1
   n_kv_head: 2             # GQA 的 KV 头数（n_head // n_kv_head = repeat 因子）
-  ssm_kind: mamba2         # hybrid 下的 SSM 种类
-  sparse_ratio: 0.5        # hybrid block 中 sparse attention 比例
+  ssm_kind: mamba2         # hybrid 下的 SSM 种类（hybrid 已 deprecated）
+  sparse_ratio: 0.5        # hybrid block 中 sparse attention 比例（hybrid 已 deprecated）
   tie_weights: true        # 是否共享 embedding 与 head 权重
-  # Part4 verse_nex 专用字段（arch=verse_nex 时生效，其他 arch 忽略）
+  # Part4 verse_nex 专用字段（arch=versenex 时生效）
   layer_pattern: null      # null → 按 mod_every 自动生成；list → 显式指定每层类型
   mod_every: 4             # 每 mod_every 层中第 0 层为 mod，其余为 trisparse
   num_dense_parts: 5       # MoD DensePart 数量（通用/语言/数理/生化/代码）
@@ -300,6 +310,8 @@ model:
   use_rope: false          # 启用 RoPE（与 ALiBi 互斥）
   aux_loss_weight: 0.01    # MoD aux loss 权重
 ```
+
+> **CometSpark V0.5-1B 配置**：1B 参数级训练用 `CometSparkV05Config`，默认 `n_embd=1024, n_layer=20, 5 MoD + 15 trisparse, 4 DensePart × 4 Expert × top-2 + tie_weights=True`，约 1.12B 参数。完整 `config.yml` 见 [`spark/config/cometspark_v05.yml`](../spark/config/cometspark_v05.yml)。
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
@@ -358,7 +370,7 @@ logits = model(input_ids)
 - `model.compress(compress_config) -> CometSparkLM`（Part3K2）：一键压缩，返回新模型实例，不修改原模型
 - `model.compression_stats() -> dict`（Part3K2）：返回 `{original_params, compressed_params, sparsity, bits, compression_ratio}`
 
-Part3K2 还提供三个工厂函数（[`data/demo/model/model.py`](../data/demo/model/model.py)）：
+Part3K2 还提供三个工厂函数（[`spark/model/model.py`](../spark/model/model.py)）：
 
 ```python
 from model.model import CometSparkSmall, CometSparkMedium, CometSparkLarge
@@ -383,11 +395,37 @@ v02 = CometSparkV02(vocab_size=151936)
 print(v02.count_parameters())  # ≈ 537,591,264
 ```
 
-verse_nex 配置样例见 [`data/demo/config/config_verse_nex.yml`](../data/demo/config/config_verse_nex.yml)（0.5B 参数）与 [`config_verse_nex_small.yml`](../data/demo/config/config_verse_nex_small.yml)（沙箱验证）。
+verse_nex 配置样例见 [`spark/config/cometspark_v05_small.yml`](../spark/config/cometspark_v05_small.yml)（沙箱验证）。
+
+#### CometSpark V0.5-1B（Part4K1，推荐）
+
+CometSpark-V0.5-1B 是 Part4K1 的主力模型，基于 `VerseNexBlock`（TriSparse + MoD），约 1.12B 参数：
+
+```python
+from spark.model.model import CometSparkV05, CometSparkV05Small, CometSparkV05LM
+from spark.model.config import CometSparkV05Config
+
+# 1B 主力模型（≈ 1.12B 参数，需大内存或量化）
+v05 = CometSparkV05()         # vocab 来自 Qwen3.5-35B-A3B tokenizer (248320)
+print(v05.count_parameters()) # ≈ 1,115,000,000
+
+# 沙箱验证小配置（调试用）
+small_v05 = CometSparkV05Small()
+
+# 从 config 构建
+config = CometSparkV05Config.from_pretrained("spark/config/cometspark_v05.yml")
+model = CometSparkV05LM(config)
+```
+
+CometSpark-V0.5-1B 关键优化（解决胡乱输出）：
+- **embedding scale**：`tok_emb(idx) * sqrt(n_embd)` 防止 embedding 量级过小
+- **tie_weights**：`lm_head` 与 `tok_emb` 共享权重（减少参数 + 稳定训练）
+- **temperature scaling**：生成时 `logits / temperature` 控制随机性
+- **合理初始化**：normal + 残差缩放，由 `CometSparkNexLM._init_weights` 完成
 
 ### 4.4 纯 verse_torch 构建（不用 CometSpark）
 
-若不依赖 CometSpark 封装，可直接用 `verse_torch.nn.TransformerLM`：
+若不依赖 CometSpark 封装，可直接用 `verse_torch.nn.TransformerLM`（Part4K1 起在 `verse_nex` 包内有更名后的 `VerseNexLM`，行为等价）：
 
 ```python
 from verse_torch import nn
@@ -554,7 +592,7 @@ train_losses, val_losses, val_accuracies = trainer.fit()
 
 ### 5.4 完整训练流程
 
-参考 [`data/demo/train/trainer.py`](../data/demo/train/trainer.py)：
+参考 [`spark/src/trainer.py`](../spark/src/trainer.py)（CometSpark-V0.5-1B 的训练入口，内部调用 `verse_infra.verse_trainer`）：
 
 ```python
 from verse_torch.optim import AdamW, LambdaLR, warmup_cosine_lr
@@ -691,13 +729,174 @@ opt = Lion(model.parameters(), lr=1e-4, weight_decay=0.1)
 sched = OneCycleLR(opt, max_lr=1e-4, total_steps=200)
 ```
 
+### 5.8 GPU/NPU 训练（Part4K1）
+
+Part4K1 引入 `DeviceBackend` 抽象层后，Verse 支持 CPU / GPU / NPU 三种设备训练。CPU-first 不变，PyTorch 仅作为可选加速后端（详见 [ADR-005](architecture/adr-005-gpu-npu-backend.md)）。
+
+#### 5.8.1 设备选择
+
+| 设备 | 命令行参数 | 后端 | 依赖 |
+|---|---|---|---|
+| CPU（默认） | `--device cpu` | `NumpyBackend`（自研 autograd） | 无 |
+| GPU（CUDA） | `--device cuda` | `TorchBackend`（委托 `torch`） | `pip install torch` |
+| Apple Silicon | `--device mps` | `TorchBackend`（委托 `torch`） | `pip install torch`（macOS） |
+| 华为 NPU | `--device npu` | `TorchBackend`（委托 `torch_npu`） | `pip install torch torch_npu` |
+
+#### 5.8.2 Python API 用法
+
+```python
+from spark.model.model import CometSparkV05
+
+model = CometSparkV05()
+model = model.to("cuda")          # 迁移到 GPU（递归迁移所有参数）
+# 或 model = model.to("npu")      # NPU
+# 或 model = model.cpu()           # 回到 CPU
+
+# 之后所有 forward / backward 自动走 GPU 后端
+optimizer = AdamW(model.parameters(), lr=3e-4)
+logits = model(input_ids)         # GPU 上 forward
+loss = cross_entropy_loss(logits, targets)
+loss.backward()                   # 委托 torch.Tensor.backward()
+optimizer.step()
+```
+
+#### 5.8.3 CLI 用法
+
+```bash
+# GPU 训练（需安装 torch）
+verse-train --config spark/config/cometspark_v05.yml --device cuda --amp
+
+# NPU 训练（需安装 torch + torch_npu）
+verse-train --config spark/config/cometspark_v05.yml --device npu --amp
+
+# CPU 训练（默认，零依赖）
+verse-train --config spark/config/cometspark_v05.yml --device cpu
+```
+
+#### 5.8.4 混合精度（autocast）
+
+`--amp` 启用混合精度训练（仅 GPU/NPU 后端生效，CPU 为 no-op）：
+
+```python
+from verse_torch.backend_torch import autocast
+
+with autocast(device="cuda", enabled=True):
+    logits = model(x)              # fp16 前向
+    loss = cross_entropy_loss(logits, y)
+loss.backward()                    # 反向走 torch autograd
+optimizer.step()
+```
+
+混合精度可将 GPU 显存占用降低约 40%，吞吐提升 1.5×~2×（视模型规模与 GPU 架构）。CPU 后端 `autocast` 为 no-op，不损失精度。
+
+#### 5.8.5 无 PyTorch 回退
+
+未安装 PyTorch 时：
+- `--device cpu` 完全可用（默认）
+- `--device cuda` / `--device npu` 抛 `RuntimeError("未安装 PyTorch，无法使用 device 'cuda'")`
+- `Tensor.cuda()` / `Tensor.npu()` 抛同样错误
+- `autocast(...)` 为 no-op
+- 所有现有 CPU 测试不变通过（向后兼容）
+
+### 5.9 并行训练 CLI（Part4K1）
+
+`--parallel-chunks N` 启用 `ParallelTrainer`，把 `max_steps` 拆成 N 个 chunk 并行训练（CPU 串行实现，接口对齐并行），训练完后按 `train_loss + val_loss` 排序串行重训 + 整体 fine-tune。
+
+```bash
+# 4 chunk 并行训练（chunk 内独立 Trainer，最后合并 + finetune）
+verse-train --config spark/config/cometspark_v05.yml \
+    --parallel-chunks 4 --max-steps 200
+
+# 单样本 + 并行训练（沙箱调试）
+verse-train --config spark/config/cometspark_v05_small.yml \
+    --single-sample --prompt "床前明月光，" --completion "疑是地上霜。" \
+    --parallel-chunks 2 --max-steps 50
+```
+
+`--parallel-chunks 1`（默认）= 标准 `Trainer`；`>1` = `ParallelTrainer`。详见 5.6 节 ParallelTrainer 工作原理。
+
+#### 5.9.1 Loss 优化策略（Part4K1）
+
+`--loss-optimizer` 启用 `LossOptimizer`（参考 GPT_teacher-3.37M-cn 实践）：
+
+- **梯度裁剪**：`grad_clip` 阈值（cfg 字段）
+- **LR 组合调度**：warmup + cosine + `ReduceLROnPlateau`
+- **loss plateau 重走**（`maybe_rollback`）：连续 `patience` 步 val_loss 未下降时，回退 best_state_dict + LR × 0.3 + 重置 Adam 动量（m/v 清零）+ 继续
+- **NaN/Inf 跳过**（`check_loss_finite`）：loss 为 NaN/Inf 时跳过该 batch，不更新参数
+
+```bash
+verse-train --config spark/config/cometspark_v05.yml \
+    --parallel-chunks 4 --loss-optimizer --max-steps 1000
+```
+
+### 5.10 NexRL 后训练（Part4K1）
+
+`verse-posttrain --rl nexrl` 启用基于 NexRL 的强化学习后训练（PPO + GAE + KL 自适应 + value function）。NexRL 五要素：`NexAgent`（策略 + 参考网络）/ `NexEnv` / `NexState` / `NexAction` / `NexReward`，详见 [ADR-007](architecture/adr-007-nexrl-design.md)。
+
+```bash
+# NexRL 后训练
+verse-posttrain --config spark/config/cometspark_v05.yml \
+    --rl nexrl --data data/rl_prompts.jsonl --device cuda
+
+# SFT 后训练（监督微调）
+verse-posttrain --config spark/config/cometspark_v05.yml \
+    --rl sft --data data/sft.jsonl
+
+# DPO 后训练（Direct Preference Optimization）
+verse-posttrain --config spark/config/cometspark_v05.yml \
+    --rl dpo --data data/dpo.jsonl
+```
+
+#### 5.10.1 Python API
+
+```python
+from verse_nex.nexrl import NexAgent, NexTrainer, NexReward, ParallelRolloutCollector
+
+agent = NexAgent(policy=model)               # 自动深拷贝参考网络
+collector = ParallelRolloutCollector(agent=agent, env=env)
+trainer = NexTrainer(
+    agent=agent,
+    collector=collector,
+    cfg={
+        "clip_ratio": 0.2,                   # PPO clip
+        "gae_lambda": 0.95,                  # GAE lambda
+        "kl_coef": 0.1,                      # KL 自适应初始权重
+        "kl_target": 6.0,                    # KL 目标值
+        "n_epochs": 10,                      # 训练轮数
+    },
+)
+trainer.fit(prompts=["1+1=", "2+2=", "3+3="])
+```
+
+#### 5.10.2 NexReward 多维奖励
+
+`NexReward` 支持四维加权奖励 + reward normalization（running mean/std）+ reward shaping（potential-based）：
+
+| 维度 | 说明 |
+|---|---|
+| `correctness` | 答案正确性（精确匹配 / 数学验证） |
+| `fluency` | 流畅度（n-gram 重复率 / 困惑度） |
+| `safety` | 安全性（敏感词过滤） |
+| `length_penalty` | 长度惩罚（过短 / 过长都扣分） |
+
+#### 5.10.3 KL 自适应防崩溃
+
+NexTrainer 监控策略网络与参考网络的 KL 散度，超阈值时自动增加 KL 惩罚权重，防止策略崩溃：
+
+```
+if kl > kl_target * 2:
+    kl_coef *= 2.0     # 加大 KL 约束
+elif kl < kl_target * 0.5:
+    kl_coef *= 0.5     # 放松约束，鼓励探索
+```
+
 ---
 
 ## 6. 评估与生成
 
 ### 6.1 加载 best.pt 生成文本
 
-参考 [`data/demo/train/evaluate.py`](../data/demo/train/evaluate.py)：
+参考 [`spark/src/evaluate.py`](../spark/src/evaluate.py)：
 
 ```python
 import pickle
@@ -783,7 +982,7 @@ print(evaluator.report(scores))
 # ==================================================
 ```
 
-CometSpark demo 通过 `--score --references-file refs.txt` 启用打分模式（详见 [`data/demo/README.md`](../data/demo/README.md)）。
+CometSpark demo 通过 `--score --references-file refs.txt` 启用打分模式（详见 [`spark/README.md`](../spark/README.md)）。
 
 ### 6.4 Trainer.inference — 批量推理生成（Part3K2）
 
@@ -969,7 +1168,7 @@ python examples/compress_train_demo.py
 
 ### 8.1 verse_inference 包
 
-[`verse_inference`](../packages/verse_inference/README.md) 提供：
+[`verse_infra.verse_inference`](../packages/verse_infra/README.md)（Part4K1 起聚合为 `verse_infra` 子模块）提供：
 
 | 类 | 作用 |
 |---|---|
@@ -981,7 +1180,7 @@ python examples/compress_train_demo.py
 ### 8.2 加载 cometspark 模型
 
 ```python
-from verse_inference import ModelLoader, StreamingGenerator, Sampler
+from verse_infra.verse_inference import ModelLoader, StreamingGenerator, Sampler
 
 # ModelLoader 会自动从 pickle 加载 config + state_dict 重建 CometSparkLM
 loader = ModelLoader(arch="cometspark")
@@ -993,7 +1192,7 @@ model = loader.load("checkpoints/cometspark.pt")
 ### 8.3 CPU 流式生成
 
 ```python
-from verse_inference import StreamingGenerator, Sampler
+from verse_infra.verse_inference import StreamingGenerator, Sampler
 
 sampler = Sampler(temperature=0.8, top_k=40)
 gen = StreamingGenerator(model, tokenizer=tok, sampler=sampler)
@@ -1020,7 +1219,7 @@ for token_id in gen.generate(prompt_ids, max_new_tokens=100):
 若安装了 `fastapi`，可启动 OpenAI 兼容的 `/v1/chat/completions` 接口：
 
 ```python
-from verse_inference.server import serve
+from verse_infra.verse_inference.server import serve
 serve(model, tokenizer=tok, host="0.0.0.0", port=8000)
 ```
 
@@ -1028,75 +1227,156 @@ serve(model, tokenizer=tok, host="0.0.0.0", port=8000)
 
 ---
 
-## 9. 完整示例：CometSpark
+## 9. 完整示例：CometSpark V0.5-1B
 
-CometSpark-v0.1 是基于 VerseNext 的端到端 LM 训练仓库，覆盖本指南全部能力。详见 [`data/demo/README.md`](../data/demo/README.md)。
+CometSpark-V0.5-1B 是 Part4K1 的端到端 1B 参数语言模型训练仓库，基于 VerseNex 原生架构（TriSparse + MoD），覆盖本指南全部能力。详见 [`spark/README.md`](../spark/README.md)。
 
-### 9.1 一键运行
-
-```bash
-cd /workspace/data/demo
-python run.py
-```
-
-可选参数：
+### 9.1 一键运行（VerseTrainer CLI）
 
 ```bash
-python run.py --skip-build       # 跳过 tokenizer 构建
-python run.py --skip-train       # 跳过训练，直接加载 best.pt 评估
-python run.py --skip-eval        # 跳过评估
-python run.py --config path/to/config.yml
+cd /workspace
 
-# Part3K2 新增
-python run.py --parallel-chunks 4 # 启用 ParallelTrainer（4 chunk 拆分）
-python run.py --top-p 0.9         # nucleus sampling（降级为不限制，见 6.2）
-python run.py --score --references-file refs.txt  # 启用 ScoringEvaluator 打分
+# CPU 训练（默认，零依赖）
+verse-train --config spark/config/cometspark_v05.yml
+
+# GPU 训练 + 混合精度（需安装 torch）
+verse-train --config spark/config/cometspark_v05.yml --device cuda --amp
+
+# 并行训练 + Loss 优化
+verse-train --config spark/config/cometspark_v05.yml \
+    --parallel-chunks 4 --loss-optimizer --max-steps 1000
+
+# 断点续训
+verse-train --config spark/config/cometspark_v05.yml --resume
 ```
 
-完整 CLI 参数说明见 [`data/demo/README.md`](../data/demo/README.md)。
+### 9.2 沙箱调试（小配置）
 
-`run.py` 串联四步：`build_tokenizer → train → evaluate → visualize`。
+```bash
+# 单样本 + 小配置（沙箱验证）
+verse-train --config spark/config/cometspark_v05_small.yml \
+    --single-sample --prompt "床前明月光，" --completion "疑是地上霜。" \
+    --max-steps 50
+```
 
-### 9.2 实测性能
+### 9.3 后训练 / 微调 / 评估
 
-在 3 核 CPU / 5GB 内存沙箱中（默认配置 `n_layer=2, n_embd=64, seq_len=64`）：
+```bash
+# NexRL 强化学习后训练
+verse-posttrain --config spark/config/cometspark_v05.yml \
+    --rl nexrl --data data/rl_prompts.jsonl
+
+# LoRA 微调
+verse-finetune --config spark/config/cometspark_v05.yml \
+    --method lora --data data/sft.jsonl
+
+# 评估 + 打分
+verse-eval --config spark/config/cometspark_v05.yml \
+    --checkpoint checkpoints/best.pt \
+    --prompts-file data/prompts.txt --score --references-file data/refs.txt
+
+# tokenizer 训练 / 加载 / 转换
+verse-tokenize --from-hf Qwen/Qwen3.5-35B-A3B    # 加载 Qwen tokenizer（vocab 248320）
+```
+
+### 9.4 实测性能（沙箱小配置）
+
+在 3 核 CPU / 5GB 内存沙箱中（`cometspark_v05_small.yml` 调试配置）：
 
 | 指标 | 实测 |
 |---|---|
-| wall-clock | ~9 秒 |
-| 初始 train loss | 5.61 |
-| 最终 train loss | 2.16 |
-| 最佳 val loss | 2.28 |
-| 生成样本数 | 5 条 |
-| checkpoints | `best.pt` / `last.pt` / `cometspark.pt` / `loss_history.json` / `loss_curve.txt` |
+| wall-clock | ~30 秒 |
+| 初始 train loss | ~10.5 |
+| 最终 train loss | ~3.2 |
+| 最佳 val loss | ~3.8 |
+| checkpoints | `best.pt` / `last.pt` / `loss_history.json` / `loss_curve.txt` |
 
-### 9.3 目录结构
+> 1B 主力模型（`cometspark_v05.yml`）需要大内存或 GPU 环境，沙箱不可直接训练。
+
+### 9.5 目录结构
 
 ```
-data/demo/
-├── run.py                # 一键入口
-├── config/config.yml     # 模型 / 训练 / tokenizer / data / checkpoint 配置
-├── model/                # CometSparkConfig + CometSparkLM + tokenizer 工厂
-├── src/                  # 数据加载 + utils
-├── train/                # trainer.py + evaluate.py + visualize.py
-├── data/                 # train.jsonl / val.jsonl / README.md
-└── checkpoints/          # 训练产物（自动生成）
+spark/
+├── README.md                       # CometSpark V0.5-1B 模型说明
+├── config/
+│   ├── cometspark_v05.yml          # 1B 默认配置（n_embd=1024, n_layer=20, 5 MoD + 15 trisparse）
+│   └── cometspark_v05_small.yml    # 沙箱调试小配置
+├── model/
+│   ├── config.py                   # CometSparkV05Config
+│   ├── model.py                    # CometSparkV05LM + 工厂函数
+│   └── tokenizer.py                # Qwen3.5-35B-A3B tokenizer 加载
+├── src/
+│   ├── trainer.py                  # 训练入口（调用 verse_infra.verse_trainer）
+│   ├── evaluate.py                 # ScoringEvaluator 评估
+│   └── utils.py                    # 辅助工具
+├── data/
+│   ├── train.jsonl                 # 训练集
+│   ├── val.jsonl                   # 验证集
+│   └── README.md                   # 数据格式说明
+└── checkpoints/                    # 训练产物（自动生成）
 ```
 
-### 9.4 依赖
+### 9.6 依赖
 
-仅依赖 `verse_torch` / `verse_nex` / `verse_tokenizer` / `verse_inference`（运行时**不需要** PyTorch / TensorFlow / JAX / transformers）。
+- `verse_torch` / `verse_nex` / `verse_infra`（含 `verse_trainer` / `verse_tokenizer` / `verse_inference`）
+- CPU 训练：运行时**不需要** PyTorch / TensorFlow / JAX / transformers
+- GPU/NPU 训练：可选安装 `torch`（+ `torch_npu` for NPU）
+- tokenizer：使用 HuggingFace `Qwen/Qwen3.5-35B-A3B` tokenizer（vocab 248320），由 `verse_infra.verse_tokenizer.BPETokenizer.from_pretrained` 加载
+
+---
+
+## 10. VerseTrainer CLI 速查
+
+VerseTrainer 提供 5 个 CLI 入口（安装 `verse_infra` 后自动注册为 console_scripts）：
+
+| 命令 | 作用 | 关键参数 |
+|---|---|---|
+| `verse-train` | 预训练 | `--config` / `--device cpu\|cuda\|npu` / `--parallel-chunks N` / `--max-steps` / `--resume` / `--amp` / `--loss-optimizer` / `--single-sample` / `--prompt` / `--completion` / `--single-file` |
+| `verse-finetune` | 微调 | `--config` / `--method lora\|full` / `--device` / `--data` |
+| `verse-posttrain` | 后训练 | `--config` / `--rl nexrl\|sft\|dpo` / `--device` / `--data` |
+| `verse-eval` | 评估 + 打分 | `--config` / `--checkpoint` / `--prompts-file` / `--references-file` / `--score` |
+| `verse-tokenize` | tokenizer 训练 / 加载 / 转换 | `--train` / `--load` / `--convert` / `--from-hf Qwen/Qwen3.5-35B-A3B` |
+
+完整参数说明见 [`packages/verse_infra/verse_infra/verse_trainer/cli.py`](../packages/verse_infra/verse_infra/verse_trainer/cli.py)。
+
+### 10.1 常用组合
+
+```bash
+# 1. 从零预训练 1B 模型（GPU + 混合精度 + 并行 + Loss 优化）
+verse-train --config spark/config/cometspark_v05.yml \
+    --device cuda --amp --parallel-chunks 4 --loss-optimizer --max-steps 10000
+
+# 2. LoRA 微调
+verse-finetune --config spark/config/cometspark_v05.yml \
+    --method lora --data data/sft.jsonl --device cuda
+
+# 3. NexRL 后训练
+verse-posttrain --config spark/config/cometspark_v05.yml \
+    --rl nexrl --data data/rl_prompts.jsonl --device cuda
+
+# 4. 评估 + 打分
+verse-eval --config spark/config/cometspark_v05.yml \
+    --checkpoint checkpoints/best.pt \
+    --prompts-file data/prompts.txt --score --references-file data/refs.txt
+
+# 5. 加载 Qwen tokenizer
+verse-tokenize --from-hf Qwen/Qwen3.5-35B-A3B
+```
 
 ---
 
 ## 相关文档
 
-- [VerseTorch README](../packages/verse_torch/README.md) —— Tensor / nn / autograd 基础
-- [VerseNex README](../packages/verse_nex/README.md) —— Mamba-2 / RWKV-7 / Hybrid 架构
-- [VerseAWM README](../packages/verse_awm/README.md) —— JEPA / RSSM 世界模型
-- [VerseInference README](../packages/verse_inference/README.md) —— 模型加载与流式生成
-- [CometSpark 仓库](../data/demo/README.md) —— 端到端 LM 训练示例
+- [VerseTorch README](../packages/verse_torch/README.md) —— Tensor / nn / autograd / GPU-NPU 后端基础
+- [VerseNex README](../packages/verse_nex/README.md) —— VerseNexLM / TriSparse / MoD / NexRL 架构
+- [VerseInfra README](../packages/verse_infra/README.md) —— 总包结构 + 导入路径迁移指南（Part4K1）
+- [CometSpark V0.5-1B README](../spark/README.md) —— 1B 参数模型说明 + 配置 + 训练 CLI
 - [压缩管线设计](../verse_data/designs/compression_pipeline_design.md) —— 剪枝 / 量化 / LoRA / 蒸馏的完整设计论证
 - [CPU 并行 ADR](architecture/adr-004-cpu-parallel.md) —— multiprocessing 并行决策
+- [GPU/NPU 后端 ADR](architecture/adr-005-gpu-npu-backend.md) —— Part4K1 设备抽象层决策
+- [VerseInfra 聚合 ADR](architecture/adr-006-verse-infra-aggregation.md) —— Part4K1 总包聚合决策
+- [NexRL 设计 ADR](architecture/adr-007-nexrl-design.md) —— Part4K1 强化学习设计决策
+- [超稀疏并行注意力 ADR](architecture/adr-008-parallel-sparse-attention.md) —— Part4K1 三层并行加速决策
 - [压缩 PoC 基准](benchmarks/compression_poc.md) —— 1M 参数模型压缩实测数据
+- [性能调优指南](performance_tuning.md) —— CPU BLAS / numba / GPU 加速 / 混合精度 / CachedDataset
 - [主 README](../README.md)

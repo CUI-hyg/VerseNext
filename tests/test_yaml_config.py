@@ -1,11 +1,11 @@
-"""Task 6.4: PyYAML 配置解析单元测试。
+"""Task 6.4: PyYAML 配置解析单元测试（Part4K1 Task 8.9 迁移到 spark/model）。
 
 覆盖：
 1. list 正确解析为 Python list（flow + block 两种写法）
 2. 多行字符串 ``|``（literal）与 ``>``（folded）正确解析
 3. 引号转义（含 ``:`` 的值用引号包裹后正确解析为 str）
 4. 数值类型 int / float / bool / None 正确解析
-5. 向后兼容：现有 ``data/demo/config/config.yml`` 仍能正确加载
+5. 向后兼容：现有 ``spark/config/cometspark_v05_small.yml`` 仍能正确加载
 6. ``save_full_config`` + ``load_full_config`` 往返一致（含 list / 中文）
 7. 无 PyYAML 时 fallback 路径仍可解析标量子集（不失败）
 
@@ -22,13 +22,18 @@ from pathlib import Path
 
 import pytest
 
-# 让 tests/ 目录能 import data/demo/model/config.py
+# Part4K1 Task 8.9: 从 spark/model 导入（替代 data/demo/model）
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-_DEMO_DIR = _REPO_ROOT / "data" / "demo"
-sys.path.insert(0, str(_DEMO_DIR))
+_SPARK_DIR = _REPO_ROOT / "spark"
+for _pkg in ("verse_torch", "verse_nex", "verse_infra"):
+    _p = _REPO_ROOT / "packages" / _pkg
+    if _p.is_dir():
+        sys.path.insert(0, str(_p))
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-from model import config as cfg_module  # noqa: E402
-from model.config import load_full_config, save_full_config, CometSparkConfig  # noqa: E402
+from spark.model import config as cfg_module  # noqa: E402
+from spark.model.config import load_full_config, save_full_config, CometSparkV05Config as CometSparkConfig  # noqa: E402
 
 _HAS_YAML = cfg_module._HAS_YAML
 
@@ -75,8 +80,8 @@ training:
 """
 
 
-# 现有 config.yml 路径
-_CONFIG_YML = _DEMO_DIR / "config" / "config.yml"
+# Part4K1 Task 8.9: 使用 spark/config/cometspark_v05_small.yml 替代 data/demo/config/config.yml
+_CONFIG_YML = _SPARK_DIR / "config" / "cometspark_v05_small.yml"
 
 
 # ---------------------------------------------------------------------------
@@ -202,25 +207,25 @@ def test_scalar_types_always_supported():
 # ---------------------------------------------------------------------------
 
 def test_existing_config_yml_loads():
-    """现有 ``data/demo/config/config.yml`` 在两种模式下均应成功加载，且 model 段字段类型正确。"""
+    """现有 ``spark/config/cometspark_v05_small.yml`` 在两种模式下均应成功加载，且 model 段字段类型正确。"""
     cfg = load_full_config(str(_CONFIG_YML))
     assert "model" in cfg
     assert "training" in cfg
     assert "tokenizer" in cfg
     m = cfg["model"]
-    # 关键字段类型断言
-    assert m["arch"] == "transformer"
+    # 关键字段类型断言（Part4K1: arch 统一为 versenex）
+    assert m["arch"] == "versenex"
     assert m["n_layer"] == 2 and isinstance(m["n_layer"], int)
     assert m["n_embd"] == 64 and isinstance(m["n_embd"], int)
-    assert m["dropout"] == 0.1 and isinstance(m["dropout"], float)
+    assert m["dropout"] == 0.0 and isinstance(m["dropout"], float)
     assert m["tie_weights"] is True
     assert m["n_kv_head"] == 2
 
 
 def test_cometspark_config_from_yaml():
-    """``CometSparkConfig.from_yaml`` 在两种模式下应正常构造。"""
+    """``CometSparkV05Config.from_yaml`` 在两种模式下应正常构造。"""
     c = CometSparkConfig.from_yaml(str(_CONFIG_YML))
-    assert c.arch == "transformer"
+    assert c.arch == "versenex"
     assert c.n_layer == 2
     assert c.n_embd == 64
     assert c.tie_weights is True

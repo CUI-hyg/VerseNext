@@ -1,23 +1,40 @@
-"""VerseInference: Model loading, state caching, streaming generation.
+"""verse_inference 兼容 shim —— 已迁入 verse_infra.verse_inference。
 
-提供：
-- ``ModelLoader``: 从 HF repo 或本地路径加载预训练 LM 到 VerseNex + VerseTorch
-- ``StateCache``: Mamba/RWKV 的递归状态缓存
-- ``Sampler`` / ``GreedySampler``: Token 采样器（temperature / top_k / top_p）
-- ``StreamingGenerator``: 流式生成器（逐步产生 token）
+旧路径仍可用（带 DeprecationWarning），推荐改用::
+
+    from verse_infra.verse_inference import ModelLoader, StreamingGenerator
 """
 
-from .model_loader import ModelLoader
-from .cache import StateCache
-from .sampler import Sampler, GreedySampler
-from .generator import StreamingGenerator
+import os as _os
+import sys as _sys
+import warnings
 
-__version__ = "0.1.0"
+# 路径自举：确保 verse_infra 可被导入
+_THIS_DIR = _os.path.dirname(_os.path.abspath(__file__))
+_PACKAGES_DIR = _os.path.dirname(_os.path.dirname(_THIS_DIR))  # → packages/
+_VERSE_INFRA_PATH = _os.path.join(_PACKAGES_DIR, "verse_infra")
+if _os.path.isdir(_VERSE_INFRA_PATH) and _VERSE_INFRA_PATH not in _sys.path:
+    _sys.path.insert(0, _VERSE_INFRA_PATH)
 
-__all__ = [
-    "ModelLoader",
-    "StateCache",
-    "Sampler",
-    "GreedySampler",
-    "StreamingGenerator",
-]
+warnings.warn(
+    "verse_inference 已迁入 verse_infra.verse_inference，"
+    "请改用 from verse_infra.verse_inference import ...",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
+from verse_infra.verse_inference import *  # noqa: F401,E402,F403
+from verse_infra.verse_inference import (  # noqa: F401,E402  显式重导出常用 API
+    ModelLoader, StateCache, Sampler, GreedySampler, StreamingGenerator,
+)
+from verse_infra.verse_inference import __version__  # noqa: F401,E402
+
+
+def __getattr__(name):
+    """延迟重导出子模块（如 verse_inference.server → verse_infra.verse_inference.server）。"""
+    try:
+        _mod = __import__(f"verse_infra.verse_inference.{name}", fromlist=[name])
+        globals()[name] = _mod
+        return _mod
+    except ImportError:
+        raise AttributeError(f"module 'verse_inference' has no attribute {name!r}")

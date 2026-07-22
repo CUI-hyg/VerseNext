@@ -22,11 +22,11 @@ from pathlib import Path
 
 import pytest
 
-# 让 tests/ 目录能 import verse_tokenizer
+# 让 tests/ 目录能 import verse_infra.verse_tokenizer
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_REPO_ROOT / "packages" / "verse_tokenizer"))
+sys.path.insert(0, str(_REPO_ROOT / "packages" / "verse_infra"))
 
-from verse_tokenizer import (
+from verse_infra.verse_tokenizer import (
     BaseTokenizer,
     BPETokenizer,
     ByteTokenizer,

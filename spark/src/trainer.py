@@ -1,0 +1,77 @@
+"""训练入口（Part4K1 Task 8.5）。
+
+本模块是 ``spark`` 的训练入口，**直接委托给**
+``verse_infra.verse_trainer``（VerseTrainer / ParallelTrainerSafe /
+LossOptimizer / RLTrainer）。不重造训练逻辑。
+
+支持：
+- 预训练：``train(config_path, ...)``
+- 并行训练：``parallel_chunks > 1`` 自动走 ParallelTrainerSafe
+- 断点续训：``resume=True``
+- 单样本 / 单文件模式
+- VerseNex 原生 arch（``forward_with_aux`` + MoD aux loss）
+
+CLI 入口（推荐）：
+    verse-train --config spark/config/cometspark_v05.yml --device cpu
+    verse-finetune --config spark/config/cometspark_v05.yml --method lora
+    verse-posttrain --config spark/config/cometspark_v05.yml --rl nexrl
+    verse-eval --config spark/config/cometspark_v05.yml --score
+"""
+
+from __future__ import annotations
+
+import os as _os
+import sys as _sys
+_THIS_DIR = _os.path.dirname(_os.path.abspath(__file__))
+_REPO_ROOT = _os.path.dirname(_os.path.dirname(_THIS_DIR))
+for _dep in ("verse_infra", "verse_torch", "verse_nex"):
+    _dep_path = _os.path.join(_REPO_ROOT, "packages", _dep)
+    if _os.path.isdir(_dep_path) and _dep_path not in _sys.path:
+        _sys.path.insert(0, _dep_path)
+
+from verse_infra.verse_trainer import (  # noqa: E402
+    train,
+    ParallelTrainerSafe,
+    CachedDataset,
+    LossOptimizer,
+    RLTrainer,
+    install_signal_handlers,
+    reset_shutdown_flag,
+    is_shutdown_requested,
+)
+
+
+def build_model_from_config(config_dict: dict, vocab_size: int):
+    """从配置 dict 构建 CometSparkV05LM。
+
+    Args:
+        config_dict: model 段配置 dict（来自 config.yml 的 model 段）。
+        config_dict 会与 vocab_size 合并后构造 ``CometSparkV05Config``。
+        vocab_size: 实际词表大小（由 tokenizer 决定，覆盖 config 的 vocab_size）。
+
+    Returns:
+        (model, config)：model 是 :class:`CometSparkV05LM` 实例，
+        config 是 :class:`CometSparkV05Config` 实例。
+    """
+    # 延迟导入避免循环
+    from spark.model.config import CometSparkV05Config
+    from spark.model.model import CometSparkV05LM
+
+    merged = dict(config_dict)
+    merged["vocab_size"] = vocab_size
+    config = CometSparkV05Config.from_dict(merged)
+    model = CometSparkV05LM(config)
+    return model, config
+
+
+__all__ = [
+    "train",
+    "ParallelTrainerSafe",
+    "CachedDataset",
+    "LossOptimizer",
+    "RLTrainer",
+    "install_signal_handlers",
+    "reset_shutdown_flag",
+    "is_shutdown_requested",
+    "build_model_from_config",
+]

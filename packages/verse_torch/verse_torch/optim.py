@@ -2,8 +2,14 @@
 
 设计参考 PyTorch `torch.optim`：
 - Optimizer 基类提供 zero_grad() 与 step() 接口
-- SGD / Adam / AdamW 实现标准更新规则
+- SGD / Adam / AdamW / NAdamW / RMSProp 实现标准更新规则
 - LRScheduler 基类与 StepLR / ExponentialLR / CosineAnnealingLR
+
+GPU 路径委托
+============
+当 ``Tensor.data`` 为 ``torch.Tensor``（GPU/NPU 路径）时，优化器更新
+自动切换为 torch 原生算子（``torch.zeros_like`` / ``torch.sqrt`` 等），
+以保证 dtype 与 device 一致；CPU 路径继续使用 NumPy 实现。
 """
 
 from __future__ import annotations
@@ -11,7 +17,11 @@ from __future__ import annotations
 import math
 import numpy as np
 
-from .tensor import Tensor
+from .tensor import Tensor, _is_torch_data
+from .device import get_torch_module
+
+# 模块级缓存 torch 模块（无 torch 时为 None）
+_TORCH = get_torch_module()
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +227,186 @@ class AdamW(Optimizer):
                 p.data = p.data - update
                 if wd != 0:
                     p.data = p.data * (1.0 - self.lr * wd)
+
+
+class NAdamW(Optimizer):
+    """NAdamW 优化器（Nesterov-accelerated AdamW）。
+
+    在 AdamW 基础上引入 Nesterov 动量前瞻：用 ``beta1 * m_t + (1 - beta1) * g``
+    作为"Nesterov 一阶矩"再做 bias correction，使更新方向先看一步再校正，
+    收敛通常比 AdamW 更快、更稳。
+
+    更新规则（解耦 weight decay）::
+
+        m_t   = beta1 * m + (1 - beta1) * g
+        v_t   = beta2 * v + (1 - beta2) * g^2
+        m_hat = (beta1 * m_t + (1 - beta1) * g) / (1 - beta1^t)
+        v_hat = v_t / (1 - beta2^t)
+        p    -= lr * m_hat / (sqrt(v_hat) + eps)
+        p    *= (1 - lr * weight_decay)   # 解耦 weight decay
+
+    Args:
+        params: 可迭代的参数 / Module / 参数组 dict 列表
+        lr: 学习率（默认 1e-3）
+        betas: (beta1, beta2) 一阶/二阶矩衰减系数（默认 (0.9, 0.999)）
+        eps: 分母稳定常数（默认 1e-8）
+        weight_decay: 解耦权重衰减系数（默认 0.01）
+
+    GPU 路径委托
+    ------------
+    当 ``p.data`` 为 ``torch.Tensor`` 时，momentum buffer 与算子均用
+    torch 原生实现（``torch.zeros_like`` / ``torch.sqrt``），保持 device
+    与 dtype 一致；否则退回 NumPy 路径。
+    """
+
+    def __init__(self, params, lr: float = 1e-3, betas=(0.9, 0.999),
+                 eps: float = 1e-8, weight_decay: float = 0.01):
+        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
+        super().__init__(params, defaults)
+        self.lr = lr
+        self.beta1, self.beta2 = betas
+        self.eps = eps
+        self.weight_decay = weight_decay
+        self.t = 0
+
+    def step(self):
+        self.t += 1
+        bc1 = 1.0 - self.beta1 ** self.t
+        bc2 = 1.0 - self.beta2 ** self.t
+        for group in self.param_groups:
+            wd = group.get("weight_decay", self.weight_decay)
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                g = p.grad
+                is_torch = _is_torch_data(p.data)
+                # 选择后端工具函数
+                if is_torch:
+                    _sqrt = _TORCH.sqrt
+                    _zeros_like = _TORCH.zeros_like
+                else:
+                    _sqrt = np.sqrt
+                    _zeros_like = lambda x: np.zeros_like(x, dtype=np.float32)
+                key = id(p)
+                state = self.state.get(key, None)
+                if state is None:
+                    state = {
+                        "m": _zeros_like(p.data),
+                        "v": _zeros_like(p.data),
+                    }
+                    self.state[key] = state
+                m = state["m"]
+                v = state["v"]
+                # 一阶/二阶矩更新
+                m = self.beta1 * m + (1.0 - self.beta1) * g
+                v = self.beta2 * v + (1.0 - self.beta2) * (g * g)
+                state["m"] = m
+                state["v"] = v
+                # Nesterov 前瞻一阶矩 + bias correction
+                m_nesterov = self.beta1 * m + (1.0 - self.beta1) * g
+                m_hat = m_nesterov / bc1
+                v_hat = v / bc2
+                # 参数更新
+                update = self.lr * m_hat / (_sqrt(v_hat) + self.eps)
+                p.data = p.data - update
+                # 解耦 weight decay
+                if wd != 0:
+                    p.data = p.data * (1.0 - self.lr * wd)
+
+
+class RMSProp(Optimizer):
+    """RMSProp 优化器。
+
+    用滑动二阶矩自适应学习率，对非平稳目标（如 RNN / RL）较稳定。
+
+    更新规则::
+
+        v_t   = alpha * v + (1 - alpha) * g^2
+        p    -= lr * g / (sqrt(v_t) + eps)
+
+    可选 momentum（默认 0）：在自适应步长之上再加标准动量::
+
+        buf   = momentum * buf + g
+        p    -= lr * buf / (sqrt(v_t) + eps)
+
+    可选 centered（默认 False）：用方差而非二阶矩归一化（与 PyTorch 对齐）::
+
+        avg_g = alpha * avg_g + (1 - alpha) * g
+        v_t   = alpha * v + (1 - alpha) * g^2
+        p    -= lr * g / (sqrt(v_t - avg_g^2) + eps)
+
+    Args:
+        params: 可迭代的参数 / Module / 参数组 dict 列表
+        lr: 学习率（默认 1e-2）
+        alpha: 二阶矩滑动平均系数（默认 0.99）
+        eps: 分母稳定常数（默认 1e-8）
+        weight_decay: L2 权重衰减（耦合到梯度，默认 0.0）
+        momentum: 动量系数（默认 0.0）
+        centered: 是否使用 centered RMSProp（默认 False）
+
+    GPU 路径委托
+    ------------
+    当 ``p.data`` 为 ``torch.Tensor`` 时，buffer 与算子均用 torch 原生实现。
+    """
+
+    def __init__(self, params, lr: float = 1e-2, alpha: float = 0.99,
+                 eps: float = 1e-8, weight_decay: float = 0.0,
+                 momentum: float = 0.0, centered: bool = False):
+        defaults = dict(lr=lr, alpha=alpha, eps=eps, weight_decay=weight_decay,
+                        momentum=momentum, centered=centered)
+        super().__init__(params, defaults)
+        self.lr = lr
+        self.alpha = alpha
+        self.eps = eps
+        self.weight_decay = weight_decay
+        self.momentum = momentum
+        self.centered = centered
+
+    def step(self):
+        for group in self.param_groups:
+            wd = group.get("weight_decay", self.weight_decay)
+            mom = group.get("momentum", self.momentum)
+            centered = group.get("centered", self.centered)
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                g = p.grad
+                if wd != 0:
+                    g = g + wd * p.data
+                is_torch = _is_torch_data(p.data)
+                if is_torch:
+                    _sqrt = _TORCH.sqrt
+                    _zeros_like = _TORCH.zeros_like
+                else:
+                    _sqrt = np.sqrt
+                    _zeros_like = lambda x: np.zeros_like(x, dtype=np.float32)
+                key = id(p)
+                state = self.state.get(key, None)
+                if state is None:
+                    state = {"v": _zeros_like(p.data)}
+                    if mom != 0:
+                        state["buf"] = _zeros_like(p.data)
+                    if centered:
+                        state["avg"] = _zeros_like(p.data)
+                    self.state[key] = state
+                v = state["v"]
+                v = self.alpha * v + (1.0 - self.alpha) * (g * g)
+                state["v"] = v
+                if centered:
+                    avg = state["avg"]
+                    avg = self.alpha * avg + (1.0 - self.alpha) * g
+                    state["avg"] = avg
+                    denom = _sqrt(v - avg * avg) + self.eps
+                else:
+                    denom = _sqrt(v) + self.eps
+                if mom != 0:
+                    buf = state["buf"]
+                    buf = mom * buf + g
+                    state["buf"] = buf
+                    update = self.lr * buf / denom
+                else:
+                    update = self.lr * g / denom
+                p.data = p.data - update
 
 
 # ---------------------------------------------------------------------------

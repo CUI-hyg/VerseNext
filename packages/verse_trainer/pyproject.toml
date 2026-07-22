@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "verse-trainer"
+version = "0.1.0"
+description = "VerseTrainer: 独立训练包（从 data/demo 剥离），统一预训练/微调/后训练/评估/分词 CLI。"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26",
+    "verse-torch>=0.1.0",
+    "verse-nex>=0.1.0",
+    "verse-tokenizer>=0.1.0",
+]
+
+[project.optional-dependencies]
+ui = ["tqdm>=4.66", "matplotlib>=3.7"]
+yaml = ["pyyaml>=6.0"]
+
+[project.scripts]
+verse-train = "verse_trainer.cli:train_main"
+verse-finetune = "verse_trainer.cli:finetune_main"
+verse-posttrain = "verse_trainer.cli:posttrain_main"
+verse-eval = "verse_trainer.cli:eval_main"
+verse-tokenize = "verse_trainer.cli:tokenize_main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["verse_trainer*"]

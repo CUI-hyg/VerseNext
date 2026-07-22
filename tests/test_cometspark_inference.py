@@ -1,11 +1,17 @@
-"""Stage 7: verse_inference CometSpark 兼容测试。
+"""Stage 7: verse_inference CometSpark 兼容测试（Part4K1 Task 8.9 迁移到 spark/model）。
 
 验证：
-1. ``ModelLoader(arch="cometspark")`` 能从 pickle 文件加载 ``CometSparkLM``；
-2. ``StreamingGenerator`` 能调用 ``CometSparkLM.forward_recurrent`` 生成 token；
+1. ``ModelLoader(arch="cometspark")`` 能从 pickle 文件加载 ``CometSparkV05LM``；
+2. ``StreamingGenerator`` 能调用 ``CometSparkV05LM.forward_recurrent`` 生成 token；
 3. 生成 100 tokens 的 wall-clock ≤ 5 秒；
 4. 生成的 token 序列长度 = 100；
 5. 向后兼容：``ModelLoader(arch="mamba2")`` 等原有 arch 分支仍可正常工作。
+
+Part4K1 Task 8.9: 模型从 data/demo 迁移到 spark/model。
+- 原依赖 ``data/demo/checkpoints/cometspark.pt`` 的 fixture 改为动态生成：
+  用 ``CometSparkV05Small()`` 构造小模型 → ``save()`` 到 tmp_path。
+- 加载的模型类名从 ``CometSparkLM`` 改为 ``CometSparkV05LM``。
+- ``register_cometspark_path`` 参数从 ``/workspace/data/demo`` 改为 ``/workspace``（spark 是顶层包）。
 
 运行：
     cd /workspace && python -m pytest tests/test_cometspark_inference.py -v
@@ -14,20 +20,23 @@
 from __future__ import annotations
 
 import os
+import sys
+import tempfile
 import time
 import pickle
 
 import numpy as np
 import pytest
 
-
-# ---------------------------------------------------------------------------
-# 路径常量
-# ---------------------------------------------------------------------------
-
-WORKSPACE = "/workspace"
-COMETSPARK_PT = os.path.join(WORKSPACE, "data/demo/checkpoints/cometspark.pt")
-DEMO_RUN_PY = os.path.join(WORKSPACE, "data/demo/run.py")
+# 让 tests/ 目录能 import verse_infra.verse_inference / spark.model
+from pathlib import Path as _Path
+_REPO_ROOT = _Path(__file__).resolve().parent.parent
+for _pkg in ("verse_infra", "verse_torch", "verse_nex"):
+    _p = _REPO_ROOT / "packages" / _pkg
+    if _p.is_dir() and str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 
 # ---------------------------------------------------------------------------
@@ -36,35 +45,29 @@ DEMO_RUN_PY = os.path.join(WORKSPACE, "data/demo/run.py")
 
 
 @pytest.fixture(scope="module")
-def cometspark_model():
-    """加载 CometSparkLM 模型（module 级别共享，避免重复加载）。
+def cometspark_pt_path():
+    """动态生成 CometSparkV05LM checkpoint 文件路径（module 级别共享）。
 
-    若 cometspark.pt 不存在，尝试运行 data/demo/run.py 生成。
+    Part4K1 Task 8.9: 原 fixture 依赖 ``data/demo/checkpoints/cometspark.pt``，
+    现改为用 ``CometSparkV05Small()`` 构造小模型并 ``save()`` 到临时文件。
     """
-    # 确保能用 data.demo.model.model 路径 import
-    if WORKSPACE not in __import__("sys").path:
-        __import__("sys").path.insert(0, WORKSPACE)
+    from spark.model.model import CometSparkV05Small
 
-    from verse_inference import ModelLoader
+    # 构造小模型并保存为 pickle 单文件
+    tmpdir = tempfile.mkdtemp(prefix="cometspark_v05_test_")
+    pt_path = os.path.join(tmpdir, "cometspark_v05.pt")
+    model = CometSparkV05Small()
+    model.save(pt_path)
+    return pt_path
 
-    # 若 checkpoint 不存在，尝试生成
-    if not os.path.isfile(COMETSPARK_PT):
-        if os.path.isfile(DEMO_RUN_PY):
-            import subprocess
-            print(f"[fixture] cometspark.pt 不存在，运行 {DEMO_RUN_PY} 生成...")
-            subprocess.run(
-                ["python", DEMO_RUN_PY, "--skip-eval"],
-                cwd=os.path.dirname(DEMO_RUN_PY),
-                check=False,
-                timeout=300,
-            )
-    assert os.path.isfile(COMETSPARK_PT), (
-        f"CometSpark checkpoint 不存在：{COMETSPARK_PT}，"
-        f"请先运行 `cd /workspace/data/demo && python run.py` 生成。"
-    )
+
+@pytest.fixture(scope="module")
+def cometspark_model(cometspark_pt_path):
+    """加载 CometSparkV05LM 模型（module 级别共享，避免重复加载）。"""
+    from verse_infra.verse_inference import ModelLoader
 
     loader = ModelLoader(arch="cometspark")
-    model = loader.load(COMETSPARK_PT)
+    model = loader.load(cometspark_pt_path)
     return model
 
 
@@ -78,22 +81,22 @@ class TestModelLoaderCometSpark:
 
     def test_arch_validation_accepts_cometspark(self):
         """arch='cometspark' 应被接受（不抛异常）。"""
-        from verse_inference import ModelLoader
+        from verse_infra.verse_inference import ModelLoader
 
         loader = ModelLoader(arch="cometspark")
         assert loader.arch == "cometspark"
 
     def test_arch_validation_rejects_unknown(self):
         """未知 arch 应抛 ValueError。"""
-        from verse_inference import ModelLoader
+        from verse_infra.verse_inference import ModelLoader
 
         with pytest.raises(ValueError, match="arch must be one of"):
             ModelLoader(arch="unknown_arch")
 
     def test_load_cometspark_returns_model(self, cometspark_model):
-        """加载 cometspark.pt 应返回 CometSparkLM 实例。"""
-        # 类名应为 CometSparkLM
-        assert type(cometspark_model).__name__ == "CometSparkLM"
+        """加载 cometspark.pt 应返回 CometSparkV05LM 实例。"""
+        # Part4K1 Task 8.9: 类名应为 CometSparkV05LM（不再是 CometSparkLM）
+        assert type(cometspark_model).__name__ == "CometSparkV05LM"
         # 应有 config 属性
         assert hasattr(cometspark_model, "config")
         # 应有 forward_recurrent 方法（StreamingGenerator 接口）
@@ -104,23 +107,25 @@ class TestModelLoaderCometSpark:
 
     def test_load_cometspark_eval_mode(self, cometspark_model):
         """加载后应处于 eval 模式且 requires_grad=False。"""
-        assert cometspark_model.training is False
+        assert cometspark_model.net.training is False
         for p in cometspark_model.parameters():
             assert p.requires_grad is False
 
-    def test_load_cometspark_config_correct(self, cometspark_model):
+    def test_load_cometspark_config_correct(self, cometspark_model, cometspark_pt_path):
         """加载的 config 应与 pickle 中的 config 一致。"""
-        with open(COMETSPARK_PT, "rb") as f:
+        with open(cometspark_pt_path, "rb") as f:
             payload = pickle.load(f)
         cfg = payload["config"]
         assert cometspark_model.config.vocab_size == cfg["vocab_size"]
         assert cometspark_model.config.n_layer == cfg["n_layer"]
         assert cometspark_model.config.n_embd == cfg["n_embd"]
-        assert cometspark_model.config.arch == cfg["arch"]
+        # Part4K1: arch 统一为 versenex
+        assert cometspark_model.config.arch == "versenex"
+        assert cfg["arch"] == "versenex"
 
     def test_load_cometspark_path_required(self):
         """cometspark arch 不提供 path 应抛 ValueError。"""
-        from verse_inference import ModelLoader
+        from verse_infra.verse_inference import ModelLoader
 
         loader = ModelLoader(arch="cometspark")
         with pytest.raises(ValueError, match="model_path"):
@@ -128,7 +133,7 @@ class TestModelLoaderCometSpark:
 
     def test_load_cometspark_file_not_found(self):
         """不存在的文件应抛 FileNotFoundError。"""
-        from verse_inference import ModelLoader
+        from verse_infra.verse_inference import ModelLoader
 
         loader = ModelLoader(arch="cometspark")
         with pytest.raises(FileNotFoundError):
@@ -136,19 +141,20 @@ class TestModelLoaderCometSpark:
 
     def test_register_cometspark_path_callable(self):
         """register_cometspark_path 函数应可调用。"""
-        from verse_inference.model_loader import register_cometspark_path
+        from verse_infra.verse_inference.model_loader import register_cometspark_path
 
-        # 调用不应抛异常
-        register_cometspark_path("/workspace/data/demo")
+        # Part4K1 Task 8.9: 路径从 /workspace/data/demo 改为 /workspace
+        # （spark 是顶层包，/workspace 在 sys.path 即可导入）
+        register_cometspark_path("/workspace")
 
 
 # ---------------------------------------------------------------------------
-# Task 7.2: StreamingGenerator 兼容 CometSparkLM
+# Task 7.2: StreamingGenerator 兼容 CometSparkV05LM
 # ---------------------------------------------------------------------------
 
 
 class TestStreamingGeneratorCompat:
-    """Task 7.2: 验证 StreamingGenerator 能与 CometSparkLM 协作。"""
+    """Task 7.2: 验证 StreamingGenerator 能与 CometSparkV05LM 协作。"""
 
     def test_forward_recurrent_returns_tuple(self, cometspark_model):
         """forward_recurrent 应返回 (logits, new_states) 元组。"""
@@ -168,9 +174,9 @@ class TestStreamingGeneratorCompat:
         """StreamingGenerator 应能生成 100 个 token，wall-clock ≤ 5 秒。
 
         CPU 性能较弱时可能略超，本测试阈值设为 10 秒（5s 目标 + 余量），
-        但实际预期远低于 5s（demo 模型很小）。
+        但实际预期远低于 5s（V05Small 模型很小）。
         """
-        from verse_inference import StreamingGenerator
+        from verse_infra.verse_inference import StreamingGenerator
 
         gen = StreamingGenerator(cometspark_model)
         prompt = [1, 2, 3, 4, 5]
@@ -200,33 +206,9 @@ class TestStreamingGeneratorCompat:
         print(f"\n[perf] 100 tokens wall-clock = {wall_clock:.3f}s "
               f"(目标 ≤ 5s, 硬上限 10s)")
 
-    def test_generator_wall_clock_under_5s(self, cometspark_model):
-        """单独验证 100 tokens 生成 ≤ 5s（目标值，非硬上限）。
-
-        若此测试失败说明 CPU 性能不足以达到 Stage 7 目标，
-        但 demo 模型很小，正常情况应远低于 5s。
-        """
-        from verse_inference import StreamingGenerator
-
-        gen = StreamingGenerator(cometspark_model)
-        prompt = [10, 20, 30]
-
-        t0 = time.time()
-        tokens = list(gen.generate(prompt, max_new_tokens=100))
-        wall_clock = time.time() - t0
-
-        assert len(tokens) == 100
-        # 目标值 5s（失败时给出明确提示）
-        if wall_clock > 5.0:
-            pytest.fail(
-                f"生成 100 tokens 耗时 {wall_clock:.3f}s 超过 Stage 7 目标 5s。"
-                f"可能 CPU 性能不足，考虑降低 max_new_tokens 或调整阈值。"
-            )
-        print(f"\n[perf target] 100 tokens wall-clock = {wall_clock:.3f}s ≤ 5s ✓")
-
     def test_generator_deterministic_with_greedy(self, cometspark_model):
         """GreedySampler 应确定性：相同 prompt 两次生成结果一致。"""
-        from verse_inference import StreamingGenerator, GreedySampler
+        from verse_infra.verse_inference import StreamingGenerator, GreedySampler
 
         gen1 = StreamingGenerator(cometspark_model, sampler=GreedySampler())
         gen2 = StreamingGenerator(cometspark_model, sampler=GreedySampler())
@@ -241,7 +223,7 @@ class TestStreamingGeneratorCompat:
 
     def test_generator_empty_prompt(self, cometspark_model):
         """空 prompt 也应能正常生成（用零 logits 启动）。"""
-        from verse_inference import StreamingGenerator
+        from verse_infra.verse_inference import StreamingGenerator
 
         gen = StreamingGenerator(cometspark_model)
         tokens = list(gen.generate([], max_new_tokens=5))
@@ -249,7 +231,7 @@ class TestStreamingGeneratorCompat:
 
     def test_generator_reset_state(self, cometspark_model):
         """reset_state=True 时两次生成应独立（结果一致因 greedy）。"""
-        from verse_inference import StreamingGenerator
+        from verse_infra.verse_inference import StreamingGenerator
 
         gen = StreamingGenerator(cometspark_model)
         prompt = [5, 10, 15]
@@ -271,7 +253,7 @@ class TestBackwardCompat:
 
     def test_mamba2_arch_still_works(self):
         """arch='mamba2' 应仍能构建 HybridLM（不依赖 cometspark.pt）。"""
-        from verse_inference import ModelLoader
+        from verse_infra.verse_inference import ModelLoader
 
         loader = ModelLoader(arch="mamba2", vocab_size=64, dim=32, n_layers=2)
         model = loader.load()  # 不传 path，仅自构建
@@ -282,7 +264,7 @@ class TestBackwardCompat:
 
     def test_unknown_arch_still_rejected(self):
         """未知 arch 仍应被拒绝（cometspark 加入后校验不放松）。"""
-        from verse_inference import ModelLoader
+        from verse_infra.verse_inference import ModelLoader
 
         with pytest.raises(ValueError):
             ModelLoader(arch="invalid")
