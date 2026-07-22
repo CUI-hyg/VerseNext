@@ -29,15 +29,18 @@ VerseNext 的目标是用 **线性复杂度架构（SSM / Mamba / RWKV / Linear 
 
 ### VerseTrainer（训练 CLI）
 
-`verse_trainer` 提供 5 个 CLI 入口（注册为 console_scripts）：
+`verse_trainer` 提供 8 个 CLI 入口（注册为 console_scripts，`verse-continue` 通过统一分发入口 `python -m verse_infra.verse_trainer.cli verse-continue` 调用）：
 
 | 命令 | 用途 |
 |---|---|
-| `verse-train` | 预训练（支持 `--device cpu/cuda/npu`、`--parallel-chunks N`、`--single-sample`、`--resume`、`--amp`、`--loss-optimizer`） |
+| `verse-train` | 预训练（支持 `--device cpu/cuda/npu`、`--parallel-chunks N`、`--single-sample`、`--resume`、`--amp`、`--loss-optimizer`、`--partition-training`、`--quiet/--verbose`、`--parallel-strategy round_robin`） |
+| `verse-continue` | **持续训练（Part4K2 新增）**：从 checkpoint 加载继续追加训练（`--checkpoint` / `--additional-steps`） |
 | `verse-finetune` | 微调（`--method lora` / `--method full`） |
 | `verse-posttrain` | 后训练（`--rl nexrl` / `--rl sft` / `--rl dpo`） |
-| `verse-eval` | 评估 + 打分（`--score --references-file`） |
+| `verse-eval` | 评估 + 打分（`--score --references-file`，`--max-tokens` 默认 None=EOS 自然停止） |
 | `verse-tokenize` | tokenizer 训练 / 加载 / 转换（`--from-hf Qwen/Qwen3.5-35B-A3B`） |
+| `verse-download` | **数据集下载器（Part4K2 新增）**：任意 URL + HuggingFace datasets，断点续传 + 多线程 + 自动转 .npz（`--url` / `--hf` / `--to-npz`） |
+| `verse-convert` | **模型格式转换（Part4K2 新增）**：`.pt ↔ .vn` 互转（`--input` / `--output` / `--chat-template` / `--tokenizer`） |
 
 ### NexRL（RL 算法）
 
@@ -61,6 +64,48 @@ VerseNext 的目标是用 **线性复杂度架构（SSM / Mamba / RWKV / Linear 
 - **解决胡乱输出**：embedding scale + tie_weights + temperature scaling + 合理初始化
 - **训练/推理 CLI**：`verse-train --config spark/config/cometspark_v05.yml`，详见 [spark/README.md](spark/README.md)
 
+### spark/run.py 快捷入口（Part4K2.5 新增）
+
+`spark/run.py` 是基于 VerseTrainer API 封装的命令行快捷入口，提供 7 个子命令，**所有命令都有合理默认值，最小化用户配置**。无需安装即可直接 `python spark/run.py <子命令>` 运行，路径自举由 `spark/_bootstrap.py` 统一完成。
+
+| 子命令 | 用途 | 关键参数 |
+|---|---|---|
+| `train` | 训练模型（训练后默认自动评估） | `--small`（小配置快速调试）/ `--config` / `--max-steps` / `--device cpu\|cuda\|npu` / `--amp` / `--resume` / `--eval-after` / `--no-eval` / `--dry-run` / `--quiet` / `--verbose` |
+| `eval` | 评估 + 打分 | `--checkpoint` / `--max-tokens`（默认不限，EOS 自然停止）/ `--temperature` / `--score` / `--references-file` |
+| `generate` | 生成文本 | `--checkpoint` / `--prompt` / `--max-tokens` / `--temperature` / `--top-k` |
+| `chat` | 交互式聊天（支持 `/quit` / `/clear` / `/save`） | `--checkpoint` / `--max-tokens`（默认 512）/ `--temperature` |
+| `compress` | 压缩模型（prune/quantize/lora/ternary 组合） | `--checkpoint` / `--method prune,quantize` / `--sparsity` / `--qtype` / `--lora-r` / `--output` |
+| `convert` | 模型格式互转（`.pt ↔ .vn`） | `--input` / `--output` / `--chat-template` / `--tokenizer` / `--arch` |
+| `download` | 下载数据集（URL + HuggingFace + 自动转 .npz） | `--url` / `--hf` / `--split` / `--to-npz` / `-o` / `--workers` / `--no-resume` |
+
+```bash
+# 快速训练（小配置，约 10 秒完成）
+python spark/run.py train --small
+
+# 1B 正式训练 + 训练后自动评估（默认开启）
+python spark/run.py train
+
+# 跳过训练后自动评估
+python spark/run.py train --no-eval
+
+# 生成文本
+python spark/run.py generate --prompt "你好世界"
+
+# 交互式聊天
+python spark/run.py chat --checkpoint checkpoints/best.pt
+
+# 压缩模型（剪枝 + 量化）
+python spark/run.py compress --checkpoint checkpoints/best.pt --method prune,quantize
+
+# 模型格式互转
+python spark/run.py convert --input checkpoints/best.pt --output model.vn
+
+# 下载数据集
+python spark/run.py download --url https://example.com/data.jsonl --to-npz -o data/cached.npz
+```
+
+> **提示**：所有子命令均支持 `--dry-run` 只打印将要执行的操作而不真正执行，便于在正式运行前核对参数。`spark/run.py` 与 VerseTrainer CLI（`verse-train` 等）功能等价，区别在于前者零安装可用、子命令更精简、默认值更友好。
+
 ### GPU/NPU 支持（DeviceBackend）
 
 `verse_torch.device.DeviceBackend` 提供设备后端抽象：
@@ -73,6 +118,141 @@ VerseNext 的目标是用 **线性复杂度架构（SSM / Mamba / RWKV / Linear 
 - 无 PyTorch 环境下 `Tensor.cuda()` 抛 `RuntimeError`，CPU 路径完全不变
 
 详见 [ADR-005 GPU/NPU 后端抽象](docs/architecture/adr-005-gpu-npu-backend.md)。
+
+### .vn 文件格式（Part4K2 新增）
+
+`verse_torch.vn_format` 定义基于 **safetensors 性能优化**的模型容器格式 `.vn`，取代传统 pickle `.pt`：
+
+- **ZIP 容器**：内含 `model.safetensors`（或降级 `model.npz`）+ `config.yml` + `chat_template.jinja`（可选）+ `tokenizer.json`（可选）+ `meta.json`
+- **mmap 零拷贝**：safetensors 可用时通过 `safe_open` 零拷贝读取权重；npz 路径落盘懒加载
+- **无损互转**：`pt_to_vn` / `vn_to_pt` / `convert_format`，权重数值完全一致
+- **自描述**：`meta.json` 记录 `vn_format_version` / `arch` / `weight_format` / `compression_info` / `created_at`
+- **安全性**：npz 路径强制 `allow_pickle=False`，safetensors 本身 pickle-free
+- **CLI**：`verse-convert --input model.pt --output model.vn`（详见 [ADR-009](docs/architecture/adr-009-vn-format.md)）
+
+```python
+from verse_torch import VNFileReader, VNFileWriter
+
+# 写入
+with VNFileWriter("model.vn", arch="versenex", config=cfg_dict) as w:
+    w.write_weights(model.state_dict())
+    w.write_chat_template(template_str)   # 可选
+    w.write_tokenizer("tokenizer.json")   # 可选
+
+# 读取（mmap 零拷贝）
+with VNFileReader("model.vn") as r:
+    meta = r.read_meta()
+    cfg = r.read_config()
+    sd = r.read_weights(mmap=True)
+```
+
+### jinja2 聊天模板（Part4K2 新增）
+
+`verse_tokenizer.chat_template` 升级为 **Qwen3 ChatML 风格**，jinja2 为可选依赖（不可用时降级为 f-string，输出完全等价）：
+
+- **ChatML 模板**：`<|im_start|>{role}\n{content}<|im_end|>\n` 循环拼接 + `add_generation_prompt`
+- **工具调用**：Qwen3 官方 `<tool_call>{"name":...,"arguments":...}</tool_call>` 格式，含 `tools` 声明 system 段 + assistant tool_calls + tool 角色返回
+- **模板常量**：`CHATML_TEMPLATE` / `CHATML_TEMPLATE_WITH_TOOLS` / `CHATML_TEMPLATE_WITH_TOOL_CALLS`
+- **解析**：`extract_tool_calls_qwen3` 从生成文本提取工具调用（与渲染互逆）
+- **tokenizer.json 内嵌**：`chat_template.jinja` 可内嵌到 tokenizer.json
+- **apply_chat_template 升级**：支持 `tools` 参数 + `add_generation_prompt`（详见 [ADR-010](docs/architecture/adr-010-jinja2-chat-template.md)）
+
+```python
+from verse_infra.verse_tokenizer import (
+    render_chat_qwen, render_chat_qwen_with_tools, extract_tool_calls_qwen3,
+)
+
+# 基础 ChatML
+text = render_chat_qwen([{"role": "user", "content": "你好"}], add_generation_prompt=True)
+
+# 工具调用
+out = render_chat_qwen_with_tools(
+    messages=[{"role": "user", "content": "北京天气"},
+              {"role": "assistant", "content": "",
+               "tool_calls": [{"name": "get_weather", "arguments": {"city": "北京"}}]}],
+    tools=[{"type": "function", "function": {"name": "get_weather", "parameters": {...}}}],
+)
+calls = extract_tool_calls_qwen3(generated_text)  # 解析模型生成的工具调用
+```
+
+### 智能分区训练（LayerWiseTrainer，Part4K2 新增）
+
+`verse_torch.layerwise_trainer.LayerWiseTrainer` 把模型按 layer 分组训练，训完一组卸载到硬盘 `.vn` 分片，**保持统一实体**（对外表现为完整模型训练）：
+
+- **按 layer 拆分**：transformer blocks 按 `partition_size` 分组，embedding/lm_head 始终在内存
+- **.vn 分片卸载**：训完一组用 `VNFileWriter` 写到 `partition_{idx}.vn`，内存超阈值时自动卸载已训练的非当前组
+- **统一实体**：训练过程中模型对象不变，参数在内存/硬盘间备份；对外接口与普通 `Trainer` 一致
+- **内存监控**：调用 `get_memory_info`，超过 `memory_threshold_mb` 自动触发卸载
+- **合并 + fine-tune**：全部组训练完成后合并所有分片为完整模型，可选整体 fine-tune
+- **CLI**：`verse-train --partition-training --partition-size N --offload-dir DIR`（详见 [ADR-011](docs/architecture/adr-011-layerwise-training.md)）
+
+```python
+from verse_torch import LayerWiseTrainer
+
+trainer = LayerWiseTrainer(
+    model, config={"lr": 1e-3, "finetune_steps": 20},
+    partition_size=2, memory_threshold_mb=512,
+)
+train_losses, val_losses = trainer.fit(train_loader, val_loader, max_steps=1000)
+```
+
+### 压缩技术 V1.3（以小博大，Part4K2 新增）
+
+`verse_torch.compress` 推出 V1.3 压缩流水线，组合 **剪枝 + 量化 + 知识蒸馏 + LoRA** 实现大模型→小模型能力转移：
+
+- **KnowledgeDistiller V1.3**：三重损失（软标签 KL + 硬标签 CE + 中间层特征 MSE）+ 自适应温度退火
+- **compress_pipeline V1.3**：流程重排为 `prune → quantize → distill → lora`，吞吐率优化（fused matmul + batch 量化）
+- **VerseNex 集成**：`CometSparkNexLM.compress_v13()` / `distill_from(teacher, train_data)`
+- **压缩报告**：`compression_report(model, compressed)` 返回参数量/压缩比/吞吐率提升估算
+- **teacher 便捷入口**：`config` 顶层可直接放 `teacher_model` / `train_loader`（详见 [ADR-012](docs/architecture/adr-012-compression-v13.md)）
+
+```python
+from verse_torch.compress import compress_pipeline, compression_report
+
+config = {
+    "prune":    {"sparsity": 0.3},
+    "quantize": {"bits": 4},
+    "distill":  {"teacher": teacher_model, "epochs": 3, "lr": 1e-3, "temperature": 4.0},
+    "lora":     {"rank": 8, "alpha": 16},
+}
+compressed, stats = compress_pipeline(model, config, version="1.3", return_stats=True)
+print(compression_report(model, compressed))
+```
+
+### 数据集下载器（Part4K2 新增）
+
+`data/downloader.py` 的 `DatasetDownloader`（经 `verse_infra` 顶层导出）支持任意 URL + HuggingFace datasets 下载，自动转 `.npz` 缓存：
+
+- **任意 URL**：`download_url` 支持 HTTP/HTTPS，大文件（≥10MB）自动多线程分块下载
+- **断点续传**：基于已下载字节数 + `Range` header，从中断点继续
+- **HuggingFace**：`download_hf` 调用 `datasets` 库（可选依赖，缺失时提示安装）
+- **自动转 .npz**：`.json` / `.jsonl` / `.csv` / `.txt` / `.parquet` → `.npz`（含 `ids` / `mask` / `seq_len`，与 `CachedDataset` 对齐）
+- **一站式**：`download_and_cache(url_or_repo)` 自动判断 URL/HF + 转 npz
+- **CLI**：`verse-download --url ... --to-npz` / `verse-download --hf wikitext --split train`
+
+```python
+from verse_infra import DatasetDownloader
+
+dl = DatasetDownloader(cache_dir="data/datasets", num_workers=4)
+npz_path = dl.download_and_cache("https://example.com/data.jsonl",
+                                  output_path="data/datasets/cached.npz")
+# 或从 HuggingFace
+dir_ = dl.download_hf("wikitext", subset="wikitext-2-raw-v1", split="train")
+```
+
+### 持续训练 verse-continue（Part4K2 新增）
+
+`verse-continue` 在训练完成后从 checkpoint 继续追加训练（与 `--resume` 的"中断恢复"语义不同）：
+
+- 自动继承之前的 `best_val_loss`（不从头比较）
+- 支持 `--device cuda --amp` GPU 加速
+- 通过统一分发入口调用：`python -m verse_infra.verse_trainer.cli verse-continue ...`
+
+```bash
+python -m verse_infra.verse_trainer.cli verse-continue \
+    --checkpoint checkpoints/best.pt --additional-steps 1000 \
+    --config spark/config/cometspark_v05.yml --device cuda --amp
+```
 
 ## 安装
 
@@ -93,10 +273,12 @@ uv sync
 
 # 3) 可选运行时依赖（按需安装）
 pip install "verse-nex[speed]"  # 安装 numba 加速 selective scan（推荐）
-pip install "safetensors>=0.4"   # 加载 .safetensors 权重
+pip install "safetensors>=0.4"   # 加载 .safetensors 权重 + .vn 格式 mmap 零拷贝
+pip install "jinja2>=3.0"        # ChatML 聊天模板渲染（不可用时降级为 f-string）
 pip install "fastapi>=0.110"     # OpenAI 兼容 HTTP server
 pip install "torch>=2.2"         # GPU/NPU 后端（CUDA kernel + autocast）
 pip install "torch_npu>=2.2"     # 华为 NPU 后端（昇腾设备）
+pip install "datasets>=2.18"     # verse-download --hf 下载 HuggingFace datasets
 ```
 
 > **numba 加速说明**：`verse-nex[speed]` 会安装 `numba>=0.60`，对 Mamba-2 / Hybrid 的 selective scan 递推循环做 JIT 编译，recurrent 模式生成吞吐量提升约 1.8× ~ 3.2×。numba 是可选依赖——不安装也能运行，只是 `@njit` 装饰器退化为 no-op。详见 [性能调优指南](docs/performance_tuning.md)。
@@ -138,11 +320,20 @@ from verse_nex.nexrl import NexAgent, NexTrainer, NexReward
 
 # 5. CometSpark：1B 模型工厂
 from spark.model.model import CometSparkV05, CometSparkV05Small
+
+# 6. Part4K2 新增：.vn 格式 + 智能分区训练
+from verse_torch import VNFileReader, VNFileWriter, LayerWiseTrainer
+
+# 7. Part4K2 新增：数据集下载器（经 verse_infra 顶层导出）
+from verse_infra import DatasetDownloader
 ```
 
 ### 一键训练 CometSpark V0.5-1B
 
 ```bash
+# 最快验证：spark/run.py 快捷入口（小配置，约 10 秒完成，零安装可用）
+python spark/run.py train --small
+
 # CPU 预训练（小配置，快速验证）
 verse-train --config spark/config/cometspark_v05_small.yml --device cpu --max-steps 10
 
@@ -161,6 +352,28 @@ verse-train --config spark/config/cometspark_v05.yml --resume
 verse-posttrain --config spark/config/cometspark_v05.yml --rl nexrl
 verse-posttrain --config spark/config/cometspark_v05.yml --rl sft
 verse-posttrain --config spark/config/cometspark_v05.yml --rl dpo
+```
+
+### Part4K2 新增命令快速开始
+
+```bash
+# 模型格式互转：.pt → .vn（safetensors 性能优化版，可附加 chat_template / tokenizer）
+verse-convert --input checkpoints/best.pt --output model.vn \
+    --chat-template chat_template.jinja --tokenizer tokenizer.json --arch versenex
+verse-convert --input model.vn --output model.pt   # .vn → .pt 无损回转
+
+# 数据集下载：任意 URL（多线程 + 断点续传 + 自动转 .npz）
+verse-download --url https://example.com/data.jsonl --to-npz -o data/cached.npz
+verse-download --hf wikitext --split train          # HuggingFace datasets
+
+# 智能分区训练（按 layer 分组训练 + .vn 分片卸载，低内存跑大模型）
+verse-train --config spark/config/cometspark_v05.yml \
+    --partition-training --partition-size 2 --max-steps 1000
+
+# 持续训练（从 checkpoint 继续追加训练）
+python -m verse_infra.verse_trainer.cli verse-continue \
+    --checkpoint checkpoints/best.pt --additional-steps 1000 \
+    --config spark/config/cometspark_v05.yml --device cuda --amp
 ```
 
 更多示例见 [`examples/`](examples/)：
@@ -185,6 +398,10 @@ verse-posttrain --config spark/config/cometspark_v05.yml --rl dpo
 | GPU/NPU 后端 | `DeviceBackend` 抽象（PyTorch 委托 + NumpyBackend 回退） | CUDA kernel 走 PyTorch 原生实现；NPU 走 `torch_npu`；详见 [ADR-005](docs/architecture/adr-005-gpu-npu-backend.md) |
 | 后训练路线 | **NexRL**（PPO + GAE + KL 自适应）+ SFT + DPO | 五要素抽象 + 并行 rollout；详见 [ADR-007](docs/architecture/adr-007-nexrl-design.md) |
 | 加速路线 | **超稀疏并行注意力 + Speculative Decoding** | 多 chunk 并行 + verify-then-commit；详见 [ADR-008](docs/architecture/adr-008-parallel-sparse-attention.md) |
+| 模型交付格式 | **.vn**（ZIP 容器 + safetensors + 自描述 meta） | mmap 零拷贝 + pickle-free 安全 + config/template/tokenizer 内嵌；详见 [ADR-009](docs/architecture/adr-009-vn-format.md) |
+| 聊天模板 | **ChatML + jinja2 可选依赖**（缺失降级 f-string） | 与 Qwen3 工具调用格式对齐 + tokenizer.json 内嵌；详见 [ADR-010](docs/architecture/adr-010-jinja2-chat-template.md) |
+| 大模型低内存训练 | **LayerWiseTrainer 智能分区训练**（按 layer 分组 + .vn 分片卸载） | 内存超阈值自动卸载 + 统一实体 + 合并 fine-tune；详见 [ADR-011](docs/architecture/adr-011-layerwise-training.md) |
+| 大→小模型能力转移 | **压缩 V1.3**（prune → quantize → distill → lora） | 三重损失知识蒸馏 + 温度退火 + 吞吐率优化；详见 [ADR-012](docs/architecture/adr-012-compression-v13.md) |
 
 详细架构决策记录见 [`docs/architecture/`](docs/architecture/)。
 
@@ -202,14 +419,14 @@ verse-posttrain --config spark/config/cometspark_v05.yml --rl dpo
 
 | 包 | 文档 | 定位 |
 |---|---|---|
-| VerseTorch | [README](packages/verse_torch/README.md) | 张量 / autograd / nn / optim / losses / training / quantize / parallel / compress / **DeviceBackend（GPU/NPU）** |
-| VerseNex | [README](packages/verse_nex/README.md) | Mamba-2 / RWKV-7 / RetNet / Sparse Attention / Hybrid / **TriSparseAttention** / **MoDLayer** / **VerseNexLM** / **NexRL** |
+| VerseTorch | [README](packages/verse_torch/README.md) | 张量 / autograd / nn / optim / losses / training / quantize / parallel / compress / DeviceBackend（GPU/NPU）/ **.vn 格式（Part4K2）** / **LayerWiseTrainer（Part4K2）** / **compress V1.3（Part4K2）** |
+| VerseNex | [README](packages/verse_nex/README.md) | Mamba-2 / RWKV-7 / RetNet / Sparse Attention / Hybrid / TriSparseAttention / MoDLayer / VerseNexLM / NexRL / **compress_v13 / distill_from（Part4K2）** |
 | VerseAWM | [README](packages/verse_awm/README.md) | I-JEPA / V-JEPA / H-JEPA / RSSM 世界模型 |
-| VerseInfra | [README](packages/verse_infra/README.md) | 总包结构 / 导入路径迁移指南 / shim 兼容（**Part4K1 新增**） |
-| ├ verse_tokenizer | [README](packages/verse_infra/verse_infra/verse_tokenizer/README.md) | BPE / Unigram / WordPiece / Qwen tokenizer / NexTokenizerWrapper |
+| VerseInfra | [README](packages/verse_infra/README.md) | 总包结构 / 导入路径迁移指南 / shim 兼容（Part4K1）/ **DatasetDownloader（Part4K2）** |
+| ├ verse_tokenizer | [README](packages/verse_infra/verse_infra/verse_tokenizer/README.md) | BPE / Unigram / WordPiece / Qwen tokenizer / NexTokenizerWrapper / **ChatML jinja2 模板（Part4K2）** |
 | ├ verse_inference | [README](packages/verse_infra/verse_infra/verse_inference/README.md) | 模型加载 / 状态缓存 / 流式生成 / HTTP server |
 | └ verse_compat | [README](packages/verse_infra/verse_infra/verse_compat/README.md) | HuggingFace / PyTorch 兼容层 |
-| CometSpark | [README](spark/README.md) | CometSpark V0.5-1B 模型说明 + 配置 + 训练 CLI（**Part4K1 新增**） |
+| CometSpark | [README](spark/README.md) | CometSpark V0.5-1B 模型说明 + 配置 + 训练 CLI（Part4K1）/ **持续训练 verse-continue（Part4K2）** |
 
 ### 设计文档
 
@@ -236,6 +453,10 @@ verse-posttrain --config spark/config/cometspark_v05.yml --rl dpo
 - [ADR-006 VerseInfra 总包聚合](docs/architecture/adr-006-verse-infra-aggregation.md)（**Part4K1 新增**）
 - [ADR-007 NexRL 设计](docs/architecture/adr-007-nexrl-design.md)（**Part4K1 新增**）
 - [ADR-008 超稀疏并行注意力](docs/architecture/adr-008-parallel-sparse-attention.md)（**Part4K1 新增**）
+- [ADR-009 .vn 文件格式](docs/architecture/adr-009-vn-format.md)（**Part4K2 新增**）
+- [ADR-010 jinja2 聊天模板](docs/architecture/adr-010-jinja2-chat-template.md)（**Part4K2 新增**）
+- [ADR-011 智能分区训练](docs/architecture/adr-011-layerwise-training.md)（**Part4K2 新增**）
+- [ADR-012 压缩技术 V1.3](docs/architecture/adr-012-compression-v13.md)（**Part4K2 新增**）
 
 ### Part4K1 重大升级摘要
 
@@ -252,6 +473,30 @@ Part4K1 在 Part4 基础上完成 8 大升级，正式推出 **VerseInfra 总包
 - **删除 `data/demo/`**：训练能力迁入 VerseTrainer，模型能力迁入 spark/，data/demo/ 整个目录删除。
 - 全量测试 786 passed。
 
+### Part4K2 重大升级摘要
+
+Part4K2 在 Part4K1 基础上完成 8 大升级，重点解决 **模型交付格式标准化 / 聊天模板工程化 / 大模型低内存训练 / 大模型→小模型能力转移 / 数据集工程化 / 持续训练闭环** 六大方向：
+
+- **.vn 文件格式（Task 1）**：`verse_torch.vn_format` 定义基于 safetensors 的 ZIP 容器格式 `.vn`（model.safetensors + config.yml + chat_template.jinja + tokenizer.json + meta.json），mmap 零拷贝读取 + pickle-free 安全性；`VNFileReader` / `VNFileWriter` / `pt_to_vn` / `vn_to_pt` / `convert_format`；CLI `verse-convert` 实现 .pt ↔ .vn 无损互转（safetensors 不可用时自动降级 npz）。
+- **jinja2 聊天模板（Task 2）**：`verse_tokenizer.chat_template` 升级为 ChatML Qwen3 风格，jinja2 为可选依赖（缺失时降级 f-string，输出完全等价）；`CHATML_TEMPLATE` / `CHATML_TEMPLATE_WITH_TOOLS` / `CHATML_TEMPLATE_WITH_TOOL_CALLS` 三个模板常量；`render_chat_qwen` / `render_chat_qwen_with_tools` / `extract_tool_calls_qwen3`；支持 Qwen3 工具调用 `<tool_call>...</tool_call>` 格式 + tokenizer.json 内嵌 chat_template.jinja。
+- **生成输出优化（Task 3）**：`evaluate.py` `max_new_tokens` 默认 None（EOS 自然停止），避免截断有效内容；`stop_strings` 支持字符串停止条件；生成日志打印优化。
+- **智能分区训练（Task 4）**：`verse_torch.layerwise_trainer.LayerWiseTrainer` 按 layer 分组训练，训完一组卸载到 `partition_{idx}.vn` 分片，内存超阈值（默认 512MB）自动卸载已训练的非当前组；对外保持统一实体（模型对象不变）；合并后可选整体 fine-tune；CLI `verse-train --partition-training --partition-size N`。
+- **资源利用优化（Task 5）**：`verse_torch.device` 完善 `empty_cache` / `get_memory_info` / `memory_usage` / `set_num_threads` / `get_num_threads` / `auto_tune_threads`；`backend_torch.py` autocast 支持 NPU；`VerseNexBlock` 激活检查点开关 `use_checkpoint`（GPU 大模型训练节省显存，CPU 自动降级）。
+- **压缩技术 V1.3（Task 6）**：`KnowledgeDistiller` V1.3 三重损失（软标签 KL + 硬标签 CE + 中间层特征 MSE）+ 自适应温度退火；`compress_pipeline` V1.3 流程重排为 `prune → quantize → distill → lora` + 吞吐率优化（fused matmul + batch 量化）；`CometSparkNexLM.compress_v13()` / `distill_from(teacher, train_data)`；`compression_report` 返回参数量/压缩比/吞吐率提升估算。
+- **VerseTrainer 优化（Task 7）**：CLI 新增 `verse-convert` / `verse-download` / `verse-continue`（统一分发入口 `python -m verse_infra.verse_trainer.cli verse-continue`）三个子命令；`continue_train()` 通过 `train(continue_from=checkpoint)` 实现持续训练；`--partition-training` 智能分区训练开关。
+- **数据集下载器（Task 8）**：`data/downloader.py` 的 `DatasetDownloader`（经 `verse_infra` 顶层 `__getattr__` 懒加载导出）支持任意 URL + HuggingFace datasets 下载，断点续传 + 多线程（≥10MB 自动分块）+ 自动转 .npz（json/jsonl/csv/txt/parquet → npz，含 ids/mask/seq_len）；CLI `verse-download --url/--hf --to-npz`。
+
+### Part4K2.5 重大升级摘要
+
+Part4K2.5 在 Part4K2 基础上完成 6 项紧急优化，重点解决 **易用性 / 包导入稳定性 / 训练可视化正确性 / 训练后验证闭环 / 并行训练健壮性** 五个方向：
+
+- **spark/run.py CLI 快捷方式（Task 1）**：基于 VerseTrainer API 封装的 7 子命令入口（train/eval/generate/chat/compress/convert/download），所有命令有合理默认值，零安装可用 `python spark/run.py <子命令>`；统一 `--dry-run` 预览参数。
+- **包导入修复（Task 2）**：新增 `spark/_bootstrap.py` 统一路径引导模块（基于 `__file__` 推断，幂等注入 sys.path），简化 6 处重复的 `sys.path.insert` 路径自举为单次 `import spark._bootstrap`；删除孤儿 `.pyc` 缓存。
+- **loss 图表修复（Task 3）**：`plot_loss_curve` x 轴对齐修复（按 `eval_interval` 步长取点，避免偏移）；ASCII 降级模式正确显示 val 线；`visualize` 统计增强。
+- **训练后自动评估（Task 4）**：`train()` 新增 `eval_after` 参数（默认 `True`），训练完成后调用 `_auto_evaluate` 对 best checkpoint 做 5 指标打分（exact_match / prefix_accuracy / char_f1 / bleu / rouge_l），结果写入返回 dict 的 `eval_result` 字段；`spark/run.py train --no-eval` 可跳过。
+- **小错误修复 + 性能优化（Task 5）**：见 [性能调优指南](docs/performance_tuning.md) 的 Part4K2.5 优化清单。
+- **并行训练修复（Task 6）**：`ParallelTrainer` chunk 间状态重置（每个 chunk 创建独立优化器，避免状态泄漏）；`round_robin` 数据分配策略使 chunk 间数据均匀不重复；Phase 2 重训在 `chunk_steps < 4` 时跳过（避免步数为 0 崩溃）；非 tty 环境 tqdm 自动降级为简洁打印（CI / 重定向场景不再输出 `\r` 垃圾字符）。
+
 ### 第二次进化 / Part3K2 / Part4 摘要
 
 详见 [审计报告](audit_report.md) 与 [Part4 升级报告](docs/part4_upgrade_report.md)。
@@ -262,23 +507,31 @@ Part4K1 在 Part4 基础上完成 8 大升级，正式推出 **VerseInfra 总包
 /workspace/
 ├── packages/
 │   ├── verse_torch/        # 张量与 autograd 引擎（含 device.py / backend_torch.py GPU/NPU 后端）
+│   │   └── verse_torch/
+│   │       ├── vn_format.py        # .vn 文件格式（VNFileReader/Writer，Part4K2）
+│   │       ├── layerwise_trainer.py # 智能分区训练（LayerWiseTrainer，Part4K2）
+│   │       └── compress.py         # 压缩管线 V1.3（prune→quantize→distill→lora，Part4K2）
 │   ├── verse_nex/          # 线性复杂度架构库 + VerseNex 原生架构 + NexRL
 │   │   └── verse_nex/
 │   │       └── nexrl/      # NexRL 强化学习包（Part4K1）
 │   ├── verse_awm/          # 世界模型包
 │   └── verse_infra/        # 总包：聚合 verse_tokenizer/verse_compat/verse_inference/verse_trainer
 │       └── verse_infra/
-│           ├── verse_tokenizer/  # BPE/Unigram/WordPiece 分词器
+│           ├── verse_tokenizer/  # BPE/Unigram/WordPiece 分词器 + ChatML jinja2 模板（Part4K2）
 │           ├── verse_compat/     # HF/PyTorch 兼容层
 │           ├── verse_inference/  # 推理引擎
-│           └── verse_trainer/    # 训练 CLI（verse-train/finetune/posttrain/eval/tokenize）
+│           └── verse_trainer/    # 训练 CLI（verse-train/finetune/posttrain/eval/tokenize/convert/download/continue）
+├── data/
+│   └── downloader.py       # DatasetDownloader（任意 URL + HF + 断点续传 + 自动转 .npz，Part4K2）
 ├── spark/                  # CometSpark V0.5-1B 端到端 LM 训练仓库（Part4K1）
+│   ├── _bootstrap.py       # 统一路径引导模块（Part4K2.5）
+│   ├── run.py              # CLI 快捷入口（7 子命令，Part4K2.5）
 │   ├── config/             # cometspark_v05.yml / cometspark_v05_small.yml
 │   ├── model/              # CometSparkV05LM + CometSparkV05Config
 │   └── src/                # data_loader / trainer / evaluate / utils
 ├── datasets/               # raw / cleaned / tokenizer
 ├── docs/                   # papers / architecture / benchmarks
-│   └── architecture/       # ADR-001 ~ ADR-008
+│   └── architecture/       # ADR-001 ~ ADR-012
 ├── verse_data/             # designs / experiments / migration_notes（内部材料）
 ├── tests/                  # 单元测试 + 数值梯度检查 + 端到端用例（786 passed）
 ├── examples/               # MNIST / 最小 LM / CPU 推理 demo / JEPA demo

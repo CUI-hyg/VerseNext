@@ -29,9 +29,8 @@ from __future__ import annotations
 import json
 import math
 import os
-import os as _os
 import pickle
-import sys as _sys
+from pathlib import Path
 from typing import Optional, List
 
 import numpy as np
@@ -42,16 +41,9 @@ from .config import CometSparkV05Config
 
 
 # ---------------------------------------------------------------------------
-# 路径自举：确保 verse_torch / verse_nex 可被 import
+# 路径引导：统一委托 spark._bootstrap（幂等，自动注入 verse_torch 等）
 # ---------------------------------------------------------------------------
-
-_THIS_DIR = _os.path.dirname(_os.path.abspath(__file__))
-# spark/model/ → spark/ → /workspace
-_REPO_ROOT = _os.path.dirname(_os.path.dirname(_THIS_DIR))
-for _dep in ("verse_torch", "verse_nex", "verse_infra"):
-    _dep_path = _os.path.join(_REPO_ROOT, "packages", _dep)
-    if _os.path.isdir(_dep_path) and _dep_path not in _sys.path:
-        _sys.path.insert(0, _dep_path)
+import spark._bootstrap  # noqa: F401 — 副作用导入：设置 sys.path
 
 
 def _import_cometspark_nex_lm():
@@ -250,23 +242,31 @@ class CometSparkV05LM:
     def generate(
         self,
         idx,
-        max_new_tokens: int = 32,
+        max_new_tokens: Optional[int] = None,
         temperature: float = 1.0,
         top_k: Optional[int] = None,
         eos_id: Optional[int] = None,
+        max_safe_limit: int = 100_000,
     ) -> np.ndarray:
         """自回归生成。
 
+        Part4K2 Task 3 升级：默认不限长度（``max_new_tokens=None``），生成到
+        EOS 自然停止；达到 ``max_safe_limit`` 安全上限时强制停止以防无限循环。
+
         Args:
             idx: prompt 序列，shape (B, T_prompt) 或 (T_prompt,)
-            max_new_tokens: 最大生成 token 数
+            max_new_tokens: 最大生成 token 数；``None`` 表示不限（生成到
+                ``eos_id`` 自然停止，或达到 ``max_safe_limit`` 安全上限）。
+                指定值时按值生成（兼容旧调用）。
             temperature: 采样温度；``temperature==1.0`` 且 ``top_k is None``
                 走 greedy + recurrent（O(1) 单步）。
             top_k: top-k 采样；None 表示无限制。
             eos_id: 若指定且末尾非 eos，追加 eos 确保完整 UTF-8 边界。
+            max_safe_limit: 安全上限（默认 100K），防止无限循环；仅当
+                ``max_new_tokens is None`` 时生效。
 
         Returns:
-            generated: ndarray, shape ``(B, T_prompt + max_new_tokens)``
+            generated: ndarray, shape ``(B, T_prompt + 实际生成 token 数)``
 
         Note:
             Task 8.7：``config.temperature_scaling > 0`` 时，若调用方未传
@@ -288,7 +288,121 @@ class CometSparkV05LM:
             temperature=eff_temp,
             top_k=top_k,
             eos_id=eos_id,
+            max_safe_limit=max_safe_limit,
         )
+
+    def generate_with_template(
+        self,
+        messages,
+        tokenizer,
+        tools=None,
+        max_new_tokens: Optional[int] = None,
+        temperature: float = 1.0,
+        top_k: Optional[int] = None,
+        max_safe_limit: int = 100_000,
+        **kwargs,
+    ) -> str:
+        """用 jinja 模板渲染消息后生成，输出也按模板格式化。
+
+        Part4K2 Task 3 新增。流程：
+
+        1. 调用 ``tokenizer.apply_chat_template(messages, add_generation_prompt=True)``
+           渲染输入（jinja2 ChatML 模板，``add_generation_prompt=True`` 末尾追加
+           ``<|im_start|>assistant\\n`` 前缀）；
+        2. encode 后调用 :meth:`generate` 生成；
+        3. 取 prompt 长度之后的生成部分，decode 后返回字符串。
+
+        Args:
+            messages: ``[{"role": "user", "content": "..."}, ...]`` ChatML
+                消息列表。
+            tokenizer: 实现 ``apply_chat_template`` / ``encode`` / ``decode``
+                接口的分词器实例。若 ``apply_chat_template`` 不支持
+                ``add_generation_prompt`` 参数（旧 API），则降级为
+                ``verse_infra.verse_tokenizer.chat_template.render_chat_qwen``
+                渲染。
+            tools: 可选工具声明列表（OpenAI function calling 风格）；
+                为 ``None`` 时不输出 tools 声明 system 段。
+            max_new_tokens: 最大生成 token 数；``None`` 表示不限（生成到
+                EOS 自然停止）。默认 ``None``，让模型按 jinja 模板输出完整内容。
+            temperature: 采样温度；1.0 走 greedy。
+            top_k: top-k 采样；None 表示无限制。
+            max_safe_limit: 安全上限（默认 100K），防止无限循环。
+            **kwargs: 额外透传给 :meth:`generate` 的参数（如 ``eos_id``）。
+
+        Returns:
+            str: 模型生成的文本（不含 prompt 部分，按 UTF-8 边界对齐 decode）。
+        """
+        # 1. 用 chat template 渲染消息（含 generation prompt 前缀）
+        try:
+            rendered = tokenizer.apply_chat_template(
+                messages,
+                tools=tools,
+                add_generation_prompt=True,
+            )
+        except TypeError:
+            # 旧 tokenizer API：apply_chat_template 不接受 tools/add_generation_prompt
+            # 降级用 verse_tokenizer.chat_template.render_chat_qwen_with_tools
+            try:
+                from verse_infra.verse_tokenizer.chat_template import (
+                    render_chat_qwen_with_tools,
+                )
+                rendered = render_chat_qwen_with_tools(
+                    messages,
+                    tools=tools,
+                    add_generation_prompt=True,
+                )
+            except Exception:
+                # 最终兜底：直接用 apply_chat_template(messages)
+                rendered = tokenizer.apply_chat_template(messages)
+
+        # rendered 可能是 str 或 list[int]（部分 tokenizer 直接返回 id 列表）
+        if isinstance(rendered, str):
+            try:
+                prompt_ids = list(tokenizer.encode(rendered, add_special_tokens=False))
+            except TypeError:
+                prompt_ids = list(tokenizer.encode(rendered))
+        else:
+            prompt_ids = list(rendered)
+
+        if not prompt_ids:
+            prompt_ids = [0]
+
+        # 2. 推断 eos_id
+        eos_id = kwargs.pop("eos_id", None)
+        if eos_id is None:
+            eos_id = getattr(tokenizer, "eos_id", None)
+            if eos_id is None:
+                vocab = getattr(tokenizer, "vocab", None)
+                if isinstance(vocab, dict):
+                    for _eos_str in ("<|im_end|>", "<|eos|>", "<eos>", "<|endoftext|>"):
+                        if _eos_str in vocab:
+                            eos_id = int(vocab[_eos_str])
+                            break
+
+        # 3. encode + generate
+        idx_np = np.asarray(prompt_ids, dtype=np.int64).reshape(1, -1)
+        generated = self.generate(
+            idx_np,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_k=top_k,
+            eos_id=eos_id,
+            max_safe_limit=max_safe_limit,
+        )
+
+        # 4. decode 输出（仅取 prompt 之后的部分）
+        if isinstance(generated, Tensor):
+            gen_ids = generated.data.reshape(-1).tolist()
+        else:
+            gen_ids = np.asarray(generated).reshape(-1).tolist()
+
+        n_prompt = len(prompt_ids)
+        gen_only_ids = gen_ids[n_prompt:] if len(gen_ids) > n_prompt else []
+
+        try:
+            return tokenizer.decode(list(gen_only_ids), strip_special=True)
+        except TypeError:
+            return tokenizer.decode(list(gen_only_ids))
 
     # ------------------------------------------------------------------
     # state_dict / load_state_dict
@@ -326,6 +440,40 @@ class CometSparkV05LM:
         """迁移到指定设备。"""
         return self.net.to(device)
 
+    def device_info(self) -> str:
+        """返回模型当前所在设备信息（Part4K2 Task 7.4）。
+
+        优先委托给内部 net 的 ``device_info``；不可用时从参数张量推断；
+        都无法获取时返回 ``"cpu"``（VerseNex 默认 CPU-first）。
+
+        Returns:
+            设备信息字符串，如 ``"cpu"`` / ``"cuda:0"`` / ``"npu:0"``
+        """
+        # 路径 1：内部 net 提供 device_info
+        if hasattr(self.net, "device_info"):
+            try:
+                return str(self.net.device_info())
+            except Exception:
+                pass
+        # 路径 2：从参数张量推断（PyTorch 后端时有效）
+        try:
+            for _, p in self.named_parameters():
+                p_data = getattr(p, "data", None)
+                if p_data is None:
+                    continue
+                # verse_torch.Tensor：data 是 np.ndarray → cpu
+                # torch.Tensor：有 .device 属性
+                torch_tensor = getattr(p_data, "torch_tensor", None)
+                if torch_tensor is not None and hasattr(torch_tensor, "device"):
+                    return str(torch_tensor.device)
+                if hasattr(p_data, "device"):
+                    return str(p_data.device)
+                break  # 第一个参数即可判断
+        except Exception:
+            pass
+        # 路径 3：默认 CPU
+        return "cpu"
+
     # ------------------------------------------------------------------
     # save / load（单文件 pickle，兼容旧 CometSparkLM 接口）
     # ------------------------------------------------------------------
@@ -340,18 +488,22 @@ class CometSparkV05LM:
                 "state_dict": {name: ndarray},
             }
         """
-        os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+        # Part4K2.5 Task 5：用 pathlib 替代 os.path，跨平台路径处理更稳健
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "arch": "versenex",
             "config": self.config.to_dict(),
             "state_dict": {k: np.asarray(v) for k, v in self.state_dict().items()},
         }
-        with open(path, "wb") as f:
+        with p.open("wb") as f:
             pickle.dump(payload, f)
 
     def load(self, path: str) -> "CometSparkV05LM":
         """从 ``.pt`` 文件加载 state_dict 到当前模型（config 不变）。"""
-        with open(path, "rb") as f:
+        # Part4K2.5 Task 5：用 pathlib 替代 os.path，跨平台路径处理更稳健
+        p = Path(path)
+        with p.open("rb") as f:
             payload = pickle.load(f)
         sd = payload["state_dict"] if "state_dict" in payload else payload
         self.load_state_dict(sd, strict=False)
@@ -407,6 +559,75 @@ class CometSparkV05LM:
         model_pt = os.path.join(dir_path, "model.pt")
         with open(model_pt, "wb") as f:
             pickle.dump(sd, f)
+
+    # ------------------------------------------------------------------
+    # save_vn / load_vn（Part4K2 Task 1.7：.vn 性能优化格式）
+    # ------------------------------------------------------------------
+
+    def save_vn(
+        self,
+        path: str,
+        chat_template: Optional[str] = None,
+        tokenizer=None,
+    ) -> None:
+        """保存为 ``.vn`` 格式（基于 safetensors 的性能优化容器）。
+
+        .vn 是 ZIP 容器，权重在 safetensors 可用时走 mmap 零拷贝路径，
+        不可用时自动降级 npz。与 :meth:`save`（pickle .pt）互为补充，
+        且可通过 :meth:`load_vn` 或 ``vn_to_pt`` 无损还原。
+
+        Args:
+            path: 输出 ``.vn`` 文件路径。
+            chat_template: 聊天模板字符串（可选），写入 ``chat_template.jinja``。
+            tokenizer: tokenizer 路径（str/PathLike）或 dict（可选），
+                写入 ``tokenizer.json``。
+        """
+        from verse_torch.vn_format import VNFileWriter
+
+        writer = VNFileWriter(
+            path,
+            arch="versenex",
+            config=self.config.to_dict(),
+        )
+        try:
+            sd = {k: np.asarray(v) for k, v in self.state_dict().items()}
+            writer.write_weights(sd)
+            if chat_template is not None:
+                writer.write_chat_template(chat_template)
+            if tokenizer is not None:
+                writer.write_tokenizer(tokenizer)
+            writer.close()
+        except Exception:
+            writer.close()
+            raise
+
+    @classmethod
+    def load_vn(cls, path: str) -> "CometSparkV05LM":
+        """从 ``.vn`` 文件加载完整模型（类方法）。
+
+        读取 .vn 中的 config.yml 重建 ``CometSparkV05Config``，再加载权重
+        到新建模型实例。与 :meth:`save_vn` 配对，权重数值无损。
+
+        Args:
+            path: ``.vn`` 文件路径。
+
+        Returns:
+            加载好权重的 :class:`CometSparkV05LM` 实例。
+        """
+        from verse_torch.vn_format import VNFileReader
+
+        reader = VNFileReader(path)
+        try:
+            reader.read_meta()  # 校验版本
+            config_dict = reader.read_config()
+            sd = reader.read_weights(mmap=True)
+        finally:
+            reader.close()
+
+        config = CometSparkV05Config.from_dict(config_dict)
+        model = cls(config)
+        model.load_state_dict(sd, strict=False)
+        return model
 
     def get_config(self) -> dict:
         """返回可 ``json.dump`` 的构造参数 dict。"""

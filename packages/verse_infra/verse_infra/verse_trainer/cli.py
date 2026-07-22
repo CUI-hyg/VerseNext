@@ -1,6 +1,6 @@
-"""VerseTrainer CLI 入口（Part4K1 Task 6.4 + 6.5）。
+"""VerseTrainer CLI 入口（Part4K1 Task 6.4 + 6.5 + Part4K2 Task 8.4）。
 
-5 个子命令（注册为 console_scripts）：
+6 个子命令（注册为 console_scripts）：
 
 - ``verse-train``：预训练。
   参数：``--config`` / ``--device cpu|cuda|npu`` / ``--single-sample``
@@ -14,6 +14,11 @@
   参数：``--config`` / ``--checkpoint`` / ``--prompts-file`` / ``--references-file`` / ``--score``
 - ``verse-tokenize``：tokenizer 训练 / 加载 / 转换。
   参数：``--train`` / ``--load`` / ``--convert`` / ``--from-hf Qwen/Qwen3.5-35B-A3B``
+- ``verse-download``：数据集下载器（任意 URL + HuggingFace datasets）。
+  参数：``--url`` / ``--hf`` / ``--split`` / ``--output`` / ``--to-npz``
+  / ``--text-key`` / ``--workers`` / ``--no-resume``
+- ``verse-convert``：模型格式转换（.pt ↔ .vn，Part4K2 Task 1.8）。
+  参数：``--input`` / ``--output`` / ``--chat-template`` / ``--tokenizer`` / ``--arch``
 
 主函数 :func:`main` 用 ``sys.argv[1]`` 分发子命令。
 """
@@ -66,8 +71,26 @@ def _build_train_parser() -> argparse.ArgumentParser:
                         help="启用混合精度训练（GPU 后端）")
     parser.add_argument("--loss-optimizer", action="store_true",
                         help="启用 LossOptimizer（plateau 重走 + NaN/Inf 跳过）")
+    parser.add_argument("--partition-training", action="store_true",
+                        help="启用智能分区训练（LayerWiseTrainer，按 layer 分组训练+卸载+合并）")
+    parser.add_argument("--partition-size", type=int, default=2,
+                        help="智能分区训练：每组 layer 数量（默认 2）")
+    parser.add_argument("--offload-dir", default=None,
+                        help="智能分区训练：硬盘卸载目录（默认 save_dir/partition_offload）")
+    parser.add_argument("--quiet", action="store_true",
+                        help="静默模式（仅打印最终结果）")
+    parser.add_argument("--verbose", action="store_true",
+                        help="详细日志模式（打印 chunk 拆分 / 排序等详细信息）")
+    parser.add_argument("--parallel-strategy", default=None,
+                        choices=["sequential", "round_robin"],
+                        help="并行训练数据分配策略（默认 sequential，round_robin 为不重叠数据子集）")
     parser.add_argument("--base-dir", default=None,
                         help="配置中相对路径的基准目录（默认 config 同级目录）")
+    parser.add_argument("--no-eval", action="store_true",
+                        help="跳过训练后自动评估打分（默认训练后自动评估）")
+    parser.add_argument("--eval-prompts", default=None,
+                        help="自定义评估 prompt JSON 文件路径"
+                             "（格式：[{\"prompt\": \"...\", \"reference\": \"...\"}, ...]）")
     return parser
 
 
@@ -86,12 +109,14 @@ def train_main(argv: Optional[List[str]] = None) -> int:
     if config_path is None:
         parser.error("--config 必填（除非用 --single-sample + --prompt）")
 
-    # 覆盖 config 的 parallel_chunks / max_steps（通过临时 config 文件）
+    # 覆盖 config 的 parallel_chunks / max_steps / parallel_strategy（通过临时 config 文件）
     overrides = {}
     if args.parallel_chunks is not None:
         overrides["parallel_chunks"] = int(args.parallel_chunks)
     if args.max_steps is not None:
         overrides["max_steps"] = int(args.max_steps)
+    if args.parallel_strategy is not None:
+        overrides["parallel_strategy"] = str(args.parallel_strategy)
     effective_config = _apply_config_overrides(config_path, overrides)
 
     # 构造 single_sample dict
@@ -105,6 +130,14 @@ def train_main(argv: Optional[List[str]] = None) -> int:
                 "completion": args.completion or "",
             }
 
+    # Part4K2.5 Task 4: 解析 --eval-prompts（JSON 文件）
+    eval_config = None
+    if args.eval_prompts:
+        import json as _json
+        with open(args.eval_prompts, "r", encoding="utf-8") as f:
+            prompts_data = _json.load(f)
+        eval_config = {"prompts": prompts_data}
+
     from .trainer import train
     result = train(
         config_path=effective_config,
@@ -116,8 +149,80 @@ def train_main(argv: Optional[List[str]] = None) -> int:
         resume=args.resume,
         amp=args.amp,
         enable_loss_optimizer=args.loss_optimizer,
+        partition_training=args.partition_training,
+        partition_size=args.partition_size,
+        offload_dir=args.offload_dir,
+        quiet=getattr(args, "quiet", False),
+        verbose=getattr(args, "verbose", False),
+        # Part4K2.5 Task 4: 默认 eval_after=True，--no-eval 跳过
+        eval_after=not getattr(args, "no_eval", False),
+        eval_config=eval_config,
     )
     print(f"\n[train] 结果：{result['best_val_loss']:.4f}", flush=True)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# verse-continue：持续训练（Part4K2 Task 7.3）
+# ---------------------------------------------------------------------------
+
+
+def _build_continue_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="verse-continue",
+        description="VerseTrainer 持续训练入口（从 checkpoint 加载模型继续追加训练）",
+    )
+    parser.add_argument("--checkpoint", required=True,
+                        help="checkpoint 文件路径（best.pt / resume.pt / 任意 pickle）")
+    parser.add_argument("--additional-steps", type=int, required=True,
+                        help="追加训练步数")
+    parser.add_argument("--config", required=True, help="配置文件路径（config.yml）")
+    parser.add_argument("--device", default=None,
+                        choices=["cpu", "cuda", "npu"],
+                        help="设备（cpu/cuda/npu）；默认从 config 读取或 cpu")
+    parser.add_argument("--amp", action="store_true",
+                        help="启用混合精度训练（GPU 后端）")
+    parser.add_argument("--quiet", action="store_true",
+                        help="静默模式（仅打印最终结果）")
+    parser.add_argument("--verbose", action="store_true",
+                        help="详细日志模式")
+    parser.add_argument("--base-dir", default=None,
+                        help="配置中相对路径的基准目录（默认 config 同级目录）")
+    return parser
+
+
+def continue_main(argv: Optional[List[str]] = None) -> int:
+    """verse-continue 主入口。
+
+    用法::
+
+        verse-continue --checkpoint checkpoints/best.pt \\
+            --additional-steps 1000 --config config.yml
+        verse-continue --checkpoint checkpoints/resume.pt \\
+            --additional-steps 500 --config config.yml --device cuda
+
+    与 ``verse-train --resume`` 的区别：
+    - ``--resume`` 是中断后恢复（从中断点继续，目标是完成原计划的步数）
+    - ``verse-continue`` 是训练完成后继续追加训练
+      （新目标 = additional_steps，独立步数）
+    """
+    parser = _build_continue_parser()
+    args = parser.parse_args(argv)
+
+    config_path, base_dir = _resolve_config_and_base(args)
+
+    from .trainer import continue_train
+    result = continue_train(
+        checkpoint=args.checkpoint,
+        additional_steps=int(args.additional_steps),
+        config_path=config_path,
+        base_dir=base_dir,
+        device=args.device,
+        amp=args.amp,
+        quiet=args.quiet,
+        verbose=args.verbose,
+    )
+    print(f"\n[continue] 结果：{result['best_val_loss']:.4f}", flush=True)
     return 0
 
 
@@ -352,8 +457,10 @@ def _build_eval_parser() -> argparse.ArgumentParser:
                         help="参考答案文件路径（每行一条，与 prompts 一一对应）")
     parser.add_argument("--score", action="store_true",
                         help="启用打分模式（需 --references-file）")
-    parser.add_argument("--max-tokens", type=int, default=32,
-                        help="每条 prompt 生成最大 token 数（默认 32）")
+    parser.add_argument("--max-tokens", type=int, default=None,
+                        help="每条 prompt 生成最大 token 数；默认不限制（None），"
+                             "模型生成到 EOS 自然停止（安全上限 100K 防无限循环）。"
+                             "显式指定时按值限制。")
     parser.add_argument("--temperature", type=float, default=1.0,
                         help="采样温度（默认 1.0）")
     parser.add_argument("--top-k", type=int, default=None,
@@ -532,6 +639,147 @@ def _safe_tok_decode(tok, ids):
 
 
 # ---------------------------------------------------------------------------
+# verse-convert：模型格式转换（.pt ↔ .vn，Part4K2 Task 1.8）
+# ---------------------------------------------------------------------------
+
+
+def _build_convert_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="verse-convert",
+        description="模型格式转换（.pt ↔ .vn，基于 safetensors 的性能优化格式）",
+    )
+    parser.add_argument("--input", required=True,
+                        help="输入文件路径（.pt 或 .vn，自动检测方向）")
+    parser.add_argument("--output", required=True,
+                        help="输出文件路径（.vn 或 .pt）")
+    parser.add_argument("--chat-template", default=None,
+                        help="chat_template.jinja 文件路径（仅 .pt → .vn 时附加）")
+    parser.add_argument("--tokenizer", default=None,
+                        help="tokenizer.json 文件路径（仅 .pt → .vn 时附加）")
+    parser.add_argument("--arch", default=None,
+                        help="覆盖架构名（仅 .pt → .vn 时生效，默认从 .pt payload 读取）")
+    return parser
+
+
+def convert_main(argv: Optional[List[str]] = None) -> int:
+    """verse-convert 主入口：在 .pt 与 .vn 之间互转。
+
+    用法::
+
+        verse-convert --input model.pt --output model.vn
+        verse-convert --input model.vn --output model.pt
+        verse-convert --input model.pt --output model.vn \\
+            --chat-template chat_template.jinja --tokenizer tokenizer.json
+    """
+    parser = _build_convert_parser()
+    args = parser.parse_args(argv)
+
+    from verse_torch.vn_format import pt_to_vn, vn_to_pt, convert_format
+
+    src = args.input
+    dst = args.output
+    src_lower = src.lower()
+    dst_lower = dst.lower()
+
+    # 读取附加内容（仅 pt→vn 有意义）
+    chat_template = None
+    if args.chat_template:
+        with open(args.chat_template, "r", encoding="utf-8") as f:
+            chat_template = f.read()
+    tokenizer = args.tokenizer  # 透传路径给 pt_to_vn
+
+    try:
+        if src_lower.endswith(".pt") and dst_lower.endswith(".vn"):
+            pt_to_vn(
+                src, dst,
+                arch=args.arch,
+                chat_template=chat_template,
+                tokenizer=tokenizer,
+            )
+            print(f"[convert] .pt → .vn 完成：{src} → {dst}", flush=True)
+        elif src_lower.endswith(".vn") and dst_lower.endswith(".pt"):
+            vn_to_pt(src, dst)
+            print(f"[convert] .vn → .pt 完成：{src} → {dst}", flush=True)
+        else:
+            # 交给 convert_format 自动检测并给出明确错误
+            convert_format(src, dst)
+            print(f"[convert] 完成：{src} → {dst}", flush=True)
+    except Exception as e:
+        print(f"[convert] 转换失败：{type(e).__name__}: {e}", file=sys.stderr,
+              flush=True)
+        return 1
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# verse-download：数据集下载器
+# ---------------------------------------------------------------------------
+
+
+def _build_download_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="verse-download",
+        description="VerseTrainer 数据集下载器（任意 URL + HuggingFace datasets）",
+    )
+    parser.add_argument("--url", default=None,
+                        help="下载 URL（http/https）")
+    parser.add_argument("--hf", default=None,
+                        help="HuggingFace dataset repo ID（如 wikitext）")
+    parser.add_argument("--split", default="train",
+                        help="HF dataset split（默认 train）")
+    parser.add_argument("--output", "-o", default=None,
+                        help="输出路径（文件或目录）；--to-npz 时为 .npz 路径")
+    parser.add_argument("--to-npz", action="store_true",
+                        help="下载后自动转 .npz 缓存（与 CachedDataset 对齐）")
+    parser.add_argument("--text-key", default="text",
+                        help="文本字段名（默认 text，用于 JSON/CSV 解析）")
+    parser.add_argument("--workers", type=int, default=4,
+                        help="下载线程数（默认 4）")
+    parser.add_argument("--no-resume", action="store_true",
+                        help="禁用断点续传")
+    return parser
+
+
+def download_main(argv: Optional[List[str]] = None) -> int:
+    """verse-download 主入口。"""
+    parser = _build_download_parser()
+    args = parser.parse_args(argv)
+
+    if not args.url and not args.hf:
+        parser.error("必须指定 --url 或 --hf 之一")
+
+    # 通过 verse_infra 顶层导出获取 DatasetDownloader
+    # （verse_infra.__init__ 的 __getattr__ 会自动加载 data/downloader.py）
+    from verse_infra import DatasetDownloader
+    downloader = DatasetDownloader(num_workers=args.workers)
+
+    if args.url:
+        if args.to_npz:
+            npz_path = downloader.download_and_cache(
+                args.url, output_path=args.output, text_key=args.text_key,
+            )
+            print(f"[download] 已下载并缓存：{npz_path}", flush=True)
+        else:
+            path = downloader.download_url(
+                args.url, output_path=args.output,
+                resume=not args.no_resume,
+            )
+            print(f"[download] 已下载：{path}", flush=True)
+    else:  # args.hf
+        if args.to_npz:
+            npz_path = downloader.download_and_cache(
+                args.hf, output_path=args.output, text_key=args.text_key,
+            )
+            print(f"[download] 已下载并缓存：{npz_path}", flush=True)
+        else:
+            path = downloader.download_hf(
+                args.hf, split=args.split, output_dir=args.output,
+            )
+            print(f"[download] 已下载：{path}", flush=True)
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # 通用辅助
 # ---------------------------------------------------------------------------
 
@@ -611,16 +859,22 @@ def _apply_config_overrides(config_path: str, overrides: dict) -> str:
 # 子命令 → 入口函数映射
 _SUBCOMMANDS = {
     "verse-train": ("train", train_main),
+    "verse-continue": ("continue", continue_main),
     "verse-finetune": ("finetune", finetune_main),
     "verse-posttrain": ("posttrain", posttrain_main),
     "verse-eval": ("eval", eval_main),
     "verse-tokenize": ("tokenize", tokenize_main),
+    "verse-download": ("download", download_main),
+    "verse-convert": ("convert", convert_main),
     # 短别名
     "train": ("train", train_main),
+    "continue": ("continue", continue_main),
     "finetune": ("finetune", finetune_main),
     "posttrain": ("posttrain", posttrain_main),
     "eval": ("eval", eval_main),
     "tokenize": ("tokenize", tokenize_main),
+    "download": ("download", download_main),
+    "convert": ("convert", convert_main),
 }
 
 
@@ -638,14 +892,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not argv:
         print(
             "VerseTrainer CLI\n"
-            "用法：verse-train | verse-finetune | verse-posttrain | "
-            "verse-eval | verse-tokenize [options]\n\n"
+            "用法：verse-train | verse-continue | verse-finetune | verse-posttrain | "
+            "verse-eval | verse-tokenize | verse-download | verse-convert [options]\n\n"
             "子命令：\n"
             "  verse-train       预训练\n"
+            "  verse-continue    持续训练（从 checkpoint 加载继续追加训练）\n"
             "  verse-finetune    微调（lora / full）\n"
             "  verse-posttrain   后训练（nexrl / sft / dpo）\n"
             "  verse-eval        评估 + 打分\n"
-            "  verse-tokenize    tokenizer 训练 / 加载 / 转换\n",
+            "  verse-tokenize    tokenizer 训练 / 加载 / 转换\n"
+            "  verse-download    数据集下载器（URL / HuggingFace）\n"
+            "  verse-convert     模型格式转换（.pt ↔ .vn）\n",
             file=sys.stderr, flush=True,
         )
         return 1
@@ -655,8 +912,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     if cmd in ("-h", "--help"):
         print(
             "VerseTrainer CLI\n"
-            "用法：verse-train | verse-finetune | verse-posttrain | "
-            "verse-eval | verse-tokenize [options]",
+            "用法：verse-train | verse-continue | verse-finetune | verse-posttrain | "
+            "verse-eval | verse-tokenize | verse-download | verse-convert [options]",
             file=sys.stderr, flush=True,
         )
         return 0

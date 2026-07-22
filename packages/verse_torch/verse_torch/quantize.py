@@ -503,6 +503,35 @@ class QuantizedLinear:
     def __call__(self, x):
         return self.forward(x)
 
+    def forward_fused(self, x):
+        """V1.3 吞吐率优化路径：直接从 packed 权重走 fused 反量化-GEMM。
+
+        对 INT4 / ternary 调用 ``matmul_int4`` / ``matmul_ternary``，**不在调用方
+        物化完整 fp32 权重**，避免重复解量化；INT8 走等价的 cast+GEMM+scale 路径。
+        适用于内存敏感场景（``cache_fp32=False``）且希望显式走 fused 路径的调用方。
+
+        与 ``forward`` 数值等价，仅在内部计算路径上不同。
+        """
+        is_tensor = isinstance(x, Tensor)
+        x_np = x.data if is_tensor else np.asarray(x)
+        x_np = x_np.astype(np.float32, copy=False)
+        orig_shape = x_np.shape
+        x_2d = x_np.reshape(-1, orig_shape[-1])
+        if self.qtype == "int4":
+            out_2d = matmul_int4(x_2d, self.packed, self.scale, self.w_shape)
+        elif self.qtype == "ternary":
+            out_2d = matmul_ternary(x_2d, self.packed, self.scale, self.w_shape)
+        else:  # int8：packed 即 int8 权重，走 cast+GEMM+scale
+            q_f32 = self.packed.astype(np.float32)
+            out_2d = x_2d @ q_f32.T
+            out_2d *= self._scale_vec
+        if self.bias is not None:
+            out_2d += self.bias
+        out = out_2d.reshape(*orig_shape[:-1], self.out_features)
+        if is_tensor:
+            return Tensor(out, requires_grad=False)
+        return out
+
     @classmethod
     def from_state_dict(
         cls,
@@ -553,6 +582,93 @@ class QuantizedLinear:
         return f"QuantizedLinear({self.extra_repr()})"
 
 
+# ---------------------------------------------------------------------------
+# V1.3: batch 量化 + 吞吐率基准
+# ---------------------------------------------------------------------------
+
+
+def quantize_batch(linears, qtype: str = "int4", cache_fp32: bool = True):
+    """一次性量化多个 ``nn.Linear``（batch 量化，V1.3）。
+
+    对一个 ``nn.Linear`` 列表逐个构造 :class:`QuantizedLinear`，返回同序的
+    ``QuantizedLinear`` 列表。便于一次性把整层 / 整模型的 Linear 批量替换。
+
+    Args:
+        linears: ``nn.Linear`` 实例的可迭代对象
+        qtype: 量化类型，``"int8"`` / ``"int4"`` / ``"ternary"``
+        cache_fp32: 是否在 load-time 缓存反量化 fp32 权重
+
+    Returns:
+        ``list[QuantizedLinear]``
+    """
+    if qtype not in ("int8", "int4", "ternary"):
+        raise ValueError(f"Unknown qtype: {qtype!r}, expected int8/int4/ternary")
+    return [
+        QuantizedLinear(lin, qtype=qtype, cache_fp32=cache_fp32)
+        for lin in linears
+    ]
+
+
+def benchmark_throughput(callable_or_module, x, warmup: int = 3, iters: int = 20,
+                         unit: str = "samples") -> dict:
+    """测量前向吞吐率（V1.3）。
+
+    Args:
+        callable_or_module: 可调用对象（``model`` / ``model.forward`` /
+            ``QuantizedLinear`` / ``QuantizedLinear.forward_fused``），
+            接受 ``x`` 返回任意输出
+        x: 输入（``Tensor`` / ``ndarray``）。函数内部会原样喂入 ``callable``。
+        warmup: 预热次数（不计入计时）
+        iters: 正式计时迭代次数
+        unit: 吞吐率单位语义，``"samples"`` 按 x 的 batch 维计，
+            ``"tokens"`` 按 x 的前两维乘积计，``"calls"`` 按调用次数计
+
+    Returns:
+        ``{"throughput": float, "latency_ms": float, "iters": int, "unit": str}``，
+        其中 ``throughput`` = 总样本数 / 总耗时（秒），``latency_ms`` = 单次平均毫秒。
+    """
+    import time as _time
+
+    # 解析可调用对象：实例（有 __call__）/ bound method 直接用；否则取 .forward
+    if callable(callable_or_module):
+        fn = callable_or_module
+    elif hasattr(callable_or_module, "forward"):
+        fn = callable_or_module.forward
+    else:
+        raise TypeError(
+            "benchmark_throughput 需要可调用对象或有 .forward 属性的对象"
+        )
+
+    # 计算单次调用的"工作量"单位数
+    arr = x.data if isinstance(x, Tensor) else np.asarray(x)
+    if unit == "samples":
+        work = int(arr.shape[0]) if arr.ndim >= 1 else 1
+    elif unit == "tokens":
+        work = int(np.prod(arr.shape[:2])) if arr.ndim >= 2 else int(arr.size)
+    else:  # "calls"
+        work = 1
+    work = max(work, 1)
+
+    # 预热
+    for _ in range(max(0, int(warmup))):
+        fn(x)
+
+    t0 = _time.perf_counter()
+    for _ in range(max(0, int(iters))):
+        fn(x)
+    elapsed = _time.perf_counter() - t0
+
+    total_work = work * int(iters)
+    throughput = (total_work / elapsed) if elapsed > 0 else float("inf")
+    latency_ms = (elapsed * 1000.0 / int(iters)) if iters > 0 else 0.0
+    return {
+        "throughput": float(throughput),
+        "latency_ms": float(latency_ms),
+        "iters": int(iters),
+        "unit": unit,
+    }
+
+
 __all__ = [
     "quantize_int8",
     "dequantize_int8",
@@ -563,4 +679,7 @@ __all__ = [
     "dequantize_ternary",
     "matmul_ternary",
     "QuantizedLinear",
+    # V1.3
+    "quantize_batch",
+    "benchmark_throughput",
 ]

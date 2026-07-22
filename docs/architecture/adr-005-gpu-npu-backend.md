@@ -122,3 +122,14 @@ ADR-001 确立了"CPU 优先 + 零重型依赖"的路线，所有算子先用纯
 - GPU 后端默认禁用，仅在 `Tensor.cuda()` / `--device cuda` / `autocast` 时触发
 - 相关测试：`tests/test_device_backend.py` 覆盖 NumpyBackend / TorchBackend / device 迁移 / 无 PyTorch 回退 / autocast
 - 相关代码：[`verse_torch/device.py`](../../packages/verse_torch/verse_torch/device.py) / [`verse_torch/backend_torch.py`](../../packages/verse_torch/verse_torch/backend_torch.py)
+
+## 演进更新（Part4K2）
+
+本 ADR 的 DeviceBackend 抽象（NumpyBackend + TorchBackend 委托）保持不变。Part4K2 Task 5 在此基础上扩展了资源利用能力：
+
+- **内存监控 API**：`get_memory_info(device)` / `memory_usage(device)` / `empty_cache(device)` 跨平台支持 CPU / GPU / NPU 内存查询与缓存释放。
+- **CPU 线程数管理**：`set_num_threads` / `get_num_threads` / `auto_tune_threads`，GPU 路径不受影响（PyTorch 自带线程池）。
+- **NPU autocast 支持**：`backend_torch.py` 的 `autocast` 上下文管理器支持 `device_type="npu"`，NPU 混合精度训练可用。
+- **激活检查点**：`VerseNexBlock` 新增 `use_checkpoint` 开关，GPU 大模型训练时前向不保存中间激活、反向时重新计算（节省显存）；CPU / 无 PyTorch 时自动降级为直接前向。
+
+这些扩展不改变本 ADR 的核心决策（委托 PyTorch / 不自研 kernel），仅丰富资源管理 API。

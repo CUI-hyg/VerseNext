@@ -29,7 +29,15 @@ import numpy as np
 
 from .tensor import Tensor, no_grad, _is_torch_data
 from .optim import Optimizer, LambdaLR, warmup_cosine_lr  # noqa: F401  重新导出方便用户
-from .device import has_torch, get_torch_module, _parse_device, is_cpu_device, DEFAULT_DEVICE
+from .device import (
+    has_torch,
+    get_torch_module,
+    _parse_device,
+    is_cpu_device,
+    DEFAULT_DEVICE,
+    empty_cache,
+    auto_tune_threads,
+)
 
 # 模块级缓存 torch 模块（无 torch 时为 None）
 _TORCH = get_torch_module()
@@ -37,6 +45,9 @@ _TORCH = get_torch_module()
 
 def _get_autocast(device=None, enabled: bool = True):
     """获取 autocast 上下文管理器（无 torch 或 CPU 时返回 no-op contextmanager）。
+
+    GPU/NPU 时返回 ``torch.autocast``（fp16 默认，NPU 同样支持）；
+    CPU / 无 torch / enabled=False 时为 no-op。
 
     Args:
         device: 设备字符串；``None`` / ``"cpu"`` 时返回 no-op。
@@ -55,6 +66,170 @@ def _get_autocast(device=None, enabled: bool = True):
     # GPU/NPU：委托 backend_torch.autocast
     from .backend_torch import autocast as _autocast
     return _autocast(device=device, enabled=enabled)
+
+
+# ---------------------------------------------------------------------------
+# GradScaler：FP16 梯度缩放（PyTorch 可用时用 torch.cuda.amp.GradScaler，
+# 不可用时 no-op）
+# ---------------------------------------------------------------------------
+
+
+class GradScaler:
+    """梯度缩放器（FP16 防梯度下溢）兼容接口。
+
+    - PyTorch 可用且 device 为 CUDA：包装 ``torch.cuda.amp.GradScaler``，
+      ``scale(loss)`` 缩放 loss 防止 FP16 梯度下溢，
+      ``step(optimizer)`` 反缩放梯度并调用 ``optimizer.step()``，
+      ``update()`` 动态调整 scale 因子。
+    - 无 PyTorch / CPU 设备：所有方法为 no-op（``scale`` 直接返回原 loss，
+      ``step`` 直接调用 ``optimizer.step()``，``update`` no-op）。
+
+    这样上层训练代码可以用统一接口处理 GPU/CPU，不需要在调用点做 device 分支。
+
+    Args:
+        init_scale: 初始 scale（默认 2**16 = 65536）
+        growth_factor: scale 增长因子（默认 2.0）
+        backoff_factor: scale 回退因子（默认 0.5）
+        growth_interval: growth 间隔步数（默认 2000）
+        enabled: 是否启用梯度缩放（False 时所有方法 no-op）
+    """
+
+    def __init__(
+        self,
+        init_scale: float = 2.0 ** 16,
+        growth_factor: float = 2.0,
+        backoff_factor: float = 0.5,
+        growth_interval: int = 2000,
+        enabled: bool = True,
+    ):
+        self._enabled = bool(enabled) and _TORCH is not None
+        if self._enabled:
+            try:
+                self._scaler = _TORCH.cuda.amp.GradScaler(
+                    init_scale=init_scale,
+                    growth_factor=growth_factor,
+                    backoff_factor=backoff_factor,
+                    growth_interval=growth_interval,
+                    enabled=enabled,
+                )
+            except Exception:
+                # torch.cuda.amp.GradScaler 在某些版本签名不同，退化为 no-op
+                self._enabled = False
+                self._scaler = None
+        else:
+            self._scaler = None
+
+    @property
+    def is_enabled(self) -> bool:
+        """是否真正启用梯度缩放（CPU / 无 torch 时为 False）。"""
+        return self._enabled and self._scaler is not None
+
+    def scale(self, loss):
+        """缩放 loss（无 torch / CPU 时原样返回）。"""
+        if not self.is_enabled:
+            return loss
+        return self._scaler.scale(loss)
+
+    def step(self, optimizer, *args, **kwargs):
+        """反缩放梯度并执行 optimizer.step（无 torch / CPU 时直接 step）。"""
+        if not self.is_enabled:
+            return optimizer.step(*args, **kwargs)
+        return self._scaler.step(optimizer, *args, **kwargs)
+
+    def update(self, new_scale: float = None) -> None:
+        """更新 scale 因子（无 torch / CPU 时 no-op）。"""
+        if not self.is_enabled:
+            return
+        if new_scale is not None:
+            self._scaler.update(new_scale)
+        else:
+            self._scaler.update()
+
+    def unscale_(self, optimizer) -> None:
+        """反缩放梯度（无 torch / CPU 时 no-op）。"""
+        if not self.is_enabled:
+            return
+        try:
+            self._scaler.unscale_(optimizer)
+        except Exception:
+            pass
+
+    def get_scale(self) -> float:
+        """获取当前 scale 因子（无 torch / CPU 时返回 1.0）。"""
+        if not self.is_enabled:
+            return 1.0
+        try:
+            return float(self._scaler.get_scale())
+        except Exception:
+            return 1.0
+
+    def state_dict(self) -> dict:
+        """返回 scaler 状态（无 torch / CPU 时返回空 dict）。"""
+        if not self.is_enabled:
+            return {}
+        try:
+            return self._scaler.state_dict()
+        except Exception:
+            return {}
+
+    def load_state_dict(self, state_dict: dict) -> None:
+        """加载 scaler 状态（无 torch / CPU 时 no-op）。"""
+        if not self.is_enabled or not state_dict:
+            return
+        try:
+            self._scaler.load_state_dict(state_dict)
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# activation checkpointing：前向不保存中间激活，反向重新计算
+# ---------------------------------------------------------------------------
+
+
+def activation_checkpoint(module, *args, **kwargs):
+    """激活检查点：前向时不保存中间激活，反向时重新计算，节省显存。
+
+    - PyTorch 可用且 module 为 ``torch.nn.Module``（或前向返回 torch.Tensor）：
+      委托 ``torch.utils.checkpoint.checkpoint``，前向不保存中间激活，
+      反向时重新计算。需 ``module`` 在 torch 路径上工作（通常配合 GPU 训练）。
+    - 无 PyTorch / CPU / module 非 torch：直接 ``module(*args, **kwargs)`` 前向
+      （no-op 降级，不节省显存但保证正确性）。
+
+    Args:
+        module: 可调用对象（通常是 ``torch.nn.Module`` 或 ``verse_torch.nn.Module``）
+        *args: 透传给 module 的位置参数
+        **kwargs: 透传给 module 的关键字参数
+
+    Returns:
+        module 前向输出
+    """
+    if _TORCH is None:
+        # 无 torch：直接前向（CPU 路径不需要 checkpoint）
+        return module(*args, **kwargs)
+    try:
+        from torch.utils.checkpoint import checkpoint as _torch_ckpt
+    except Exception:
+        return module(*args, **kwargs)
+    # 检测 module 是否为 torch.nn.Module（torch 路径前向）
+    is_torch_module = isinstance(module, _TORCH.nn.Module)
+    # 进一步检测第一个位置参数是否为 torch.Tensor
+    is_torch_input = len(args) > 0 and isinstance(args[0], _TORCH.Tensor)
+    if not (is_torch_module or is_torch_input):
+        # 非 torch 路径（自研 NumPy autograd）：直接前向降级
+        return module(*args, **kwargs)
+    try:
+        # use_reentrant=False 是 PyTorch >= 1.10 推荐（更稳定）
+        # 但部分版本不支持此参数，先尝试带，失败回退不带
+        try:
+            return _torch_ckpt(
+                module, *args, use_reentrant=False, **kwargs
+            )
+        except TypeError:
+            return _torch_ckpt(module, *args, **kwargs)
+    except Exception:
+        # checkpoint 失败（如输入需 grad 等）：降级为直接前向，保证训练不中断
+        return module(*args, **kwargs)
 
 # tqdm 为可选依赖：缺失时降级为无进度条的普通迭代器
 try:
@@ -85,6 +260,116 @@ class _NoOpPBar:
 
     def close(self):
         pass
+
+
+# ---------------------------------------------------------------------------
+# Part4K2 Task 7.1: ParallelTrainer 外层进度条（chunk 级别）
+# ---------------------------------------------------------------------------
+
+
+class _ChunkPBar:
+    """ParallelTrainer 外层进度条（chunk 级别）。
+
+    - tqdm 可用且未静默时用 ``tqdm`` 显示进度条；
+    - tqdm 不可用时降级为简洁打印（每完成一个 chunk 打印一行）；
+    - ``quiet=True`` 时完全静默（所有方法 no-op）。
+
+    进度条格式示例::
+
+        Parallel Training: 67%|████████░░░░| 2/3 chunks [02:30<01:15, 75.0s/chunk]
+          | chunk_2: step 50/100, loss=3.45
+
+    Args:
+        total: 总 chunk 数
+        quiet: 是否静默（True 时所有方法 no-op）
+        desc: 进度条描述（默认 "Parallel Training"）
+    """
+
+    def __init__(self, total: int, quiet: bool = False,
+                 desc: str = "Parallel Training"):
+        self.total = int(total)
+        self.quiet = bool(quiet)
+        self.n = 0
+        self.desc = desc
+        self._tqdm = None
+        self._t0 = time.time()
+        # Part4K2.5 Task 6 修复：非 tty 环境降级为简洁打印
+        # （CI / 重定向场景下 tqdm 会输出大量 \r 垃圾字符）
+        # 仅在 tqdm 可用且未静默且 stderr 是 tty 时才用 tqdm
+        if not self.quiet and _HAS_TQDM:
+            try:
+                import sys as _sys
+                is_tty = (
+                    hasattr(_sys.stderr, "isatty")
+                    and _sys.stderr.isatty()
+                )
+                if is_tty:
+                    self._tqdm = _tqdm(
+                        total=self.total,
+                        desc=self.desc,
+                        unit="chunk",
+                        dynamic_ncols=True,
+                    )
+            except Exception:
+                self._tqdm = None
+
+    def update(self, n: int = 1, postfix: Optional[dict] = None) -> None:
+        """更新进度条。
+
+        Args:
+            n: 已完成的 chunk 数增量
+            postfix: 附加信息字典（如 ``{"chunk": "2/3", "loss": 3.45}``），
+                tqdm 可用时显示在进度条后缀；降级打印时拼接到行尾
+        """
+        self.n += n
+        if self._tqdm is not None:
+            try:
+                self._tqdm.update(n)
+                if postfix is not None:
+                    self._tqdm.set_postfix(postfix)
+            except Exception:
+                pass
+        elif not self.quiet:
+            # 降级打印：每完成一个 chunk 打印一行
+            pct = 100.0 * self.n / max(1, self.total)
+            elapsed = time.time() - self._t0
+            msg = f"[{self.desc}] {self.n}/{self.total} chunks ({pct:.0f}%) " \
+                  f"elapsed={_format_eta(elapsed)}"
+            if postfix:
+                parts = [f"{k}={v}" for k, v in postfix.items()]
+                msg += " | " + " ".join(parts)
+            print(msg, flush=True)
+
+    def close(self) -> None:
+        """关闭进度条。"""
+        if self._tqdm is not None:
+            try:
+                self._tqdm.close()
+            except Exception:
+                pass
+            self._tqdm = None
+
+
+class _SubsetDataset:
+    """数据集子集包装器（用于 ParallelTrainer round_robin 策略）。
+
+    Part4K2 Task 7.5：round_robin 模式下把数据集按索引轮询分配到不同 chunk，
+    每个 chunk 只训练属于自己的数据子集，避免 chunk 间数据重复。
+
+    Args:
+        dataset: 原始数据集（需实现 ``__len__`` 与 ``__getitem__``）
+        indices: 子集索引列表
+    """
+
+    def __init__(self, dataset, indices):
+        self.dataset = dataset
+        self.indices = list(indices)
+
+    def __len__(self) -> int:
+        return len(self.indices)
+
+    def __getitem__(self, i: int):
+        return self.dataset[int(self.indices[i])]
 
 
 def clip_grad_norm(params, max_norm: float) -> float:
@@ -416,16 +701,29 @@ def _plot_ascii(
     # 构造画布
     canvas = [[" "] * width for _ in range(height)]
 
-    def put_curve(values, n_total, char):
+    def put_curve(values, n_total, char, step_fn=None):
+        """在画布上绘制一条曲线。
+
+        Args:
+            values: loss 值列表
+            n_total: 用于 x 坐标映射的总步数（通常是 train 的步数）
+            char: 绘制字符（'T' 或 'V'）
+            step_fn: 可选函数，把 value 的索引映射到实际 step 位置
+                （val 用 ``lambda i: i * eval_interval`` 对齐到 train 的 step）；
+                None 时用索引本身作为 step（train 行为）
+        """
         n_v = len(values)
         if n_v == 0:
             return
         for i, v in enumerate(values):
             # x 映射到 [0, width-1]
+            step = step_fn(i) if step_fn is not None else i
             if n_total <= 1:
                 x = 0
             else:
-                x = int(i * (width - 1) / max(1, n_total - 1))
+                x = int(step * (width - 1) / max(1, n_total - 1))
+            # 限制 x 在画布范围内（val 的 step 可能超出 train 范围）
+            x = max(0, min(x, width - 1))
             # y 映射到 [0, height-1]（注意翻转：高 loss 在顶部）
             yf = (float(v) - y_min) / (y_max - y_min)
             yf = max(0.0, min(1.0, yf))
@@ -439,8 +737,14 @@ def _plot_ascii(
                     canvas[y][x] = char
 
     # 先绘制 train（T），再绘制 val（V）——val 后绘制保证 V 在重叠处可见
+    # val 的 x 坐标基于 eval_interval 对齐到 train 的 step，确保位置准确
+    if eval_interval < 1:
+        eval_interval = 1
     put_curve(train_losses, n_train, "T")
-    put_curve(val_losses, max(n_train, n_val), "V")
+    put_curve(
+        val_losses, n_train, "V",
+        step_fn=lambda i: min(i * eval_interval, max(0, n_train - 1)),
+    )
 
     # 写入文件
     lines = []
@@ -537,9 +841,14 @@ def plot_loss_curve(
         # ASCII 模式也打印 val 信息（best step 与 matplotlib 分支一致）
         if eval_interval < 1:
             eval_interval = 1
-        val_x_ascii = [i * eval_interval for i in range(len(val_losses))]
-        if val_x_ascii and val_x_ascii[-1] >= len(train_losses):
-            val_x_ascii = [min(x, len(train_losses) - 1) for x in val_x_ascii]
+        n_train_ascii = len(train_losses)
+        if n_train_ascii > 0:
+            val_x_ascii = [
+                min(i * eval_interval, n_train_ascii - 1)
+                for i in range(len(val_losses))
+            ]
+        else:
+            val_x_ascii = list(range(len(val_losses)))
         _print_val_info(val_losses, val_x_ascii)
         print(f"[plot_loss_curve] loss 曲线已保存到: {txt_path}", flush=True)
         return txt_path
@@ -547,13 +856,18 @@ def plot_loss_curve(
     # matplotlib 可用分支
     fig, ax = plt.subplots(figsize=(10, 6))
     train_x = list(range(len(train_losses)))
-    # val 的 x 坐标按 eval_interval 对齐（不超过 train_x 范围）
+    # val 的 x 坐标按 eval_interval 对齐
     if eval_interval < 1:
         eval_interval = 1
-    val_x = [i * eval_interval for i in range(len(val_losses))]
-    if val_x and val_x[-1] >= len(train_losses):
-        # 防止超出，按比例缩放到 train 范围内
-        val_x = [min(x, len(train_losses) - 1) for x in val_x]
+    n_train_mpl = len(train_losses)
+    if n_train_mpl > 0:
+        # 每个 val 点对齐到 i*eval_interval，超出 train 范围时截断到最后一个 step
+        val_x = [
+            min(i * eval_interval, n_train_mpl - 1)
+            for i in range(len(val_losses))
+        ]
+    else:
+        val_x = list(range(len(val_losses)))
 
     ax.plot(train_x, train_losses, color="blue", linestyle="-", linewidth=1.0, label="train")
     if val_losses:
@@ -572,6 +886,17 @@ def plot_loss_curve(
             markeredgewidth=0.8,
             label=f"val (every {eval_interval} steps)",
         )
+    # Part4K2.5 Task 5：显式设置 y 轴范围，避免 loss 全 0（或全相等）时
+    # matplotlib 自动缩放导致曲线不可见（与 ASCII 路径的兜底逻辑一致）。
+    # 过滤 NaN / Inf，避免 set_ylim 抛 ValueError（训练异常时 loss 可能为 inf）
+    all_vals_mpl = [float(v) for v in list(train_losses) + list(val_losses)
+                    if v is not None and np.isfinite(float(v))]
+    if all_vals_mpl:
+        y_min_mpl = float(min(all_vals_mpl))
+        y_max_mpl = float(max(all_vals_mpl))
+        if y_max_mpl - y_min_mpl < 1e-12:
+            y_max_mpl = y_min_mpl + 1.0
+        ax.set_ylim(y_min_mpl, y_max_mpl)
     ax.set_xlabel("step")
     ax.set_ylabel("loss")
     ax.set_title("Loss Curve")
@@ -682,8 +1007,35 @@ class Trainer:
         self.enable_progress_bar = bool(_cfg_get(cfg, "enable_progress_bar", True))
         self.realtime_plot = bool(_cfg_get(cfg, "realtime_plot", True))
         self.eta_window = int(_cfg_get(cfg, "eta_window", 20))
+        # Part4K2 Task 7.2: 输出控制
+        # quiet=True：只打印最终结果（关闭进度条 + 关闭中间日志）
+        # verbose=True：打印详细日志（保留进度条 + 额外信息）
+        self.quiet = bool(_cfg_get(cfg, "quiet", False))
+        self.verbose = bool(_cfg_get(cfg, "verbose", False))
         # 混合精度：GPU 时启用 autocast（需显式开启或 device 非 CPU 时自动启用）
         self.use_autocast = bool(_cfg_get(cfg, "autocast", False)) or not is_cpu_device(self.device)
+
+        # Part4K2 Task 5.2: 梯度缩放（GPU 时启用，CPU no-op）
+        # 显式 cfg 传入 grad_scaler；默认 GPU + autocast 时自动启用
+        self.use_grad_scaler = bool(_cfg_get(cfg, "grad_scaler", False)) or (
+            self.use_autocast and not is_cpu_device(self.device)
+        )
+        self.grad_scaler = GradScaler(enabled=self.use_grad_scaler)
+
+        # Part4K2 Task 5.2: 显存清理间隔（默认 100 步；CPU 时 no-op）
+        self.empty_cache_interval = int(_cfg_get(cfg, "empty_cache_interval", 100))
+        # Part4K2 Task 5.2: 梯度累积步数（accumulation_steps 是 grad_accum 的别名，
+        # 优先使用 grad_accum 保持向后兼容）
+        grad_accum_cfg = _cfg_get(cfg, "grad_accum", None)
+        if grad_accum_cfg is None:
+            grad_accum_cfg = _cfg_get(cfg, "accumulation_steps", 1)
+        self.grad_accum_n = int(grad_accum_cfg)
+
+        # Part4K2 Task 5.3: CPU BLAS 线程自动调优（Trainer 初始化时调用一次）
+        try:
+            auto_tune_threads()
+        except Exception:
+            pass
 
         # 子控制器
         self.early_stopping = EarlyStopping(self.patience)
@@ -722,11 +1074,18 @@ class Trainer:
                 x = _as_tensor(x)
                 y = _as_tensor(y)
                 # 非 CPU 设备：迁移输入到目标 device
+                # Part4K2 Task 5.4: non_blocking=True 与 pin_memory 配合异步传输
                 if not is_cpu_device(self.device):
                     if hasattr(x, "to"):
-                        x = x.to(self.device)
+                        try:
+                            x = x.to(self.device, non_blocking=True)
+                        except TypeError:
+                            x = x.to(self.device)
                     if hasattr(y, "to"):
-                        y = y.to(self.device)
+                        try:
+                            y = y.to(self.device, non_blocking=True)
+                        except TypeError:
+                            y = y.to(self.device)
                 with _get_autocast(self.device, enabled=self.use_autocast):
                     logits = self.model(x)
                     loss = cross_entropy_loss(logits, y)
@@ -751,7 +1110,8 @@ class Trainer:
         train_iter = itertools.cycle(self.train_loader)
 
         # 进度条：tqdm 可用且启用时用真进度条，否则用 no-op 占位
-        use_tqdm = self.enable_progress_bar and _HAS_TQDM
+        # Part4K2 Task 7.2: quiet 模式下关闭进度条
+        use_tqdm = self.enable_progress_bar and _HAS_TQDM and not self.quiet
         if use_tqdm:
             pbar = _tqdm(
                 range(self.max_steps),
@@ -780,11 +1140,19 @@ class Trainer:
             x = _as_tensor(x)
             y = _as_tensor(y)
             # 非 CPU 设备：迁移输入到目标 device
+            # Part4K2 Task 5.4: non_blocking=True 与 pin_memory 配合实现异步传输
             if not is_cpu_device(self.device):
                 if hasattr(x, "to"):
-                    x = x.to(self.device)
+                    try:
+                        x = x.to(self.device, non_blocking=True)
+                    except TypeError:
+                        # 自研 Tensor.to 不接受 non_blocking，回退
+                        x = x.to(self.device)
                 if hasattr(y, "to"):
-                    y = y.to(self.device)
+                    try:
+                        y = y.to(self.device, non_blocking=True)
+                    except TypeError:
+                        y = y.to(self.device)
 
             # 混合精度前向（autocast 在 CPU 时为 no-op）
             with _get_autocast(self.device, enabled=self.use_autocast):
@@ -792,14 +1160,18 @@ class Trainer:
                 loss = cross_entropy_loss(
                     logits, y, label_smoothing=self.label_smoothing
                 )
-            loss.backward()
+            # Part4K2 Task 5.1: GradScaler 缩放 loss（CPU 时 no-op，原样 backward）
+            scaled_loss = self.grad_scaler.scale(loss)
+            scaled_loss.backward()
 
             self.grad_accum.step()
             if self.grad_accum.should_step():
                 # 梯度裁剪：在 optimizer.step 前裁剪累积梯度的总范数
                 if self.grad_clip > 0:
                     clip_grad_norm(self.model.parameters(), self.grad_clip)
-                self.optimizer.step()
+                # Part4K2 Task 5.1: scaler.step（GPU 时反缩放梯度后 step；CPU 时直接 step）
+                self.grad_scaler.step(self.optimizer)
+                self.grad_scaler.update()
                 self.optimizer.zero_grad()
 
             if self.scheduler is not None:
@@ -808,6 +1180,17 @@ class Trainer:
             loss_val = _scalar(loss)
             self.train_losses.append(loss_val)
             step_times.append(time.time() - t_step)
+
+            # Part4K2 Task 5.2: 每 N 步清理显存（CPU 时 no-op）
+            if (
+                self.empty_cache_interval > 0
+                and step > 0
+                and step % self.empty_cache_interval == 0
+            ):
+                try:
+                    empty_cache(self.device)
+                except Exception:
+                    pass
 
             # 定期评估 + checkpoint + early stop
             if self.eval_interval > 0 and step % self.eval_interval == 0:
@@ -859,8 +1242,10 @@ class Trainer:
                     pass
 
             # 无 tqdm 时：保留 log_interval 打印（含 ETA），用于 CI / 无 TTY 场景
+            # Part4K2 Task 7.2: quiet 模式下跳过中间日志打印
             if (
                 not use_tqdm
+                and not self.quiet
                 and self.log_interval > 0
                 and (step % self.log_interval == 0 or step == self.max_steps - 1)
                 and step != last_log_step
@@ -881,15 +1266,23 @@ class Trainer:
         pbar.close()
 
         # 训练摘要
+        # Part4K2 Task 7.2: quiet 模式下只打印简短结果
         wall = time.time() - t_train_start
         n_done = len(self.train_losses)
         avg_step = wall / n_done if n_done > 0 else 0.0
-        print(
-            f"[train] done steps={n_done}/{self.max_steps} wall={wall:.2f}s "
-            f"avg_step={avg_step:.3f}s best_val={self.best_val_loss:.4f}"
-            + (f" best@step={best_step}" if best_step >= 0 else ""),
-            flush=True,
-        )
+        if self.quiet:
+            print(
+                f"[train] done best_val={self.best_val_loss:.4f} "
+                f"steps={n_done} wall={wall:.1f}s",
+                flush=True,
+            )
+        else:
+            print(
+                f"[train] done steps={n_done}/{self.max_steps} wall={wall:.2f}s "
+                f"avg_step={avg_step:.3f}s best_val={self.best_val_loss:.4f}"
+                + (f" best@step={best_step}" if best_step >= 0 else ""),
+                flush=True,
+            )
 
         # 训练结束：保存 loss_history.json + loss_curve 图
         self._save_history()
@@ -902,12 +1295,17 @@ class Trainer:
         方便用户用 grep / awk 等命令行工具直接读取，避免依赖 JSON 解析。
         """
         os.makedirs(self.save_dir, exist_ok=True)
+        # initial_loss / final_loss：训练第一个与最后一个 step 的 loss
+        initial_loss = float(self.train_losses[0]) if self.train_losses else float("nan")
+        final_loss = float(self.train_losses[-1]) if self.train_losses else float("nan")
         history = {
             "train_losses": list(self.train_losses),
             "val_losses": list(self.val_losses),
             "max_steps": self.max_steps,
             "eval_interval": self.eval_interval,
             "best_val_loss": self.best_val_loss,
+            "initial_loss": initial_loss,
+            "final_loss": final_loss,
         }
         with open(os.path.join(self.save_dir, "loss_history.json"), "w", encoding="utf-8") as f:
             json.dump(history, f, ensure_ascii=False, indent=2)
@@ -1243,6 +1641,9 @@ __all__ = [
     "clip_grad_norm",
     "ParallelTrainer",
     "DistributedTrainer",
+    # Part4K2 Task 5: 资源利用优化
+    "GradScaler",
+    "activation_checkpoint",
     # 重新导出 optim 中新增项，方便用户从 training 一次性导入
     "LambdaLR",
     "warmup_cosine_lr",
@@ -1321,6 +1722,20 @@ class ParallelTrainer:
         # chunk Trainer 的早停耐心（设大一些避免 chunk 内过早停止）
         self.patience = int(self.cfg.get("patience", 10))
 
+        # Part4K2 Task 7.2: 输出控制（quiet/verbose）
+        # quiet=True：只打印最终结果；verbose=True：打印详细日志
+        # 两者都为 False 时为标准模式（进度条 + 关键指标）
+        self.quiet = bool(self.cfg.get("quiet", False))
+        self.verbose = bool(self.cfg.get("verbose", False))
+        # Part4K2 Task 7.1: 外层进度条开关（chunk 级别）
+        self.enable_progress_bar = bool(self.cfg.get("enable_progress_bar", True))
+        # Part4K2 Task 7.5: 并行训练数据分配策略
+        # sequential（默认）：每个 chunk 用完整 train_dataset
+        # round_robin：数据集按索引轮询分配，chunk 间数据不重复
+        self.parallel_strategy = str(self.cfg.get("parallel_strategy", "sequential"))
+        if self.parallel_strategy not in ("sequential", "round_robin"):
+            self.parallel_strategy = "sequential"
+
         # 训练历史
         self.history = {"train_loss": [], "val_loss": [], "steps": []}
         self.chunk_stats = []  # 每个 chunk 的统计（按完成顺序）
@@ -1351,7 +1766,11 @@ class ParallelTrainer:
     def _split_steps(self):
         """把 ``max_steps`` 拆成 ``parallel_chunks`` 份，余数均摊到前几个 chunk。
 
-        返回 ``list[int]``，长度 = ``parallel_chunks``，和 = ``max_steps``。
+        返回 ``list[int]``：
+        - 若 ``max_steps >= parallel_chunks``：长度 = ``parallel_chunks``，
+          每个元素 >= 1，和 = ``max_steps``。
+        - 若 ``max_steps < parallel_chunks``：过滤掉 0 步 chunk，
+          长度 = ``max_steps``（每个 chunk 1 步），和 = ``max_steps``。
         """
         n = self.parallel_chunks
         base = self.max_steps // n
@@ -1360,8 +1779,137 @@ class ParallelTrainer:
         for i in range(remainder):
             steps_list[i] += 1
         # 过滤 0 步 chunk（max_steps < parallel_chunks 时部分 chunk 为 0）
+        # 当 max_steps >= parallel_chunks 时，base >= 1，所有 chunk 至少 1 步
         steps_list = [s for s in steps_list if s > 0]
         return steps_list
+
+    # ------------------------------------------------------------------
+    # Part4K2 Task 7: 辅助方法（参数统计 / 设备信息 / 数据切分 / 输出控制）
+    # ------------------------------------------------------------------
+
+    def _count_params(self) -> int:
+        """统计模型可训练参数量。"""
+        try:
+            if hasattr(self.model, "parameters"):
+                return sum(
+                    int(np.prod(p.data.shape))
+                    for p in self.model.parameters()
+                    if getattr(p, "requires_grad", True)
+                )
+        except Exception:
+            pass
+        return 0
+
+    def _get_arch(self) -> str:
+        """获取模型架构名（用于训练开始时打印）。"""
+        cfg = getattr(self.model, "config", None)
+        if cfg is not None:
+            arch = getattr(cfg, "arch", None)
+            if arch:
+                return str(arch)
+        return type(self.model).__name__
+
+    def _get_device(self) -> str:
+        """获取模型当前设备信息。"""
+        # 优先用 device_info()（CometSparkV05LM 提供）
+        if hasattr(self.model, "device_info") and callable(self.model.device_info):
+            try:
+                info = self.model.device_info()
+                if isinstance(info, str):
+                    return info
+                if isinstance(info, dict):
+                    return str(info.get("device", "cpu"))
+            except Exception:
+                pass
+        # 兜底：检测 model.net.device 或 model.device
+        for attr in ("device", "_device"):
+            dev = getattr(self.model, attr, None)
+            if dev is not None:
+                return str(dev)
+            net = getattr(self.model, "net", None)
+            if net is not None:
+                dev = getattr(net, attr, None)
+                if dev is not None:
+                    return str(dev)
+        return "cpu"
+
+    def _print_model_info(self) -> None:
+        """训练开始时打印模型信息（参数量、架构、设备）。
+
+        受 ``quiet`` 控制：quiet=True 时不打印。
+        """
+        if self.quiet:
+            return
+        n_params = self._count_params()
+        arch = self._get_arch()
+        device = self._get_device()
+        # 参数量人类可读格式
+        if n_params >= 1_000_000_000:
+            params_str = f"{n_params / 1e9:.2f}B"
+        elif n_params >= 1_000_000:
+            params_str = f"{n_params / 1e6:.2f}M"
+        elif n_params >= 1_000:
+            params_str = f"{n_params / 1e3:.1f}K"
+        else:
+            params_str = str(n_params)
+        print(
+            f"[parallel] 模型: arch={arch} params={params_str} ({n_params:,}) "
+            f"device={device} | chunks={self.parallel_chunks} "
+            f"max_steps={self.max_steps} strategy={self.parallel_strategy}",
+            flush=True,
+        )
+
+    def _print_summary(self, wall_time: float) -> None:
+        """训练结束时打印总结（最佳 val_loss、总步数、训练时间、loss 趋势）。
+
+        受 ``quiet`` 控制：quiet=True 时只打印一行最简结果。
+        """
+        n_chunks = len(self.chunk_stats)
+        total_steps = sum(s.get("steps", 0) for s in self.chunk_stats)
+        # loss 趋势：比较第一个和最后一个 chunk 的 train_loss
+        trend = "N/A"
+        if len(self.chunk_stats) >= 2:
+            first = self.chunk_stats[0].get("train_loss", float("nan"))
+            last = self.chunk_stats[-1].get("train_loss", float("nan"))
+            if not (math.isnan(first) or math.isnan(last)):
+                if last < first:
+                    trend = f"↓ {first:.4f}→{last:.4f}"
+                else:
+                    trend = f"↑ {first:.4f}→{last:.4f}"
+
+        if self.quiet:
+            # quiet 模式：只打印最终结果
+            print(
+                f"[parallel] done best_val={self.best_val_loss:.4f} "
+                f"steps={total_steps} wall={wall_time:.1f}s",
+                flush=True,
+            )
+        else:
+            print(
+                f"[parallel] 训练完成 best_val_loss={self.best_val_loss:.4f} "
+                f"chunks={n_chunks} steps={total_steps} wall={wall_time:.1f}s "
+                f"trend={trend}",
+                flush=True,
+            )
+
+    def _split_dataset_round_robin(self, dataset, n_chunks: int, chunk_id: int):
+        """round_robin 策略：把数据集按索引轮询分配到不同 chunk。
+
+        Part4K2 Task 7.5：chunk 间数据不重复，每个 chunk 训练不同的数据子集。
+        分配规则：``indices[i]`` 属于 ``chunk_id`` 当且仅当
+        ``i % n_chunks == chunk_id``。
+
+        Args:
+            dataset: 原始数据集
+            n_chunks: 总 chunk 数
+            chunk_id: 当前 chunk 编号（0-based）
+
+        Returns:
+            :class:`_SubsetDataset` 包装的子集
+        """
+        n = len(dataset)
+        chunk_indices = [i for i in range(n) if i % n_chunks == chunk_id]
+        return _SubsetDataset(dataset, chunk_indices)
 
     # ------------------------------------------------------------------
     # 关键 BUG 修复：基于完整 val 数据集评估
@@ -1427,6 +1975,11 @@ class ParallelTrainer:
           避免 chunk 内部的 checkpoint/loss 文件污染用户目录。
         - 关闭 tqdm 进度条与实时绘图，降低 IO 噪音。
         - chunk 训练结束后调用 ``_eval_full_val`` 计算可比较的 val_loss。
+
+        Part4K2.5 Task 6 修复：
+        - chunk 开始时备份模型状态，确保 chunk 训练后状态可追踪
+        - 每个 chunk 创建独立的优化器实例，避免优化器状态跨 chunk 泄漏
+        - chunk 训练后模型状态为该 chunk 的最终状态（由调用方决定是否恢复）
         """
         if chunk_steps <= 0:
             # 0 步 chunk：仅评估当前模型
@@ -1451,6 +2004,7 @@ class ParallelTrainer:
         if self.use_aux:
             chunk_cfg["aux_loss_weight"] = self.aux_loss_weight
 
+        # 每个 chunk 创建全新的优化器实例，确保优化器状态不跨 chunk 泄漏
         optimizer_cls = self.optimizer_cls
         if optimizer_cls is None:
             from .optim import AdamW
@@ -1503,6 +2057,8 @@ class ParallelTrainer:
             val_loss = self._eval_full_val(model)
             train_loss = (chunk_trainer.train_losses[-1]
                           if chunk_trainer.train_losses else float("inf"))
+        # chunk_trainer 和 optimizer 在 with 块结束后被 GC，
+        # 确保优化器状态不泄漏到下一个 chunk
         return model, train_loss, val_loss
 
     # ------------------------------------------------------------------
@@ -1520,25 +2076,47 @@ class ParallelTrainer:
         5. 整体 fine-tune（``merge_finetune_steps`` 步）
         6. 加载最佳状态到 ``self.model``，若提供 ``checkpoint_mgr`` 则保存
 
+        Part4K2 Task 7.1：添加外层进度条（chunk 级别），chunk 内部不开 tqdm
+        （保持现有行为，避免嵌套进度条）。tqdm 不可用时降级为简洁打印。
+
+        Part4K2 Task 7.2：输出控制
+        - ``quiet=True``：只打印最终结果
+        - ``verbose=True``：打印详细日志（包括每个 chunk 的详细信息）
+        - 默认（两者都 False）：进度条 + 关键指标
+
+        Part4K2 Task 7.5：``parallel_strategy``
+        - ``sequential``（默认）：每个 chunk 用完整 train_dataset
+        - ``round_robin``：数据集按索引轮询分配，chunk 间数据不重复
+
         Returns:
             ``self.history`` dict，含 ``train_loss`` / ``val_loss`` / ``steps`` 三个列表
         """
         import copy
 
-        print(f"[parallel] 开始并行训练 chunks={self.parallel_chunks} "
-              f"max_steps={self.max_steps} merge_ft={self.merge_finetune_steps}",
-              flush=True)
+        t_fit_start = time.time()
+
+        # Part4K2 Task 7.2: 训练开始打印模型信息（除非 quiet）
+        self._print_model_info()
 
         # 1. 拆分步数
         chunk_steps_list = self._split_steps()
         self.chunk_steps_list = list(chunk_steps_list)
         actual_chunks = len(chunk_steps_list)
-        print(f"[parallel] 步数拆分: {chunk_steps_list}", flush=True)
+        if self.verbose:
+            print(f"[parallel] 步数拆分: {chunk_steps_list} "
+                  f"merge_ft={self.merge_finetune_steps}", flush=True)
 
         # 备份原始模型状态（每个 chunk 都从同一状态出发）
         original_state = None
         if hasattr(self.model, "state_dict"):
             original_state = copy.deepcopy(self.model.state_dict())
+
+        # Part4K2 Task 7.1: 创建外层进度条
+        # 总阶段数 = Phase 1 (actual_chunks) + Phase 2 (actual_chunks 重训)
+        #           + Phase 3 (0 or 1 finetune)
+        total_phases = actual_chunks * 2 + (1 if self.merge_finetune_steps > 0 else 0)
+        outer_pbar = _ChunkPBar(
+            total=total_phases, quiet=self.quiet, desc="Parallel Training")
 
         # 2. 训练每个 chunk（从原始状态出发，独立训练）
         chunk_results = []
@@ -1547,10 +2125,22 @@ class ParallelTrainer:
             if original_state is not None and hasattr(self.model, "load_state_dict"):
                 self.model.load_state_dict(copy.deepcopy(original_state))
 
-            print(f"[parallel] chunk {i+1}/{actual_chunks} "
-                  f"训练 {chunk_steps_list[i]} 步...", flush=True)
+            # Part4K2 Task 7.5: round_robin 模式下使用数据子集
+            if self.parallel_strategy == "round_robin":
+                chunk_dataset = self._split_dataset_round_robin(
+                    self.train_dataset, actual_chunks, i)
+            else:
+                chunk_dataset = self.train_dataset
+
+            if self.verbose:
+                ds_info = ""
+                if self.parallel_strategy == "round_robin":
+                    ds_info = f" (subset={len(chunk_dataset)})"
+                print(f"[parallel] chunk {i+1}/{actual_chunks} "
+                      f"训练 {chunk_steps_list[i]} 步{ds_info}...", flush=True)
+
             model, train_loss, val_loss = self._train_chunk(
-                self.model, self.train_dataset, chunk_steps_list[i], i)
+                self.model, chunk_dataset, chunk_steps_list[i], i)
 
             stat = {
                 "chunk_id": i,
@@ -1562,8 +2152,21 @@ class ParallelTrainer:
             }
             chunk_results.append(stat)
             self.chunk_stats.append(stat)
-            print(f"[parallel] chunk {i+1} 完成: "
-                  f"train_loss={train_loss:.4f} val_loss={val_loss:.4f}", flush=True)
+
+            # Part4K2 Task 7.1: 更新外层进度条
+            outer_pbar.update(
+                n=1,
+                postfix={
+                    "chunk": f"{i+1}/{actual_chunks}",
+                    "loss": f"{train_loss:.4f}",
+                    "val": f"{val_loss:.4f}",
+                },
+            )
+
+            if self.verbose:
+                print(f"[parallel] chunk {i+1} 完成: "
+                      f"train_loss={train_loss:.4f} val_loss={val_loss:.4f}",
+                      flush=True)
 
             # 更新 best（chunk 阶段也记录）
             if val_loss < self.best_val_loss:
@@ -1574,45 +2177,95 @@ class ParallelTrainer:
         # 3. 按 train_loss + val_loss 排序（差前好后：loss 大的在前）
         chunk_results.sort(
             key=lambda x: x["train_loss"] + x["val_loss"], reverse=True)
-        print(f"[parallel] chunk 排序（差前好后）: "
-              f"{[r['chunk_id'] for r in chunk_results]}", flush=True)
+        if self.verbose:
+            print(f"[parallel] chunk 排序（差前好后）: "
+                  f"{[r['chunk_id'] for r in chunk_results]}", flush=True)
 
         # 4. 串行重训（差前好后）
         if original_state is not None and hasattr(self.model, "load_state_dict"):
             self.model.load_state_dict(copy.deepcopy(original_state))
 
         for idx, result in enumerate(chunk_results):
-            print(f"[parallel] 串行重训 chunk {result['chunk_id']} "
-                  f"({idx+1}/{len(chunk_results)})...", flush=True)
+            # Part4K2.5 Task 6 修复：chunk_steps < 4 时跳过 Phase 2 重训
+            # （步数太少重训意义不大，且 chunk_steps // 4 == 0 会导致步数为 0）
+            retrain_steps = result["steps"] // 4
+            if retrain_steps <= 0:
+                # chunk_steps < 4：跳过重训，但仍 update 进度条以保持 total 一致
+                if self.verbose:
+                    print(f"[parallel] 跳过 chunk {result['chunk_id']} 重训"
+                          f"（steps={result['steps']} < 4）", flush=True)
+                outer_pbar.update(
+                    n=1,
+                    postfix={
+                        "retrain": f"chunk_{result['chunk_id']}(skip)",
+                        "val": "N/A",
+                    },
+                )
+                continue
+
+            if self.verbose:
+                print(f"[parallel] 串行重训 chunk {result['chunk_id']} "
+                      f"({idx+1}/{len(chunk_results)})...", flush=True)
             # 加载该 chunk 的最佳状态作为重训起点
             if result["model_state"] is not None and hasattr(self.model, "load_state_dict"):
                 self.model.load_state_dict(copy.deepcopy(result["model_state"]))
-            # 再训练一段短步数（chunk_steps // 4，至少 1 步）
-            retrain_steps = max(1, result["steps"] // 4)
+            # Part4K2.5 Task 6 修复：retrain_steps = chunk_steps // 4（>= 1，因为
+            # chunk_steps >= 4 时 result["steps"] // 4 >= 1）
+            # _train_chunk 内部会创建新的优化器，确保 Phase 2 不复用旧优化器状态
+
+            # Part4K2 Task 7.5: round_robin 重训也用对应 chunk 的数据子集
+            if self.parallel_strategy == "round_robin":
+                chunk_dataset = self._split_dataset_round_robin(
+                    self.train_dataset, actual_chunks, result["chunk_id"])
+            else:
+                chunk_dataset = self.train_dataset
+
             self._train_chunk(
-                self.model, self.train_dataset, retrain_steps, -(idx + 1))
+                self.model, chunk_dataset, retrain_steps, -(idx + 1))
             # 更新 val_loss 与 best
             val_loss = self._eval_full_val(self.model)
+
+            # Part4K2 Task 7.1: 更新外层进度条
+            outer_pbar.update(
+                n=1,
+                postfix={
+                    "retrain": f"chunk_{result['chunk_id']}",
+                    "val": f"{val_loss:.4f}",
+                },
+            )
+
             if val_loss < self.best_val_loss:
                 self.best_val_loss = float(val_loss)
                 if hasattr(self.model, "state_dict"):
                     self.best_state_dict = copy.deepcopy(self.model.state_dict())
-                print(f"[parallel] 新最佳 val_loss={val_loss:.4f}", flush=True)
+                if self.verbose:
+                    print(f"[parallel] 新最佳 val_loss={val_loss:.4f}", flush=True)
 
         # 5. 整体 fine-tune
         if self.merge_finetune_steps > 0:
-            print(f"[parallel] 整体 fine-tune {self.merge_finetune_steps} 步...",
-                  flush=True)
+            if self.verbose:
+                print(f"[parallel] 整体 fine-tune {self.merge_finetune_steps} 步...",
+                      flush=True)
             if self.best_state_dict is not None and hasattr(self.model, "load_state_dict"):
                 self.model.load_state_dict(copy.deepcopy(self.best_state_dict))
             self._train_chunk(
                 self.model, self.train_dataset,
                 self.merge_finetune_steps, -999)
             val_loss = self._eval_full_val(self.model)
+
+            # Part4K2 Task 7.1: 更新外层进度条
+            outer_pbar.update(
+                n=1,
+                postfix={"finetune": "done", "val": f"{val_loss:.4f}"},
+            )
+
             if val_loss < self.best_val_loss:
                 self.best_val_loss = float(val_loss)
                 if hasattr(self.model, "state_dict"):
                     self.best_state_dict = copy.deepcopy(self.model.state_dict())
+
+        # 关闭外层进度条
+        outer_pbar.close()
 
         # 6. 加载最佳状态到 model
         if self.best_state_dict is not None and hasattr(self.model, "load_state_dict"):
@@ -1627,7 +2280,8 @@ class ParallelTrainer:
                     "val_loss": float(self.best_val_loss),
                 })
             except Exception as e:
-                print(f"[parallel] 警告：保存 checkpoint 失败：{e}", flush=True)
+                if not self.quiet:
+                    print(f"[parallel] 警告：保存 checkpoint 失败：{e}", flush=True)
 
         # 8. 汇总 history（取每个 chunk 的最终 train/val loss）
         for stat in self.chunk_stats:
@@ -1635,8 +2289,9 @@ class ParallelTrainer:
             self.history["val_loss"].append(stat["val_loss"])
             self.history["steps"].append(stat["steps"])
 
-        print(f"[parallel] 训练完成 best_val_loss={self.best_val_loss:.4f}",
-              flush=True)
+        # Part4K2 Task 7.2: 训练结束打印总结
+        wall_time = time.time() - t_fit_start
+        self._print_summary(wall_time)
         return self.history
 
 

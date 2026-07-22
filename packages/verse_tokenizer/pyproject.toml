@@ -10,6 +10,12 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["numpy>=1.26", "verse-torch"]
 
+[project.optional-dependencies]
+# Part4K2 Task 2: jinja2 可选依赖，用于 ChatML 模板渲染（不可用时降级为 f-string）
+chatml = ["jinja2>=3.0"]
+# VerseTokenizer（Qwen3）需要 transformers（lazy import，仅构造时触发）
+verse = ["transformers>=4.40"]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["verse_tokenizer*"]

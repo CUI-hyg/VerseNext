@@ -12,6 +12,26 @@
 # - 15 个 trisparse 层 + 5 个 mod 层 ≈ 861M
 # - Embedding (tie, vocab=248320) = 254M
 # - 总 ≈ 1115M ≈ 1.12B
+#
+# Part4K2 Task 7.4: 1B 模型 CPU/GPU 亲和优化建议
+# ---------------------------------------------------------------
+# 训练时 verse-train 会自动检测参数量 > 100M 并启用以下优化：
+# 1. auto_tune_threads()：CPU BLAS 线程自动调优（大模型留 25% 余量给数据加载）
+# 2. empty_cache_interval=50：GPU 显存定期清理（仅 GPU 生效，CPU 时 no-op）
+# 3. 自动启用 amp（GPU 混合精度 autocast + GradScaler）
+# 4. 建议 --partition-training：CPU 大模型内存吃紧时按 layer 分组训练+卸载
+#
+# CPU 训练建议：
+#   verse-train --config spark/config/cometspark_v05.yml \
+#       --parallel-chunks 2 --partition-training
+#
+# GPU 训练建议：
+#   verse-train --config spark/config/cometspark_v05.yml \
+#       --device cuda --amp --parallel-chunks 2
+#
+# 持续训练（Part4K2 Task 7.3）：
+#   verse-continue --checkpoint checkpoints/best.pt \
+#       --additional-steps 1000 --config spark/config/cometspark_v05.yml
 
 model:
   arch: versenex
@@ -69,6 +89,13 @@ training:
   realtime_plot: true
   eta_window: 20
   parallel_chunks: 1
+  # Part4K2 Task 7.4: 1B 模型 GPU 显存定期清理间隔（步）
+  # 0=关闭（CPU 默认），GPU 训练时 verse-train 会自动设为 50
+  empty_cache_interval: 0
+  # Part4K2 Task 7.5: 并行训练数据分配策略
+  # sequential（默认）：每个 chunk 用完整 train_dataset
+  # round_robin：数据集按索引轮询分配，chunk 间数据不重复
+  parallel_strategy: sequential
 
 tokenizer:
   kind: bpe

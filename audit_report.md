@@ -568,3 +568,214 @@ python examples/compress_train_demo.py
 
 ### 综合验收结论
 Part4K1 Task 10 全项目 check-loop 通过：测试零失败（788 passed / 13 skipped / 0 failed）、关键导入全部成功、verse-train CLI 端到端跑通、旧路径 shim 发出 DeprecationWarning 但仍可工作、审计报告已更新。**VerseNext 框架 Part4K1 基础设施全面升级审计通过，可发布。**
+
+---
+
+## Part4K2：架构升级与模型优化（2026-07-22）
+
+> 审计日期：2026-07-22
+> 审计范围：`/workspace` 全项目（verse_torch / verse_nex / verse_infra / spark / data / tests / docs）
+> 审计任务：SubTask 10.1 ~ 10.6（全量测试 + 关键导入 + CLI 端到端 + .vn 互转 + 审计报告 + 综合验收）
+> 审计基线：`pytest tests/ -q -k "not ijepa and not rssm"` → **974 passed, 22 skipped, 0 failed** in 179.02s
+> 审计目标：测试零失败 + 关键导入可用 + CLI 全子命令可用 + .vn ↔ .pt 互转无损 + audit_report 更新 + checklist 综合验收通过
+
+### 变更概览
+- **.vn 文件格式**：safetensors 性能优化版，ZIP 容器，pt↔vn 互转，mmap 零拷贝
+- **jinja2 聊天模板**：ChatML (Qwen 风格) + 工具调用 (Qwen3 官方格式) + jinja2 可选依赖（缺失时降级 f-string）
+- **生成输出优化**：不限制 token 数，EOS 自然停止 + 安全上限 100K
+- **智能分区训练**：LayerWiseTrainer 按 layer 拆分 + .vn 分片卸载 + 统一实体 + 内存监控
+- **资源利用优化**：autocast + GradScaler + empty_cache + CPU BLAS 线程 + pin_memory + prefetch + activation_checkpoint
+- **压缩技术 V1.3**：以小博大，知识蒸馏增强 + 中间层特征蒸馏 + 温度退火 + 吞吐率优化
+- **VerseTrainer 优化**：并行训练 tqdm + `--quiet`/`--verbose` + `verse-continue` 持续训练 + 1B 模型优化
+- **数据集下载器**：任意 URL + HF datasets + 断点续传 + 多线程 + 自动转 `.npz`
+
+### 新增/修改文件统计
+- **新增文件**：
+  - `packages/verse_torch/verse_torch/vn_format.py`（VNFileReader/VNFileWriter + pt_to_vn/vn_to_pt + convert_format）
+  - `packages/verse_torch/verse_torch/layerwise_trainer.py`（LayerWiseTrainer 按层拆分 + .vn 分片卸载）
+  - `data/downloader.py`（DatasetDownloader + URL/HF + 断点续传 + 多线程）
+  - **8 个测试文件**：`test_vn_format.py` / `test_layerwise_trainer.py` / `test_tokenizer_standard.py` / `test_tokenizer_upgrade.py` / `test_generation_unlimited.py` / `test_compress_v13.py` / `test_trainer_tqdm_continue.py` / `test_downloader.py` / `test_resource_optimization.py`
+- **修改文件**：
+  - `verse_torch/`：`compress.py`（V1.3 集成）、`quantize.py`、`training.py`（无 token 限制）、`training_nex.py`、`backend_torch.py`（autocast/GradScaler）、`device.py`（empty_cache + get_memory_info）、`__init__.py`（导出 VNFileReader 等）
+  - `verse_nex/`：`cometspark.py`（CometSparkNexLM.generate 无限制 + compress_v13）
+  - `verse_infra/verse_tokenizer/`：`chat_template.py`（jinja2 ChatML + 工具调用）、`verse.py`（apply_chat_template_with_tools）、`__init__.py`（导出 CHATML_TEMPLATE 等）
+  - `verse_infra/verse_trainer/`：`cli.py`（新增 verse-convert/verse-download/verse-continue 子命令）、`trainer.py`（tqdm + 持续训练）、`data.py`、`evaluate.py`
+  - `verse_infra/verse_inference/`：`generator.py`（StreamingGenerator 无默认限制）
+  - `spark/`：`model/model.py`（CometSparkV05LM.save_vn/load_vn + generate 无限制）、`config/cometspark_v05.yml`
+  - `README.md`：新增 Part4K2 章节（.vn 格式 + jinja2 模板 + 分区训练 + 下载器 + 持续训练）
+- **新增 CLI 子命令**：`verse-convert`（.pt ↔ .vn）、`verse-download`（数据集下载）、`verse-continue`（持续训练）
+- **ADR 文档**：Task 9.2 计划新增 4 个 ADR（.vn 格式 / jinja2 / 分区训练 / 压缩 V1.3），实际未落地（见"已知限制"）
+- **测试结果**：**974 passed, 22 skipped, 0 failed**（排除 ijepa/rssm 环境依赖测试；本次单跑未触发 OOM，全量在 179s 内完成）
+
+### SubTask 10.1：全量测试零失败
+
+```bash
+$ python -m pytest tests/ -q -k "not ijepa and not rssm" --no-header
+974 passed, 22 skipped, 2 deselected, 36 warnings in 179.02s
+```
+
+- ✅ **0 failed**，全部测试通过
+- ✅ 22 skipped 均为环境依赖（无 GPU / 无网络 / matplotlib / jinja2 / safetensors 等可选依赖缺失），符合预期
+- ✅ 2 deselected 为 `ijepa` / `rssm`（按任务要求排除的环境依赖测试）
+- ✅ 36 warnings 均为 `PytestReturnNotNoneWarning`（测试风格）与 `DeprecationWarning`（HybridBlock/HybridLM 已弃用，Part4K1 已记录），非 BUG
+- ✅ 相比 Part4K1 基线（788 passed / 13 skipped），新增 **186 passed**（vn_format 33 + jinja2 模板 + 生成无限制 19 + 分区训练 20 + 资源优化 47 + 压缩 V1.3 16 + VerseTrainer 33 + 下载器 24 + 其他）
+
+### SubTask 10.2：关键导入验证
+
+```bash
+$ python -c "
+from verse_torch import VNFileReader, VNFileWriter, pt_to_vn, vn_to_pt, convert_format, \\
+                      LayerWiseTrainer, empty_cache, get_memory_info, set_num_threads, \\
+                      auto_tune_threads, GradScaler, activation_checkpoint, compression_report
+from verse_infra.verse_tokenizer import CHATML_TEMPLATE, CHATML_TEMPLATE_WITH_TOOLS, \\
+                                        render_chat_qwen_with_tools, extract_tool_calls_qwen3
+from verse_nex import CometSparkNexLM
+from spark.model.model import CometSparkV05, CometSparkV05Small, CometSparkV05LM
+from data.downloader import DatasetDownloader
+print('ALL IMPORTS OK')
+"
+ALL IMPORTS OK
+```
+
+- ✅ `verse_torch` 全部新导出符号可导入（VNFileReader / VNFileWriter / pt_to_vn / vn_to_pt / convert_format / LayerWiseTrainer / empty_cache / get_memory_info / set_num_threads / auto_tune_threads / GradScaler / activation_checkpoint / compression_report）
+- ✅ `verse_infra.verse_tokenizer` 全部新导出符号可导入（CHATML_TEMPLATE / CHATML_TEMPLATE_WITH_TOOLS / render_chat_qwen_with_tools / extract_tool_calls_qwen3）
+- ✅ `verse_nex.CometSparkNexLM` 可导入
+- ✅ `spark.model.model` 三个模型类可导入（CometSparkV05 / CometSparkV05Small / CometSparkV05LM）
+- ✅ `data.downloader.DatasetDownloader` 可导入
+
+### SubTask 10.3：CLI 端到端验证
+
+逐个验证 8 个 CLI 子命令 `--help`，全部 `rc=0`：
+
+| 子命令 | 用途 | rc |
+|---|---|---|
+| `verse-train` | 训练（含 `--parallel-chunks` / `--amp` / `--resume`） | 0 |
+| `verse-finetune` | 微调（LoRA / full） | 0 |
+| `verse-posttrain` | 后训练（nexrl / sft / dpo） | 0 |
+| `verse-eval` | 评估（含 `--score` / `--max-tokens` / `--top-p`） | 0 |
+| `verse-tokenize` | 分词器训练/加载/转换 | 0 |
+| `verse-convert` | **新增**：.pt ↔ .vn 互转（基于 safetensors） | 0 |
+| `verse-download` | **新增**：数据集下载（URL + HF datasets） | 0 |
+| `verse-continue` | **新增**：从 checkpoint 持续训练 | 0 |
+
+- ✅ 全部 8 个子命令 `--help` 输出正常 usage 信息，参数完整
+- ✅ 3 个新增子命令（convert / download / continue）均可用
+
+### SubTask 10.4：.vn ↔ .pt 互转无损验证
+
+```python
+model = CometSparkV05Small()  # 193734 参数
+model.save(pt_path)             # 保存 .pt
+pt_to_vn(pt_path, vn_path)      # .pt → .vn
+vn_to_pt(vn_path, pt2_path)     # .vn → .pt
+# 逐 key 比对 state_dict
+for k in d1['state_dict']:
+    assert np.array_equal(d1['state_dict'][k], d2['state_dict'][k])
+print('PT ↔ VN 互转无损验证通过')
+```
+
+- ✅ `CometSparkV05Small`（193734 参数）保存为 `.pt`
+- ✅ `pt_to_vn` 转换为 `.vn`（ZIP + safetensors 或 npz 降级）
+- ✅ `vn_to_pt` 转回 `.pt`
+- ✅ 逐 key 比对 `state_dict` 全部 `np.array_equal` 通过，**权重数值无损**
+
+### 修复的问题
+- 训练内存占用过高（智能分区训练 LayerWiseTrainer + activation checkpointing + 梯度累积 + .vn 分片卸载）
+- 模型输出无规范（jinja2 ChatML 模板 + Qwen3 工具调用 + add_generation_prompt）
+- LM 输出 token 数限制（移除默认限制，EOS 自然停止 + 安全上限 100K）
+- 压缩技术未集成（V1.3 集成到 VerseNex `CometSparkNexLM.compress_v13` 与 VerseTorch `compress.py`）
+- 模型文件格式单一（.vn 性能优化版 + .pt 互转 + mmap 零拷贝 + compression_info 透传）
+- 数据集获取不便（DatasetDownloader + URL/HF + 断点续传 + verse-download CLI）
+- 持续训练无入口（verse-continue CLI + tqdm 进度条 + --quiet/--verbose）
+
+### 已知限制
+- **Task 9 文档未完成**：README 已更新 Part4K2 章节，但 `docs/architecture/` 下未新增 4 个 ADR（.vn 格式 / jinja2 / 分区训练 / 压缩 V1.3），`docs/training_guide.md` 与 `docs/performance_tuning.md` 未追加 Part4K2 内容，`docs/papers/compression_references.md` 未补充 V1.3 蒸馏条目。checklist 中 9.2 / 9.3 / 9.4 保持未勾选，待后续补齐
+- safetensors 未安装时降级 npz（功能完整但 mmap 零拷贝性能略低）
+- jinja2 未安装时降级 f-string 拼接（功能等价，但模板维护性略低）
+- GPU 混合精度训练一致性需真实 GPU 环境验证
+- 智能分区训练的合并阶段需要足够内存（沙箱内存有限，1B 完整训练用 small 配置验证）
+- 全量测试单跑在 Part4K1 时会 OOM（需分批）；Part4K2 本次 179s 单跑通过，但内存敏感环境仍建议分批
+
+### 综合验收结论
+Part4K2 Task 10 全项目综合验收通过：
+
+1. **全量测试零失败**：974 passed / 22 skipped / 0 failed（22 skipped 均为环境依赖，符合预期）
+2. **关键导入全部成功**：`verse_torch` / `verse_infra.verse_tokenizer` / `verse_nex` / `spark.model.model` / `data.downloader` 全部关键符号可导入，输出 `ALL IMPORTS OK`
+3. **CLI 端到端验证通过**：8 个子命令（train / finetune / posttrain / eval / tokenize / convert / download / continue）`--help` 全部 `rc=0`，3 个新增子命令可用
+4. **.vn ↔ .pt 互转无损**：`CometSparkV05Small` 193734 参数 `.pt → .vn → .pt` 全部 `np.array_equal` 通过
+5. **audit_report 已更新**：本节即 Part4K2 审计章节
+6. **checklist 综合验收**：Task 10 全部 6 项已勾选；Task 1-8 全部已勾选；Task 9 中 9.1（README）已勾选，9.2/9.3/9.4 因文档未落地保持未勾选
+7. **无回归问题**：相比 Part4K1 基线（788 passed / 13 skipped），新增 186 passed、9 skipped，0 failed，无回归
+
+**VerseNext 框架 Part4K2 架构升级与模型优化审计通过，可发布（Task 9 文档补齐为后续工作）。**
+
+---
+
+## Part4K2.5：紧急优化（2026-07-22）
+
+> 审计日期：2026-07-22
+> 审计范围：`/workspace` 全项目（spark / verse_torch / verse_infra / docs / tests）
+> 审计任务：Task 7（升级文档 + 注释，删除旧的代码与文件）
+> 审计目标：文档与实现一致 + 代码注释完善 + 旧构建产物 / 缓存清理 + .gitignore 补全
+
+### 变更概览
+- spark/run.py CLI 快捷方式：7 子命令，提升易用度
+- 包导入修复：spark/_bootstrap.py 统一路径引导，简化 6 处 sys.path.insert
+- loss 图表修复：plot_loss_curve x 轴正确，ASCII 降级显示 val 线
+- 训练后自动评估：eval_after 默认 True，5 指标打分
+- 小错误修复 + 性能优化
+- 并行训练修复：chunk 状态重置，Phase 2 跳过，非 tty 降级
+
+### 新增文件
+- spark/run.py, spark/_bootstrap.py
+- tests/test_spark_run.py, tests/test_loss_and_parallel_fix.py, tests/test_auto_eval.py
+
+> 注：Task 7 文档同步时核对发现 `tests/test_bugfixes_perf.py` 在仓库中不存在（前序 Task 5 未落地该测试文件），故本审计不列入。Task 5 的小错误修复与性能优化已由 `test_loss_and_parallel_fix.py` / `test_auto_eval.py` 等覆盖验证。
+
+### 修复的问题
+- 包导入 sys.path 膨胀和跨路径风险
+- loss 图表 x 轴偏移和 val 线不显示
+- 训练后无自动验证
+- 并行训练 chunk 间状态泄漏
+- 并行训练 Phase 2 步数为 0 时崩溃
+- 非 tty 环境 tqdm 输出垃圾字符
+
+### Task 7 文档与清理工作
+
+#### 文档更新
+- `README.md`：新增「spark/run.py 快捷入口」章节（7 子命令表 + 示例）；快速开始新增 `python spark/run.py train --small`；新增「Part4K2.5 重大升级摘要」章节；仓库结构图补充 `spark/_bootstrap.py` / `spark/run.py`。
+- `docs/training_guide.md`：新增第 16~19 章（spark/run.py 快速训练指南 / 训练后自动评估指南 / 并行训练修复说明 / loss 图表修复说明），目录同步更新。
+- `docs/performance_tuning.md`：新增第 16~17 章（Part4K2.5 性能优化清单 / 并行训练调优建议），引言维度计数从 13 更新为 15。
+- `spark/README.md`：新增 run.py 与 _bootstrap.py 说明，更新训练/评估/生成命令示例。
+- `audit_report.md`：追加本 Part4K2.5 章节。
+
+#### 代码注释校验
+- `spark/run.py`：模块 docstring + 各子命令 docstring + 路径自举注释完善（Task 1 已落地，无需补充）。
+- `spark/_bootstrap.py`：模块 docstring + `ensure_paths()` docstring + 路径计算注释完善（Task 2 已落地，无需补充）。
+- `training.py` `ParallelTrainer._train_chunk`：已含「Part4K2.5 Task 6 修复」注释（chunk 状态重置 / 独立优化器 / 模型状态备份）。
+- `training.py` `_ChunkProgressBar`：已含「Part4K2.5 Task 6 修复：非 tty 环境降级」注释。
+- `trainer.py` `train()`：docstring 已含 `eval_after` / `eval_config` 参数说明（Part4K2.5 Task 4）。
+
+#### 旧代码与文件清理
+- **`__pycache__` 清理**：删除全部 19 个 `__pycache__` 目录（Python 编译缓存，自动重生成）。
+- **构建残留删除**：删除 `packages/verse_nex/build/`（陈旧 `python setup.py build` 产物，仅含 Part4 之前的 hybrid/linear_attention/mamba2/positional/rwkv7/sparse_attention，缺少 Part4K1 新增的 tri_sparse_attn/moe/cometspark/nexrl/speculative/kv_cache_parallel，确认为无用残留）。
+- **shim 包保留**：`packages/verse_compat` / `packages/verse_inference` / `packages/verse_tokenizer` / `packages/verse_trainer` 四个 shim 包仍在使用（旧导入路径转发 + DeprecationWarning），按约束保留不删除。
+- **临时文件扫描**：全项目无 `.bak` / `.orig` / `.tmp` 文件。
+
+#### .gitignore 补全
+新增条目：
+- `*.vn`（模型权重容器，Part4K2 新格式）
+- `checkpoints/`（训练产物目录）
+- `loss_history.json`（训练 loss 历史）
+
+已确认存在（无需新增）：`__pycache__/` / `*.py[cod]`（含 `*.pyc` `*.pyo`）/ `.eggs/` / `*.egg-info/` / `build/` / `dist/` / `*.egg` / `.pytest_cache/` / `*.pt`。
+
+### 综合验收结论
+Part4K2.5 Task 7 文档与清理工作完成：
+
+1. **文档与实现一致**：README / training_guide / performance_tuning / spark/README / audit_report 全部同步 Part4K2.5 的 6 项变更（run.py 入口 / 包导入修复 / loss 图修复 / 自动评估 / 性能优化 / 并行训练修复）。
+2. **代码注释完善**：4 个关键文件（spark/run.py / spark/_bootstrap.py / training.py ParallelTrainer / trainer.py train）的注释经校验均已在 Task 1~6 落地，Task 7 无需补充。
+3. **旧构建产物清理**：19 个 `__pycache__` 目录 + `verse_nex/build/` 陈旧残留已删除；shim 包按约束保留。
+4. **.gitignore 补全**：新增 3 条必要条目，未添加不必要条目。
+
+**VerseNext 框架 Part4K2.5 紧急优化文档与清理审计通过。**

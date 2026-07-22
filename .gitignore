@@ -47,6 +47,11 @@ ENV/
 *.bin
 *.safetensors
 *.gguf
+*.vn
+
+# 训练产物目录与 loss 历史（自动生成，不应提交）
+checkpoints/
+loss_history.json
 
 # 数据集（大文件，按需手动取消注释）
 # datasets/raw/mnist/*.gz

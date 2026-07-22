@@ -20,14 +20,8 @@ CLI 入口（推荐）：
 
 from __future__ import annotations
 
-import os as _os
-import sys as _sys
-_THIS_DIR = _os.path.dirname(_os.path.abspath(__file__))
-_REPO_ROOT = _os.path.dirname(_os.path.dirname(_THIS_DIR))
-for _dep in ("verse_infra", "verse_torch", "verse_nex"):
-    _dep_path = _os.path.join(_REPO_ROOT, "packages", _dep)
-    if _os.path.isdir(_dep_path) and _dep_path not in _sys.path:
-        _sys.path.insert(0, _dep_path)
+# 路径引导：统一委托 spark._bootstrap（幂等，自动注入 verse_infra 等）
+import spark._bootstrap  # noqa: F401 — 副作用导入：设置 sys.path
 
 from verse_infra.verse_trainer import (  # noqa: E402
     train,

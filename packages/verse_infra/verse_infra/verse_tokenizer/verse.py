@@ -66,10 +66,15 @@ from .bpe import BaseTokenizer
 from .chat_template import (
     render_prompt_qwen as _render_prompt_qwen,
     render_chat_qwen as _render_chat_qwen,
+    render_chat_qwen_with_tools as _render_chat_qwen_with_tools,
     split_prompt_completion_qwen as _split_prompt_completion_qwen,
+    extract_tool_calls_qwen3 as _extract_tool_calls_qwen3,
     QWEN_IM_START,
     QWEN_IM_END,
     QWEN_ENDOFTEXT,
+    TOOL_CALL_BEGIN as _TOOL_CALL_BEGIN,
+    TOOL_CALL_END as _TOOL_CALL_END,
+    _HAS_JINJA2,
 )
 
 
@@ -654,6 +659,61 @@ class VerseTokenizer(BaseTokenizer):
             tokenize=tokenize,
         )
 
+    def apply_chat_template_with_tools(
+        self,
+        messages: list[dict],
+        tools: Optional[list[dict]] = None,
+        add_generation_prompt: bool = False,
+        render_tool_calls: bool = True,
+        tokenize: bool = False,
+    ) -> Union[str, list[int]]:
+        """渲染含工具声明的 chat 数组（Qwen3 官方 ``<tool_call>`` 格式）。
+
+        Part4K2 Task 2 新增。使用 jinja2 ChatML 模板（``CHATML_TEMPLATE_WITH_TOOL_CALLS``
+        / ``CHATML_TEMPLATE_WITH_TOOLS``）渲染 tools 声明 + assistant 的
+        ``tool_calls`` 字段。jinja2 不可用时降级为 f-string 拼接（输出等价）。
+
+        与 :meth:`apply_chat_template` 的区别：
+            - 显式传入 ``tools`` 列表，渲染为 system 段的工具声明；
+            - assistant 消息可携带 ``tool_calls`` 字段，渲染为
+              ``<tool_call>\\n{json}\\n</tool_call>`` 块；
+            - 不依赖底层 tokenizer 的 ``apply_chat_template``，避免
+              Qwen3 内置模板对 ``<think>`` 标签等的额外处理。
+
+        Args:
+            messages: ``[{"role": "...", "content": "...", "tool_calls": [...]}, ...]``
+            tools: 可用工具声明列表（OpenAI function calling 风格）；
+                为空 / ``None`` 时不输出 tools 声明 system 段。
+            add_generation_prompt: ``True`` 时末尾追加 ``<|im_start|>assistant\\n``。
+            render_tool_calls: ``True`` 时渲染 assistant 的 ``tool_calls`` 字段
+                为 ``<tool_call>`` 块；``False`` 时仅声明 tools，所有消息按
+                ``content`` 渲染。
+            tokenize: ``True`` 返回 token id 列表，``False`` 返回字符串。
+
+        Returns:
+            渲染后的字符串或 token id 列表。
+
+        Examples:
+            >>> tok = VerseTokenizer()  # doctest: +SKIP
+            >>> tools = [{"type": "function", "function": {
+            ...     "name": "get_weather",
+            ...     "parameters": {"type": "object", "properties": {}},
+            ... }}]
+            >>> msgs = [{"role": "user", "content": "北京天气"}]
+            >>> text = tok.apply_chat_template_with_tools(  # doctest: +SKIP
+            ...     msgs, tools=tools, add_generation_prompt=True,
+            ... )
+        """
+        rendered = _render_chat_qwen_with_tools(
+            messages,
+            tools=tools,
+            add_generation_prompt=add_generation_prompt,
+            render_tool_calls=render_tool_calls,
+        )
+        if tokenize:
+            return self.encode(rendered, add_special_tokens=False)
+        return rendered
+
     def apply_prompt_template(self, prompt: str, system: str = None) -> str:
         """渲染 prompt 为推理前缀（Qwen3 ChatML 格式）。
 
@@ -668,6 +728,15 @@ class VerseTokenizer(BaseTokenizer):
             的内容，等待模型生成）。
         """
         return _render_prompt_qwen(prompt, system=system)
+
+    @property
+    def jinja2_available(self) -> bool:
+        """是否可用 jinja2 渲染 ChatML 模板（Part4K2 Task 2）。
+
+        ``True`` 时 :meth:`apply_chat_template_with_tools` 使用 jinja2 Template
+        渲染；``False`` 时降级为 f-string 拼接（输出等价）。
+        """
+        return _HAS_JINJA2
 
     # ------------------------------------------------------------------
     # 优化 4: 思考模式支持（Qwen3 <think>...</think>）
@@ -776,16 +845,21 @@ class VerseTokenizer(BaseTokenizer):
         return self.extract_thinking(text)[1]
 
     # ------------------------------------------------------------------
-    # 优化 6: 工具调用解析
+    # 优化 6: 工具调用解析（支持两种格式）
     # ------------------------------------------------------------------
 
     def extract_tool_calls(self, text: str) -> list[dict]:
         """从生成文本中提取工具调用。
 
-        Qwen3 工具调用格式：
-            ``<|tool_call_begin|>{json}<|tool_call_end|>``
+        支持两种 Qwen 工具调用格式：
 
-        可能有多个工具调用连续出现。
+        1. **Qwen3 官方格式**（Part4K2 Task 2）::
+               ``<tool_call>\\n{json}\\n</tool_call>``
+
+        2. **旧风格格式**（Qwen2.5 / 早期 Qwen3）::
+               ``<|tool_call_begin|>{json}<|tool_call_end|>``
+
+        两种格式可混合出现；可能有多个工具调用连续出现。
 
         Args:
             text: 模型生成的文本
@@ -793,6 +867,20 @@ class VerseTokenizer(BaseTokenizer):
         Returns:
             工具调用字典列表（每个字典是解析后的 JSON）。若解析失败，
             该项为 ``{"raw": "原始字符串"}``。
+        """
+        # Part4K2 Task 2: 优先解析 Qwen3 官方 <tool_call>...</tool_call> 格式
+        tool_calls = _extract_tool_calls_qwen3(text)
+
+        # 兼容旧风格 <|tool_call_begin|>...<|tool_call_end|> 格式
+        legacy_calls = self._extract_legacy_tool_calls(text)
+        tool_calls.extend(legacy_calls)
+        return tool_calls
+
+    @staticmethod
+    def _extract_legacy_tool_calls(text: str) -> list[dict]:
+        """解析旧风格 ``<|tool_call_begin|>...<|tool_call_end|>`` 格式。
+
+        保留为独立方法以便测试与兼容旧模型输出。
         """
         tool_calls: list[dict] = []
         begin_tag = "<|tool_call_begin|>"

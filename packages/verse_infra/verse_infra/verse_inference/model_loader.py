@@ -87,11 +87,9 @@ def _merge_config(arch: str, user_kwargs: dict) -> dict:
 # ---------------------------------------------------------------------------
 # CometSparkLM 动态加载（Stage 7 / Part4K1 Task 8.9 迁移到 spark/）
 # ---------------------------------------------------------------------------
-# Part4K1 Task 8.9: CometSparkV05LM 定义在 spark/model/model.py，
-# 替代原 data/demo/model/model.py（已删除）。采用「动态导入 + sys.path 注入」策略：
-# 1. 优先尝试 ``from spark.model.model import CometSparkV05LM``（需要 /workspace 在 sys.path）；
-# 2. 回退到旧路径 ``data.demo.model.model``（向后兼容，data/demo 已删除时会失败）；
-# 3. 用户可通过 ``register_cometspark_path()`` 主动注册路径。
+# Part4K1 Task 8.9: CometSparkV05LM 定义在 spark/model/model.py。
+# Part4K2.5 Task 2: 统一使用 spark._bootstrap.ensure_paths() 设置路径，
+# 不再手动 sys.path.insert，也不再保留已删除的 data/demo 向后兼容代码。
 
 # 缓存已加载的 CometSparkLM 类，避免重复 import
 _COMETSPARK_LM_CLASS = None
@@ -109,6 +107,17 @@ _REPO_ROOT = os.path.dirname(
 _DEFAULT_COMETSPARK_SPARK_PATH = os.path.join(_REPO_ROOT, "spark")
 
 
+def _ensure_paths_safe():
+    """调用 spark._bootstrap.ensure_paths()（幂等）；不可用时安全跳过。"""
+    try:
+        from spark._bootstrap import ensure_paths
+        ensure_paths()
+    except ImportError:
+        # spark._bootstrap 不可用，确保 repo root 在 sys.path（spark 是顶层包）
+        if _REPO_ROOT not in sys.path:
+            sys.path.insert(0, _REPO_ROOT)
+
+
 def register_cometspark_path(demo_path: str) -> None:
     """注册 CometSpark 模型目录路径，便于动态加载 CometSparkV05LM 类。
 
@@ -116,9 +125,12 @@ def register_cometspark_path(demo_path: str) -> None:
     为向后兼容保留参数名 ``demo_path``。
 
     Args:
-        demo_path: 指向 ``spark`` 目录的绝对路径（或旧 data/demo 路径，向后兼容）
+        demo_path: 指向 ``spark`` 目录的绝对路径
     """
     global _COMETSPARK_LM_CLASS
+    # 先确保默认路径已设置（幂等）
+    _ensure_paths_safe()
+    # 再添加用户自定义路径
     if demo_path and demo_path not in sys.path:
         sys.path.insert(0, demo_path)
     # 清除缓存，下次加载时用新路径重试
@@ -131,10 +143,8 @@ def _import_cometspark_lm():
     查找顺序：
         1. 已缓存（``_COMETSPARK_LM_CLASS``）
         2. ``from spark.model.model import CometSparkV05LM``
-           （需要 /workspace 在 sys.path）
-        3. 旧路径 ``from data.demo.model.model import CometSparkLM``
-           （向后兼容，data/demo 已删除时会失败）
-        4. 从默认路径 ``<repo>/spark`` 加载（可用环境变量覆盖）
+           （由 ``spark._bootstrap.ensure_paths()`` 确保 spark/ 在 sys.path）
+        3. 从默认路径 ``<repo>/spark`` 加载（可用环境变量 ``COMETSPARK_SPARK_PATH`` 覆盖）
 
     Returns:
         CometSparkV05LM 类（不是实例）
@@ -143,9 +153,8 @@ def _import_cometspark_lm():
     if _COMETSPARK_LM_CLASS is not None:
         return _COMETSPARK_LM_CLASS
 
-    # 确保 repo root 在 sys.path（spark 是顶层包）
-    if _REPO_ROOT not in sys.path:
-        sys.path.insert(0, _REPO_ROOT)
+    # 确保所有路径已设置（spark/ 已由 ensure_paths 注入）
+    _ensure_paths_safe()
 
     # 2. 尝试 spark.model.model（Part4K1 Task 8.9 首选路径）
     try:
@@ -155,15 +164,7 @@ def _import_cometspark_lm():
     except ImportError:
         pass
 
-    # 3. 旧路径 data.demo.model.model（向后兼容，data/demo 已删除时会失败）
-    try:
-        mod = importlib.import_module("data.demo.model.model")
-        _COMETSPARK_LM_CLASS = getattr(mod, "CometSparkLM")
-        return _COMETSPARK_LM_CLASS
-    except ImportError:
-        pass
-
-    # 4. 从默认 spark 路径加载（注入 sys.path 后重试）
+    # 3. 从默认 spark 路径加载（注入 sys.path 后重试）
     spark_path = os.environ.get(
         "COMETSPARK_SPARK_PATH", _DEFAULT_COMETSPARK_SPARK_PATH
     )
@@ -205,7 +206,7 @@ class ModelLoader:
 
         # CometSpark 加载（Stage 7）：
         loader = ModelLoader(arch="cometspark")
-        model = loader.load("/workspace/data/demo/checkpoints/cometspark.pt")
+        model = loader.load("/path/to/cometspark.pt")
 
     简化版策略
     ----------
