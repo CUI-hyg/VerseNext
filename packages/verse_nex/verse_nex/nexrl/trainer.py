@@ -16,7 +16,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from verse_torch import Tensor, no_grad
-from verse_torch.nn import Linear
+from verse_torch.vnn import Linear
 from verse_torch.optim import AdamW
 from verse_torch.training import clip_grad_norm
 

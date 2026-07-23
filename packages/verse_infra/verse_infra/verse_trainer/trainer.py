@@ -49,8 +49,10 @@ from .data import (
     BatchLoader,
     collate_fn,
     SingleSampleDataset,
+    ensure_val_split,
 )
 from .loss_optim import LossOptimizer
+from .checkpoint_utils import migrate_checkpoint_dir
 
 # ---------------------------------------------------------------------------
 # 信号处理 + 全局 shutdown 标志 + 紧急保存（Part4K2.6 Task 2）
@@ -828,7 +830,21 @@ def train(
         np.random.seed(seed)
 
     # 3. 加载 tokenizer
-    save_dir = _resolve_path(base_dir, str(ckpt_cfg.get("save_dir", "checkpoints")))
+    # Part5K1 Task 10.2: checkpoint 目录自动迁移（旧 checkpoints_XXX/ → mf_XXX/）
+    # 在 save_dir 解析为绝对路径前，先在相对路径层面做迁移（旧目录与新目录
+    # 通常在同一个工作目录下）。model_level 优先从 vmpc.profile 推断，回退到
+    # 从 save_dir 名称推断。
+    raw_save_dir = str(ckpt_cfg.get("save_dir", "checkpoints"))
+    vmpc_cfg = full_cfg.get("vmpc", {})
+    _profile = str(vmpc_cfg.get("profile", "")).lower()
+    if _profile in ("small", "mate"):
+        _model_level = _profile
+    elif "mate" in raw_save_dir.lower():
+        _model_level = "mate"
+    else:
+        _model_level = "small"
+    raw_save_dir = migrate_checkpoint_dir(raw_save_dir, _model_level)
+    save_dir = _resolve_path(base_dir, raw_save_dir)
     os.makedirs(save_dir, exist_ok=True)
     print(f"[train] 加载 tokenizer", flush=True)
     tok = _load_tokenizer(tok_cfg, base_dir, save_dir)
@@ -868,6 +884,21 @@ def train(
                     f"训练数据文件不存在：{train_path}。"
                     f"请准备数据文件或使用 --single-sample / --single-file 模式。"
                 )
+        # Part5K1 Task 6.3: 自动生成 val.json（如果 val 不存在或为空，从 train 切分）
+        # 保守策略：val 已存在且非空则不动；仅在 val 缺失时切分 train 末尾。
+        # 用 try/except 包裹，切分失败不阻塞训练（ CachedDataset 会按原路径加载）。
+        try:
+            n_split_train, n_split_val = ensure_val_split(train_path, val_path)
+            if not quiet:
+                print(
+                    f"[train] data split: train={n_split_train}, val={n_split_val}",
+                    flush=True,
+                )
+        except Exception as e:
+            print(
+                f"[train] 警告：ensure_val_split 失败（不阻塞训练）：{e}",
+                flush=True,
+            )
         print(f"[train] 加载训练数据 {train_path}", flush=True)
         train_ds = CachedDataset(tok, train_path, seq_len=seq_len)
         print(f"[train] 加载验证数据 {val_path}", flush=True)
@@ -1808,4 +1839,5 @@ __all__ = [
     "clear_emergency_save_fn",
     "ChunkOOMError",
     "_auto_evaluate",
+    "migrate_checkpoint_dir",
 ]

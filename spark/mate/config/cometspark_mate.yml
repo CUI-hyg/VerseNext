@@ -1,0 +1,107 @@
+# CometSpark Mate（0.2zB 旗舰）VMPC-mate 预设（Part5K1 Task 9.2）
+#
+# 双模型并行中的 mate 档：0.2zB 旗舰模型（1zB ≈ 1000B 等效能力）。
+# 从 cometspark_v05.yml（1B 配置）迁移，调整为 VMPC-mate 预设。
+#
+# VMPC-mate 预设：
+# - int4 量化（4bit/值，中等压缩比 + 保持精度）+ 中稀疏剪枝（sparsity=0.3）
+# - use_lora=true：包装 LoRA 适配器（旗舰模型微调友好）
+# - distill=true：启用蒸馏准备（需用户提供 teacher_model）
+#
+# 架构配置（旗舰，Qwen tokenizer）：
+# - vocab_size=248320（Qwen3.5-35B-A3B tokenizer）
+# - n_embd=1024, n_layer=20, n_head=16, n_kv_head=8 (GQA 2:1)
+# - mod_every=4 → 每 4 层 1 个 MoD（共 5 MoD + 15 trisparse）
+# - num_dense_parts=4, num_experts_per_part=4, top_k=2
+# - tie_weights=True（embedding 与 lm_head 共享）
+# - init_std=0.02（mate 用中等 init_std，保持稳定收敛）
+# - embedding_scale=True + temperature_scaling（解决胡乱输出）
+#
+# 参数预算（dim=1024, expert_hidden 自动 ≈ 2688）：
+# - 15 个 trisparse 层 + 5 个 mod 层 ≈ 861M
+# - Embedding (tie, vocab=248320) = 254M
+# - 总 ≈ 1115M ≈ 1.12B（VMPC 压缩后目标 0.2zB）
+#
+# checkpoint.save_dir=mf_mate（Task 10 会用）
+
+model:
+  arch: versenex
+  vocab_size: 248320
+  n_layer: 20
+  n_embd: 1024
+  n_head: 16
+  n_kv_head: 8
+  seq_len: 2048
+  dropout: 0.0
+  tie_weights: true
+
+  # VerseNex / TriSparse / MoD
+  mod_every: 4
+  num_dense_parts: 4
+  num_experts_per_part: 4
+  top_k: 2
+  expert_hidden: null
+  window_size: 1024
+  num_global_tokens: 128
+  use_alibi: false
+  use_rope: true
+  rope_theta: 10000.0
+  max_position_embeddings: 4096
+  aux_loss_weight: 0.01
+
+  # tokenizer
+  tokenizer_repo: Qwen/Qwen3.5-35B-A3B
+
+  # VerseNex 优化（解决胡乱输出）
+  embedding_scale: true
+  temperature_scaling: 1.0
+  # mate 用中等 init_std，保持稳定收敛
+  init_std: 0.02
+
+  # 训练 / 设备
+  device: cpu
+  parallel_chunks: 1
+
+# VMPC-mate 预设（Part5K1 Task 9.2）
+vmpc:
+  profile: mate
+  prune_sparsity: 0.3
+  quantize_dtype: int4
+  use_lora: true
+  distill: true
+
+training:
+  batch_size: 4
+  micro_batch: 2
+  lr: 0.0003
+  weight_decay: 0.01
+  no_decay: true
+  grad_clip: 1.0
+  label_smoothing: 0.1
+  max_steps: 200
+  warmup: 20
+  eval_interval: 20
+  patience: 5
+  grad_accum: 1
+  log_interval: 10
+  seed: 42
+  enable_progress_bar: true
+  realtime_plot: true
+  eta_window: 20
+  parallel_chunks: 1
+  # GPU 显存定期清理间隔（步）：0=关闭（CPU 默认），GPU 训练时自动设为 50
+  empty_cache_interval: 0
+  # 并行训练数据分配策略：sequential（默认）/ round_robin
+  parallel_strategy: sequential
+
+tokenizer:
+  kind: bpe
+  vocab_size: 248320
+  from_hf: Qwen/Qwen3.5-35B-A3B
+
+data:
+  train_path: data/train.jsonl
+  val_path: data/val.jsonl
+
+checkpoint:
+  save_dir: mf_mate

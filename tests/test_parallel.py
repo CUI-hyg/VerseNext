@@ -27,7 +27,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "packages" / "verse_torch"))
 
 from verse_torch import Tensor
-from verse_torch.nn import Linear
+from verse_torch.vnn import Linear
 from verse_torch.parallel import parallel_matmul, ParallelLinear, parallel_map
 
 

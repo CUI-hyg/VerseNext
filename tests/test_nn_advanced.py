@@ -27,11 +27,11 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "packages" / "verse_torch"))
 
 from verse_torch import Tensor
-from verse_torch.nn import (
+from verse_torch.vnn import (
     SwiGLUMLP,
-    GQASelfAttention,
-    TransformerBlock,
-    TransformerLM,
+    _GQASelfAttention as GQASelfAttention,
+    _TransformerBlock as TransformerBlock,
+    _TransformerLM as TransformerLM,
 )
 
 

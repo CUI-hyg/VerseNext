@@ -61,7 +61,7 @@ def _build_tlm(vocab=64, n_layer=2, n_head=4, n_embd=32, seed=SEED):
     np.random.seed(seed)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
-        return nn.TransformerLM(
+        return nn._TransformerLM(
             vocab_size=vocab, n_layer=n_layer, n_head=n_head,
             n_embd=n_embd, seq_len=32, dropout=0.0, tie_weights=True,
         )
@@ -224,6 +224,7 @@ def test_compress_pipeline_v13_flow():
         {"prune": {"sparsity": 0.3}, "quantize": {"bits": 4},
          "lora": {"rank": 4}},
         return_stats=True,
+        version="1.3",
     )
     step_names = [s["step"] for s in stats["steps"]]
     assert step_names == ["prune", "quantize", "lora"], (
@@ -251,6 +252,7 @@ def test_compress_pipeline_v13_distill_order():
         {"prune": {"sparsity": 0.2}, "quantize": {"bits": 4},
          "distill": {"teacher": teacher}, "lora": {"rank": 4}},
         return_stats=True,
+        version="1.3",
     )
     step_names = [s["step"] for s in stats["steps"]]
     assert step_names == ["prune", "quantize", "distill", "lora"], (
@@ -332,6 +334,7 @@ def test_compression_report():
     new_model, _ = compress_pipeline(
         model, {"prune": {"sparsity": 0.3}, "quantize": {"bits": 4}},
         return_stats=True,
+        version="1.3",
     )
     report = compression_report(model, new_model)
     expected_keys = {
@@ -454,6 +457,7 @@ def test_compress_pipeline_v13_no_teacher_compat():
         {"prune": {"sparsity": 0.3}, "quantize": {"bits": 8},
          "lora": {"rank": 4}},
         return_stats=True,
+        version="1.3",
     )
     step_names = [s["step"] for s in stats["steps"]]
     assert step_names == ["prune", "quantize", "lora"]

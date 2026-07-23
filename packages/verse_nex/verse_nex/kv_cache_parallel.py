@@ -31,7 +31,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 
 from verse_torch import Tensor, no_grad
-from verse_torch.nn import KVCache, StaticCache, DynamicCache, _concat
+from verse_torch.vnn import KVCache, StaticCache, DynamicCache, _concat
 
 
 # ---------------------------------------------------------------------------

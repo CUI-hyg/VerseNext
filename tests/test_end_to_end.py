@@ -166,7 +166,8 @@ def test_char_lm_smoke():
     from verse_torch import Tensor
     from verse_torch.optim import AdamW
     from verse_torch.losses import cross_entropy
-    from verse_nex import HybridLM
+    # HybridLM 已 deprecated，从子模块导入（保留只读兼容）。
+    from verse_nex.hybrid import HybridLM
     import minimal_lm as lm_example
 
     np.random.seed(42)
@@ -388,7 +389,8 @@ def test_jepa_demo_smoke():
 def test_cpu_inference_smoke():
     """CPU 推理生成 token，验证 token 数 ≥ 10。"""
     from verse_torch import Tensor, no_grad
-    from verse_nex import HybridLM
+    # HybridLM 已 deprecated，从子模块导入（保留只读兼容）。
+    from verse_nex.hybrid import HybridLM
     from verse_infra.verse_tokenizer import CharTokenizer
     from verse_infra.verse_inference import ModelLoader, Sampler, StreamingGenerator
 

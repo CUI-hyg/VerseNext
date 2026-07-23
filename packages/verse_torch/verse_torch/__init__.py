@@ -44,12 +44,21 @@ else:
 # Parameter 别名（与 PyTorch 习惯一致：Parameter = Tensor，通过 requires_grad=True 标识）
 Parameter = Tensor
 from . import nn
+# Part5K1 Task 1：vnn 为推荐路径（原 nn 重命名）。nn 仍可用（薄壳 re-export）。
+from . import vnn
+# 让 `from verse_torch import nn` 指向 vnn（推荐路径），保证向后兼容不报错。
+# 注意：`from verse_torch.nn import X` 仍走 nn.py 薄壳（sys.modules 保留），
+# 以便 transformer 系旧名抛 ImportError 的拦截逻辑生效。
+nn = vnn
 from . import optim
 from . import losses
 from . import training
 from . import quantize
 from . import parallel
 from . import compress
+# Part5K1 Task 3：VMPC（VerseNext Model Parameters Compression）V1.5 门面
+from . import vmpc
+from .vmpc import VMPCRegularizer, vmpc_compress
 from .parallel import (
     parallel_matmul,
     ParallelLinear,
@@ -205,7 +214,8 @@ from .vn_format import (
     has_safetensors,
 )
 # Part4K2 Task 4: 智能分区训练器（LayerWiseTrainer）
-from .layerwise_trainer import LayerWiseTrainer
+# Part5K1 Task 8: VMT 完整智能分区训练器（VMTTrainer）
+from .layerwise_trainer import LayerWiseTrainer, VMTTrainer
 
 __version__ = "0.1.0"
 
@@ -235,6 +245,7 @@ __all__ = [
     "auto_tune_threads",
     # 子模块
     "nn",
+    "vnn",
     "optim",
     "losses",
     "training",
@@ -363,6 +374,10 @@ __all__ = [
     "compress_count_parameters",
     "count_nonzero_params",
     "compute_compressed_bits",
+    # vmpc（Part5K1 Task 3：VMPC V1.5 门面）
+    "vmpc",
+    "VMPCRegularizer",
+    "vmpc_compress",
     # scoring 函数/类
     "ScoringEvaluator",
     "exact_match",
@@ -378,6 +393,7 @@ __all__ = [
     "vn_to_pt",
     "convert_format",
     "has_safetensors",
-    # layerwise_trainer（Part4K2 Task 4）
+    # layerwise_trainer（Part4K2 Task 4 / Part5K1 Task 8）
     "LayerWiseTrainer",
+    "VMTTrainer",
 ]

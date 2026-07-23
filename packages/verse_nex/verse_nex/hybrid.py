@@ -33,7 +33,7 @@ import warnings
 import numpy as np
 
 from verse_torch import Tensor, no_grad
-from verse_torch.nn import Linear, Embedding, LayerNorm, RMSNorm, Module, ModuleList
+from verse_torch.vnn import Linear, Embedding, LayerNorm, RMSNorm, Module, ModuleList
 
 from .mamba2 import Mamba2Block
 from .rwkv7 import RWKV7Block

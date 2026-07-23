@@ -49,6 +49,7 @@ from .data import (
 from .loss_optim import LossOptimizer
 from .trainer import (
     train,
+    continue_train,
     ParallelTrainerSafe,
     _safe_chunk_run,
     install_signal_handlers,
@@ -57,6 +58,7 @@ from .trainer import (
     set_emergency_save_fn,
     clear_emergency_save_fn,
     ChunkOOMError,
+    migrate_checkpoint_dir,
 )
 from .evaluate import evaluate
 from .visualize import visualize
@@ -78,6 +80,7 @@ __all__ = [
     "load_jsonl",
     # 训练
     "train",
+    "continue_train",
     "ParallelTrainerSafe",
     "VerseTrainer",
     "_safe_chunk_run",
@@ -87,6 +90,8 @@ __all__ = [
     "set_emergency_save_fn",
     "clear_emergency_save_fn",
     "ChunkOOMError",
+    # Checkpoint 工具
+    "migrate_checkpoint_dir",
     # 评估
     "evaluate",
     "visualize",

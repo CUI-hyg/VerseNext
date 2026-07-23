@@ -24,7 +24,7 @@ from __future__ import annotations
 import numpy as np
 
 from .tensor import Tensor
-from . import nn
+from . import vnn as nn
 from ._numba import _HAS_NUMBA  # noqa: F401  统一入口：保留导入以备后续加速扩展
 
 

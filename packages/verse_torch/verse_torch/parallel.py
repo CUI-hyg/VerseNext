@@ -23,7 +23,7 @@ from typing import Callable, Iterable, Optional
 import numpy as np
 
 from .tensor import Tensor, is_grad_enabled
-from . import nn
+from . import vnn as nn
 
 
 # ---------------------------------------------------------------------------

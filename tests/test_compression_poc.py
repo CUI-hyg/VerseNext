@@ -67,10 +67,10 @@ BENCH_PATH = BENCH_DIR / "compression_poc.md"
 
 
 def _build_model(vocab_size: int = 200, n_layer: int = 4, n_head: int = 4,
-                 n_embd: int = 128, seed: int = SEED) -> "nn.TransformerLM":
+                 n_embd: int = 128, seed: int = SEED) -> "nn._TransformerLM":
     """构造测试用 TransformerLM，固定 seed 保证可重复。"""
     np.random.seed(seed)
-    model = nn.TransformerLM(
+    model = nn._TransformerLM(
         vocab_size=vocab_size,
         n_layer=n_layer,
         n_head=n_head,

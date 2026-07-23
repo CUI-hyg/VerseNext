@@ -660,7 +660,11 @@ class TestBatchLoaderPinMemory:
         assert len(loader_pin) == 5
 
     def test_pin_memory_true_no_torch_falls_back(self):
-        """无 torch 时 pin_memory=True 自动降级为 False。"""
+        """无 torch 时 pin_memory=True 自动降级为 False。
+
+        Part5K1 Task 6.2 升级：prefetch 不再依赖 torch，无 torch 时保持 True
+        （纯 threading 预取）。pin_memory 仍依赖 torch，无 torch 时强制 False。
+        """
         if has_torch():
             pytest.skip("PyTorch 可用")
         from verse_infra.verse_trainer.data import BatchLoader
@@ -669,8 +673,9 @@ class TestBatchLoaderPinMemory:
         loader = BatchLoader(ds, batch_size=4, pin_memory=True)
         # 无 torch 时 pin_memory 强制 False
         assert loader.pin_memory is False
-        assert loader.prefetch is False
-        # 迭代正常
+        # prefetch 不再降级（Part5K1 Task 6.2：纯 threading 预取不依赖 torch）
+        assert loader.prefetch is True
+        # 迭代正常（纯 threading 预取路径）
         batches = list(loader)
         assert len(batches) == 2
 
@@ -693,15 +698,16 @@ class TestBatchLoaderPinMemory:
         assert n == 4
 
     def test_prefetch_true_iteration_correct(self):
-        """prefetch=True 时迭代次数和数据正确。"""
-        if not has_torch():
-            pytest.skip("PyTorch 不可用，prefetch 仅在 torch 可用时生效")
+        """prefetch=True 时迭代次数和数据正确。
+
+        Part5K1 Task 6.2 升级：prefetch 不再依赖 torch，无 torch 环境也能预取。
+        """
         from verse_infra.verse_trainer.data import BatchLoader
 
         ds = _ToyDataset(24, 4)
         loader = BatchLoader(
             ds, batch_size=4, shuffle=False,
-            pin_memory=True, prefetch=True,
+            pin_memory=has_torch(), prefetch=True,
         )
         assert loader.prefetch is True
         batches = list(loader)
