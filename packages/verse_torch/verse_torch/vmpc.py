@@ -5,9 +5,9 @@
 （``verse_torch.vmpc.compress_pipeline is verse_torch.compress.compress_pipeline``
 必须为 ``True``）。
 
-V1.5 算法升级在 Task 4 完成；本模块做命名门面 + 正则器 + 便捷预设函数。
+VMPC V1.5 算法升级在 Task 4 完成；本模块做命名门面 + 正则器 + 便捷预设函数。
 ``compress_pipeline`` 内部按 version 字段分派：``version>=1.5`` 走
-``_compress_pipeline_v15``（V1.3 + contrastive_distill + logit_calibration），
+``_compress_pipeline_v15``（VMPC V1.3 + contrastive_distill + logit_calibration），
 ``version>=1.3`` 走 ``_compress_pipeline_v13`` 路径。
 
 公开对象：
@@ -241,13 +241,13 @@ def vmpc_compress(model, profile="small", **kwargs):
     # 合并用户覆盖的 kwargs
     config.update(kwargs)
 
-    # V1.5 算法升级已在 Task 4 完成：compress_pipeline 对 version>=1.5 走
-    # _compress_pipeline_v15 路径（V1.3 + contrastive_distill + logit_calibration）。
-    # 极端情况下回退到 V1.3（保证可用性）。
+    # VMPC V1.5 算法升级已在 Task 4 完成：compress_pipeline 对 version>=1.5 走
+    # _compress_pipeline_v15 路径（VMPC V1.3 + contrastive_distill + logit_calibration）。
+    # 极端情况下回退到 VMPC V1.3（保证可用性）。
     try:
         return compress_pipeline(model, config=config, version="1.5")
     except Exception:
-        # 极端情况下回退到 V1.3（保证可用性）
+        # 极端情况下回退到 VMPC V1.3（保证可用性）
         return compress_pipeline(model, config=config, version="1.3")
 
 

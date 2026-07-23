@@ -214,7 +214,8 @@ from .vn_format import (
     has_safetensors,
 )
 # Part4K2 Task 4: 智能分区训练器（LayerWiseTrainer）
-from .layerwise_trainer import LayerWiseTrainer
+# Part5K1 Task 8: VMT 完整智能分区训练器（VMTTrainer）
+from .layerwise_trainer import LayerWiseTrainer, VMTTrainer
 
 __version__ = "0.1.0"
 
@@ -392,6 +393,7 @@ __all__ = [
     "vn_to_pt",
     "convert_format",
     "has_safetensors",
-    # layerwise_trainer（Part4K2 Task 4）
+    # layerwise_trainer（Part4K2 Task 4 / Part5K1 Task 8）
     "LayerWiseTrainer",
+    "VMTTrainer",
 ]

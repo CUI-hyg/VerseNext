@@ -8,6 +8,41 @@
 
 ---
 
+## Part5K1 升级审计补充（2026-07-23）
+
+> 审计范围：Part5K1 VMPC 技术全量化 + 双模型并行 + 架构精简（14 个任务全部完成）
+> 审计基线：`pytest tests/` → **1440 passed, 20 skipped, 0 failed**（分批运行，沙箱 OOM 限制下单批最大约 1300 测试）
+
+### Part5K1 变更摘要
+
+| 任务 | 内容 | 状态 |
+|---|---|---|
+| Task 1 | VerseTorch.nn → vnn 重命名（BREAKING） | ✅ 完成 |
+| Task 2 | VerseTorch 底层去壳与合并 | ✅ 完成 |
+| Task 3 | VMPC 命名 + V1.5 门面 | ✅ 完成 |
+| Task 4 | VMPC V1.5 命中与质量优化 | ✅ 完成 |
+| Task 5 | JSONL 自修复与标准化 | ✅ 完成 |
+| Task 6 | val.json 自动生成 + 数据预加载 | ✅ 完成 |
+| Task 7 | 64+ 层训练加速（层融合 + chunked） | ✅ 完成 |
+| Task 8 | VMT 完整智能分区训练（VMTTrainer） | ✅ 完成 |
+| Task 9 | spark 双模型目录重构（small/mate） | ✅ 完成 |
+| Task 10 | checkpoint 重命名 + .vn 默认输出 | ✅ 完成 |
+| Task 11 | spark/run.py 训练模式补齐 | ✅ 完成 |
+| Task 12 | VerseNex 精简 | ✅ 完成 |
+| Task 13 | 文档与代码注释升级 | ✅ 完成 |
+| Task 14 | 全量测试 + 综合验收 | ✅ 完成 |
+
+### 关键验收项
+
+1. **关键导入验证**：`import verse_torch` / `from verse_torch.vmpc import ...` / `from verse_torch.vnn import ...` / `from spark.small.model import CometSparkSmallLM` / `from spark.mate.model import CometSparkMateLM` / `from verse_infra.verse_trainer.jsonl_repair import repair_jsonl` 全部通过
+2. **CLI 端到端**：`spark/run.py train --model small --dry-run` / `finetune` / `posttrain` / `continue` dry-run 全部通过
+3. **VMPC V1.5 端到端**：small 模型构建（193734 参数）→ `vmpc_compress_model()` 压缩（17222 参数，压缩 ~91%）→ `generate()` 生成正常
+4. **JSONL 修复端到端**：异名字段（instruction/response, q/a）+ 行尾多余逗号 → 全部标准化为 prompt/completion
+5. **VMT 端到端**：三档策略解析（freeze/optimize/unload）+ freeze 档 INT4 量化 + 统一实体（model id 不变）
+6. **零回归**：全量 1440 测试通过，20 skipped（环境/弃用模块相关），0 failed
+
+---
+
 ## 1. 审计摘要
 
 | 项 | 数值 |

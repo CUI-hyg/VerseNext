@@ -1,6 +1,6 @@
 # Verse 性能调优指南
 
-> 本文档面向希望榨干硬件性能的用户，覆盖 numba JIT 加速、BLAS 配置、batch_size 选择、CPU 线程数、量化加速、并行计算、**GPU/NPU 加速（Part4K1 新增）**、**混合精度 autocast（Part4K1 新增）**、**CachedDataset 数据加载加速（Part4K1 新增）**、**压缩技术 V1.3 调优（Part4K2 新增）**、**智能分区训练性能调优（Part4K2 新增）**、**资源利用优化（Part4K2 新增）**、**1B 模型训练优化建议（Part4K2 新增）**、**Part4K2.5 性能优化清单（Part4K2.5 新增）**、**并行训练调优建议（Part4K2.5 新增）** 十五个维度。Verse 默认纯 CPU / 纯 NumPy（无需重新编译框架），Part4K1 起可选启用 GPU/NPU 加速（通过 PyTorch 委托后端）。
+> 本文档面向希望榨干硬件性能的用户，覆盖 numba JIT 加速、BLAS 配置、batch_size 选择、CPU 线程数、量化加速、并行计算、**GPU/NPU 加速（Part4K1 新增）**、**混合精度 autocast（Part4K1 新增）**、**CachedDataset 数据加载加速（Part4K1 新增）**、**VMPC 压缩技术调优（Part4K2 新增，Part5K1 升级到 VMPC V1.5）**、**智能分区训练性能调优（Part4K2 新增，Part5K1 升级到 VMT 三档策略）**、**资源利用优化（Part4K2 新增）**、**1B 模型训练优化建议（Part4K2 新增）**、**Part4K2.5 性能优化清单（Part4K2.5 新增）**、**并行训练调优建议（Part4K2.5 新增）** 十五个维度。Verse 默认纯 CPU / 纯 NumPy（无需重新编译框架），Part4K1 起可选启用 GPU/NPU 加速（通过 PyTorch 委托后端）。
 
 ---
 
@@ -438,17 +438,31 @@ stats.print_stats(20)  # 打印 top 20 热点
 
 ---
 
-## 12. 压缩技术 V1.3 调优（Part4K2 新增）
+## 12. VMPC 压缩技术调优（Part4K2 新增，Part5K1 升级到 VMPC V1.5）
 
-Part4K2 推出压缩管线 V1.3（`prune → quantize → distill → lora`），通过三重损失知识蒸馏实现大模型→小模型能力转移。详见 [ADR-012](architecture/adr-012-compression-v13.md)。
+Part4K2 推出压缩管线 V1.3（`prune → quantize → distill → lora`），通过三重损失知识蒸馏实现大模型→小模型能力转移。**Part5K1 正式命名模型参数压缩技术为 VMPC（Versenext Model Parameters Compression）并升级到 V1.5**：在 V1.3 基础上新增对比蒸馏（`contrastive_distill`）、logit 校准（`logit_calibration`）、outlier-aware 反量化。`verse_torch.vmpc` 作为压缩 / 量化 / 蒸馏 / 剪枝的统一门面。详见 [ADR-012](architecture/adr-012-compression-v13.md) 与 [ADR-013](architecture/adr-013-vmpc-naming-v15.md)。
 
-### 12.1 何时使用 V1.3
+### 12.1 何时使用 VMPC
 
 - 大模型（teacher）已训练完成，希望蒸馏出小模型（student）用于端侧部署
 - 需要在压缩比（参数量 / bit 数）与模型质量之间取得平衡
 - 希望压缩后仍能通过 LoRA 微调适配下游任务
+- 推理命中率敏感场景建议启用 VMPC V1.5 的 `contrastive_distill` + `logit_calibration`
 
-### 12.2 V1.3 配置示例
+### 12.2 VMPC V1.5 一键预设（Part5K1 新增）
+
+```python
+from verse_torch.vmpc import vmpc_compress, VMPCRegularizer
+
+# small 预设：ternary 量化 + 高稀疏 0.5（适配 0.06zB 小模型）
+compressed_small = vmpc_compress(model, profile="small")
+
+# mate 预设：int4 量化 + 中稀疏 0.3 + LoRA（适配 0.2zB 旗舰模型）
+compressed_mate = vmpc_compress(model, profile="mate",
+                                teacher_model=teacher, train_loader=loader)
+```
+
+### 12.3 VMPC V1.3 配置示例（向后兼容）
 
 ```python
 from verse_torch.compress import compress_pipeline, compression_report
@@ -467,25 +481,29 @@ config = {
     },
     "lora":     {"rank": 8, "alpha": 16},     # LoRA 包装（为微调准备）
 }
-compressed, stats = compress_pipeline(model, config, version="1.3", return_stats=True)
+# version="1.5" 走 VMPC V1.5 路径（默认）；version="1.3" 走 VMPC V1.3 路径
+compressed, stats = compress_pipeline(model, config, version="1.5", return_stats=True)
 print(compression_report(model, compressed))
 ```
 
-### 12.3 调优建议
+### 12.4 调优建议
 
 | 维度 | 建议 |
 |---|---|
 | `prune.sparsity` | 0.2 ~ 0.4；过高会破坏模型结构，过低压缩比不足 |
 | `quantize.bits` | 端侧部署用 4（INT4），平衡用 8（INT8） |
-| `distill.temperature` | 初始 4.0；V1.3 自动退火到 `max(1.0, T * 0.25)`，无需手动调 |
+| `quantize.outlier_aware` | VMPC V1.5 新增，outlier 通道 fp32 修正，精度敏感场景开启 |
+| `distill.temperature` | 初始 4.0；VMPC V1.3 自动退火到 `max(1.0, T * 0.25)`，无需手动调 |
 | `distill.alpha` | 0.7（软标签主导）；无硬标签时软标签全权 |
 | `distill.feature_loss_weight` | 0.3；设为 0 禁用特征匹配（退化为 V1.0 双损失） |
 | `distill.epochs` | 3 ~ 5；过多会过拟合 teacher 的分布 |
+| `distill_contrastive` | VMPC V1.5 新增，默认 True，top-k 排序一致性约束 |
+| `logit_calibration` | VMPC V1.5 新增，默认 True，推理 logits 尺度校准 |
 | `lora.rank` | 8 ~ 16；rank 越大微调能力越强但参数越多 |
 
-### 12.4 吞吐率优化
+### 12.5 吞吐率优化
 
-V1.3 量化后 `QLinear` 内部走 fused matmul 路径（`matmul_int4`），INT4 权重的访存优势转化为实际吞吐率提升：
+VMPC V1.3 量化后 `QLinear` 内部走 fused matmul 路径（`matmul_int4`），INT4 权重的访存优势转化为实际吞吐率提升：
 
 | 量化类型 | 估算吞吐率提升（相对 fp32） |
 |---|---|
@@ -493,9 +511,25 @@ V1.3 量化后 `QLinear` 内部走 fused matmul 路径（`matmul_int4`），INT4
 | INT8 | ≈ 2× |
 | ternary（1.58-bit） | ≈ 8× |
 
-> **提示**：`stats["estimated_throughput_improvement"]` 字段返回估算值；实际提升取决于 CPU / GPU 与 BLAS 后端。
+> **提示**：`stats["estimated_throughput_improvement"]` 字段返回估算值；实际提升取决于 CPU / GPU 与 BLAS 后端。VMPC V1.5 的 `logit_calib_factor` 不影响吞吐率，仅校准推理 logits 尺度。
 
-### 12.5 VerseNex 集成
+### 12.6 VMPCRegularizer 接入训练循环（Part5K1 新增）
+
+```python
+from verse_torch.vmpc import VMPCRegularizer
+
+reg = VMPCRegularizer(l2_weight=1e-5, target_sparsity=0.3, patience=5)
+reg.attach(trainer)  # monkey-patch trainer._compute_loss
+
+# 训练循环中每 eval 步调用
+for step, val_loss in enumerate(val_losses):
+    should_stop, new_sparsity = reg.step(val_loss)
+    if should_stop:
+        print(f"早停：sparsity 收紧到下限 {reg.SPARSITY_FLOOR}")
+        break
+```
+
+### 12.7 VerseNex 集成
 
 ```python
 # CometSparkNexLM 实例方法
@@ -506,9 +540,9 @@ student = small_model.distill_from(teacher=large_model, train_data=train_loader)
 
 ---
 
-## 13. 智能分区训练性能调优（Part4K2 新增）
+## 13. 智能分区训练性能调优（Part4K2 新增，Part5K1 升级到 VMT）
 
-`LayerWiseTrainer` 按 layer 分组训练 + `.vn` 分片卸载，适用于低内存训练大模型。详见 [ADR-011](architecture/adr-011-layerwise-training.md)。
+`LayerWiseTrainer` 按 layer 分组训练 + `.vn` 分片卸载，适用于低内存训练大模型。**Part5K1 新增 `VMTTrainer`**：继承 `LayerWiseTrainer` 的 unload 能力，新增 freeze（INT4 量化冻结）与 optimize（层融合 + 梯度累积）两档，组合成三档策略（unload/freeze/optimize）。详见 [ADR-011](architecture/adr-011-layerwise-training.md) 与 [ADR-015](architecture/adr-015-vmt-full-strategy.md)。
 
 ### 13.1 性能特征
 
@@ -691,7 +725,7 @@ python -m verse_infra.verse_trainer.cli verse-continue \
 
 ### 15.5 压缩部署
 
-训练完成后用 V1.3 压缩管线部署到端侧：
+训练完成后用 VMPC 压缩管线部署到端侧（Part5K1 起统一品牌为 VMPC，默认 V1.5）：
 
 ```python
 from verse_torch.compress import compress_pipeline
@@ -702,7 +736,8 @@ config = {
     "distill":  {"teacher": large_model, "train_loader": train_loader, "epochs": 3},
     "lora":     {"rank": 8, "alpha": 16},
 }
-small_model, stats = compress_pipeline(large_model, config, version="1.3", return_stats=True)
+# version="1.5" 走 VMPC V1.5 路径（默认，含对比蒸馏 + logit 校准）
+small_model, stats = compress_pipeline(large_model, config, version="1.5", return_stats=True)
 # 压缩后约 280M 参数（INT4），峰值内存 ~1.5 GB，可在消费级 CPU 上推理
 ```
 
@@ -714,7 +749,7 @@ small_model, stats = compress_pipeline(large_model, config, version="1.3", retur
 - [ ] GPU 训练：`--amp` 混合精度 + `--parallel-chunks` 分块
 - [ ] 内存不足：`--partition-training --partition-size 2`
 - [ ] 训练完成：`verse-continue` 追加训练
-- [ ] 部署：`compress_pipeline(version="1.3")` 压缩 + `verse-convert` 转 `.vn`
+- [ ] 部署：`compress_pipeline(version="1.5")` VMPC 压缩 + `verse-convert` 转 `.vn`
 
 ---
 

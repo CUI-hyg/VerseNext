@@ -49,6 +49,7 @@ from .data import (
 from .loss_optim import LossOptimizer
 from .trainer import (
     train,
+    continue_train,
     ParallelTrainerSafe,
     _safe_chunk_run,
     install_signal_handlers,
@@ -79,6 +80,7 @@ __all__ = [
     "load_jsonl",
     # 训练
     "train",
+    "continue_train",
     "ParallelTrainerSafe",
     "VerseTrainer",
     "_safe_chunk_run",

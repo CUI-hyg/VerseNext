@@ -60,14 +60,14 @@
   - [x] SubTask 7.4: 数值一致：chunked 前向与原前向 float32 吻合到 1e-3
   - [x] SubTask 7.5: 新增 `tests/test_layer_fusion.py`：层融合数值一致 + chunked 前向内存峰值降低 + 吞吐 ≥ 1.5×
 
-- [ ] Task 8: VMT 完整智能分区训练（VMTTrainer）
-  - [ ] SubTask 8.1: `verse_torch/layerwise_trainer.py` 新增 `VMTTrainer`（继承 `LayerWiseTrainer`）：新增 `freeze` 档（INT4 量化 + requires_grad=False）+ `optimize` 档（层融合 + 梯度累积）
-  - [ ] SubTask 8.2: 实现 `vmt_strategy` 解析：支持 `"layers[0:8]=freeze, layers[8:56]=optimize, layers[56:]=unload"` 语法 + `"auto"` 预设（按层重要性自动分配）
-  - [ ] SubTask 8.3: freeze 档实现：调用 `quantize_only(dtype="int4")` + `requires_grad=False`；评估/合并时反量化（误差 ≤ 1e-3）
-  - [ ] SubTask 8.4: optimize 档实现：保持 fp32 + 启用层融合 + 梯度累积
-  - [ ] SubTask 8.5: 保留 `LayerWiseTrainer` 作为 `VMTTrainer` 别名（向后兼容）
-  - [ ] SubTask 8.6: `verse_torch/__init__.py` 导出 `VMTTrainer`
-  - [ ] SubTask 8.7: 新增 `tests/test_vmt_trainer.py`：三档分配 + freeze 反量化误差 + auto 策略 + 统一实体
+- [x] Task 8: VMT 完整智能分区训练（VMTTrainer）
+  - [x] SubTask 8.1: `verse_torch/layerwise_trainer.py` 新增 `VMTTrainer`（继承 `LayerWiseTrainer`）：新增 `freeze` 档（INT4 量化 + requires_grad=False）+ `optimize` 档（层融合 + 梯度累积）
+  - [x] SubTask 8.2: 实现 `vmt_strategy` 解析：支持 `"layers[0:8]=freeze, layers[8:56]=optimize, layers[56:]=unload"` 语法 + `"auto"` 预设（按层重要性自动分配）
+  - [x] SubTask 8.3: freeze 档实现：调用 `quantize_only(dtype="int4")` + `requires_grad=False`；评估/合并时反量化（误差 ≤ 1e-3）
+  - [x] SubTask 8.4: optimize 档实现：保持 fp32 + 启用层融合 + 梯度累积
+  - [x] SubTask 8.5: 保留 `LayerWiseTrainer` 作为 `VMTTrainer` 别名（向后兼容）
+  - [x] SubTask 8.6: `verse_torch/__init__.py` 导出 `VMTTrainer`
+  - [x] SubTask 8.7: 新增 `tests/test_vmt_trainer.py`：三档分配 + freeze 反量化误差 + auto 策略 + 统一实体
 
 ## 阶段 D：双模型并行（spark 重构）
 
@@ -81,20 +81,20 @@
   - [x] SubTask 9.7: 更新 `spark/__init__.py` / `spark/_bootstrap.py` 适配新结构
   - [x] SubTask 9.8: 新增 `tests/test_dual_model.py`：构建 small/mate + VMPC 预设 + 参数量在预期区间（32 个测试全部通过）
 
-- [ ] Task 10: checkpoint 重命名 + .vn 默认输出
-  - [ ] SubTask 10.1: `CometSparkSmallLM` / `CometSparkMateLM` 的 `save` 增加 `format="pt"|"vn"` 参数，默认 `"vn"`；`save_pretrained` 同步
-  - [ ] SubTask 10.2: 实现 checkpoint 目录自动迁移：检测旧 `checkpoints_XXX/` → 重命名为 `mf_XXX/` + 警告（在 run.py / trainer 启动时）
-  - [ ] SubTask 10.3: 配置文件 `checkpoint.save_dir` 默认 `mf_small` / `mf_mate`
-  - [ ] SubTask 10.4: 新增 `tests/test_checkpoint_migrate.py`：自动迁移 + 默认 vn 输出
+- [x] Task 10: checkpoint 重命名 + .vn 默认输出
+  - [x] SubTask 10.1: `CometSparkSmallLM` / `CometSparkMateLM` 的 `save` 增加 `format="pt"|"vn"` 参数，默认 `"vn"`；`save_pretrained` 同步
+  - [x] SubTask 10.2: 实现 checkpoint 目录自动迁移：检测旧 `checkpoints_XXX/` → 重命名为 `mf_XXX/` + 警告（在 run.py / trainer 启动时）
+  - [x] SubTask 10.3: 配置文件 `checkpoint.save_dir` 默认 `mf_small` / `mf_mate`
+  - [x] SubTask 10.4: 新增 `tests/test_checkpoint_migrate.py`：自动迁移 + 默认 vn 输出
 
-- [ ] Task 11: spark/run.py 训练模式补齐
-  - [ ] SubTask 11.1: `train` 子命令新增 `--model small|mate`（默认 small），按级别选择 config + 模型 + checkpoint 目录
-  - [ ] SubTask 11.2: 新增 `finetune` 子命令：委托 `verse_trainer` 的 `LoRATrainer`，支持 `--lora-r` / `--lora-alpha` / `--target-modules` / `--checkpoint`
-  - [ ] SubTask 11.3: 新增 `posttrain` 子命令：委托 `SFTTrainer` / `DPOTrainer` / `RLTrainer`，`--mode sft|dpo|rl`
-  - [ ] SubTask 11.4: 新增 `continue` 子命令：委托 `verse_trainer.continue_train`，`--checkpoint` / `--additional-steps`
-  - [ ] SubTask 11.5: `eval` / `generate` / `chat` / `compress` / `convert` 子命令同步 `--model` 参数
-  - [ ] SubTask 11.6: 所有训练逻辑委托 `verse_trainer`，run.py 只做参数解析 + 模型选择 + checkpoint 路径映射（不重复造轮子）
-  - [ ] SubTask 11.7: 新增 `tests/test_spark_run_dual.py`：`--model small/mate` 选择 + finetune/posttrain/continue dry-run
+- [x] Task 11: spark/run.py 训练模式补齐
+  - [x] SubTask 11.1: `train` 子命令新增 `--model small|mate`（默认 small），按级别选择 config + 模型 + checkpoint 目录
+  - [x] SubTask 11.2: 新增 `finetune` 子命令：委托 `verse_trainer` 的 `LoRATrainer`，支持 `--lora-r` / `--lora-alpha` / `--target-modules` / `--checkpoint`
+  - [x] SubTask 11.3: 新增 `posttrain` 子命令：委托 `SFTTrainer` / `DPOTrainer` / `RLTrainer`，`--mode sft|dpo|rl`
+  - [x] SubTask 11.4: 新增 `continue` 子命令：委托 `verse_trainer.continue_train`，`--checkpoint` / `--additional-steps`
+  - [x] SubTask 11.5: `eval` / `generate` / `chat` / `compress` / `convert` 子命令同步 `--model` 参数
+  - [x] SubTask 11.6: 所有训练逻辑委托 `verse_trainer`，run.py 只做参数解析 + 模型选择 + checkpoint 路径映射（不重复造轮子）
+  - [x] SubTask 11.7: 新增 `tests/test_spark_run_dual.py`：`--model small/mate` 选择 + finetune/posttrain/continue dry-run
 
 ## 阶段 E：VerseNex 精简与文档
 
@@ -103,25 +103,25 @@
   - [x] SubTask 12.2: 清理 `verse_nex` 内部对 `verse_torch.nn` 的旧导入（改用 `verse_torch.vnn`）
   - [x] SubTask 12.3: 运行 `tests/test_cometspark_*.py` / `test_verse_infra_imports.py` 确认零回归
 
-- [ ] Task 13: 文档与代码注释升级
-  - [ ] SubTask 13.1: 新增 `docs/architecture/adr-013-vmpc-naming-v15.md`（VMPC 命名 + V1.5 设计）
-  - [ ] SubTask 13.2: 新增 `docs/architecture/adr-014-dual-model-small-mate.md`（双模型并行）
-  - [ ] SubTask 13.3: 新增 `docs/architecture/adr-015-vmt-full-strategy.md`（VMT 完整三档策略）
-  - [ ] SubTask 13.4: 新增 `docs/architecture/adr-016-nn-to-vnn-rename.md`（nn → vnn 重命名）
-  - [ ] SubTask 13.5: 更新 `README.md`：VMPC V1.5 + 双模型 + VMT + vnn + jsonl_repair
-  - [ ] SubTask 13.6: 更新 `docs/training_guide.md` / `docs/performance_tuning.md`：双模型训练 + VMT 策略 + 64+ 层加速
-  - [ ] SubTask 13.7: `compress.py` / `layerwise_trainer.py` / `vmpc.py` 代码注释统一到 VMPC 术语（"V1.3" → "VMPC V1.5"）
+- [x] Task 13: 文档与代码注释升级
+  - [x] SubTask 13.1: 新增 `docs/architecture/adr-013-vmpc-naming-v15.md`（VMPC 命名 + V1.5 设计）
+  - [x] SubTask 13.2: 新增 `docs/architecture/adr-014-dual-model-small-mate.md`（双模型并行）
+  - [x] SubTask 13.3: 新增 `docs/architecture/adr-015-vmt-full-strategy.md`（VMT 完整三档策略）
+  - [x] SubTask 13.4: 新增 `docs/architecture/adr-016-nn-to-vnn-rename.md`（nn → vnn 重命名）
+  - [x] SubTask 13.5: 更新 `README.md`：VMPC V1.5 + 双模型 + VMT + vnn + jsonl_repair
+  - [x] SubTask 13.6: 更新 `docs/training_guide.md` / `docs/performance_tuning.md`：双模型训练 + VMT 策略 + 64+ 层加速
+  - [x] SubTask 13.7: `compress.py` / `layerwise_trainer.py` / `vmpc.py` 代码注释统一到 VMPC 术语（"V1.3" → "VMPC V1.5"）
 
 ## 阶段 F：验收
 
-- [ ] Task 14: 全量测试 + 综合验收
-  - [ ] SubTask 14.1: `pytest tests/` 全量零失败（含新增测试）
-  - [ ] SubTask 14.2: 关键导入验证：`import verse_torch` / `from verse_torch.vmpc import ...` / `from verse_torch.vnn import ...` / `from spark.small.model import CometSparkSmallLM` / `from spark.mate.model import CometSparkMateLM`
-  - [ ] SubTask 14.3: CLI 端到端：`spark/run.py train --model small --dry-run` / `finetune` / `posttrain` / `continue` dry-run 通过
-  - [ ] SubTask 14.4: VMPC V1.5 端到端：small 模型压缩 + 生成 + 命中率验证
-  - [ ] SubTask 14.5: jsonl_repair 端到端：异名字段 + 格式修复
-  - [ ] SubTask 14.6: VMT 端到端：64+ 层模型三档训练
-  - [ ] SubTask 14.7: 更新 `audit_report.md`
+- [x] Task 14: 全量测试 + 综合验收
+  - [x] SubTask 14.1: `pytest tests/` 全量零失败（含新增测试）
+  - [x] SubTask 14.2: 关键导入验证：`import verse_torch` / `from verse_torch.vmpc import ...` / `from verse_torch.vnn import ...` / `from spark.small.model import CometSparkSmallLM` / `from spark.mate.model import CometSparkMateLM`
+  - [x] SubTask 14.3: CLI 端到端：`spark/run.py train --model small --dry-run` / `finetune` / `posttrain` / `continue` dry-run 通过
+  - [x] SubTask 14.4: VMPC V1.5 端到端：small 模型压缩 + 生成 + 命中率验证
+  - [x] SubTask 14.5: jsonl_repair 端到端：异名字段 + 格式修复
+  - [x] SubTask 14.6: VMT 端到端：64+ 层模型三档训练
+  - [x] SubTask 14.7: 更新 `audit_report.md`
 
 # Task Dependencies
 

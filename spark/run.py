@@ -49,6 +49,10 @@ if _REPO_ROOT not in sys.path:
 _DEFAULT_CONFIG = "spark/config/cometspark_v05.yml"
 _SMALL_CONFIG = "spark/config/cometspark_v05_small.yml"
 
+# Part5K1 Task 11：双模型级别（small / mate）默认配置路径
+_SMALL_LEVEL_CONFIG = "spark/small/config/cometspark_small.yml"
+_MATE_LEVEL_CONFIG = "spark/mate/config/cometspark_mate.yml"
+
 # 颜色码（ANSI）
 _COLOR_RESET = "\033[0m"
 _COLOR_BOLD = "\033[1m"
@@ -141,6 +145,62 @@ def _resolve_config_path(config_arg: Optional[str], small: bool = False) -> str:
     return path
 
 
+def _select_model_level(args) -> tuple:
+    """根据 args 选择模型级别（small / mate）（Part5K1 Task 11）。
+
+    解析 ``--model small|mate`` 参数，返回对应的配置路径、模型工厂和级别名。
+    优先级：
+    1. ``--config`` 显式指定 → 用该路径（工厂仍按 --model 选择）
+    2. ``--model`` 选择 small/mate 默认配置
+
+    Args:
+        args: argparse Namespace，需有 ``model`` 字段（'small'/'mate'），
+            可选 ``config`` 字段。
+
+    Returns:
+        (config_path, model_factory, model_level) 三元组：
+        - config_path: 配置文件绝对路径
+        - model_factory: 工厂函数（CometSparkSmall / CometSparkMate）
+        - model_level: 'small' 或 'mate'
+
+    Raises:
+        ValueError: model_level 不在 {'small', 'mate'} 时
+        FileNotFoundError: 配置文件不存在时
+    """
+    model_level = getattr(args, "model", "small")
+
+    if model_level == "small":
+        default_config = _SMALL_LEVEL_CONFIG
+        from spark.small.model import CometSparkSmall
+        factory = CometSparkSmall
+    elif model_level == "mate":
+        default_config = _MATE_LEVEL_CONFIG
+        from spark.mate.model import CometSparkMate
+        factory = CometSparkMate
+    else:
+        raise ValueError(
+            f"未知 model level: {model_level!r}，支持 'small' / 'mate'"
+        )
+
+    # --config 显式指定时覆盖默认配置路径（工厂仍按 --model 选择）
+    config_arg = getattr(args, "config", None)
+    if config_arg:
+        path = config_arg
+    else:
+        path = default_config
+
+    # 相对路径以 repo root 为基准
+    if not os.path.isabs(path):
+        path = os.path.join(_REPO_ROOT, path)
+
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"配置文件不存在：{path}\n"
+            f"提示：使用 --config 指定路径，或 --model small|mate 选择级别"
+        )
+    return path, factory, model_level
+
+
 def _load_yaml_config(path: str) -> dict:
     """加载 YAML 配置文件为 dict。
 
@@ -215,12 +275,15 @@ def _load_tokenizer_for_config(config_path: Optional[str], model_config=None):
 def _load_model_and_tokenizer(
     checkpoint: str,
     config_path: Optional[str] = None,
+    model_level: Optional[str] = None,
 ):
     """加载模型和 tokenizer。
 
     Args:
         checkpoint: checkpoint 文件路径（.pt 或目录）。
         config_path: 配置文件路径（可选，用于加载 tokenizer）。
+        model_level: 模型级别（'small' / 'mate'，可选）。指定后用对应的
+            LM 类加载（保留 VMPC 字段）；None 则用通用 CometSparkV05LM。
 
     Returns:
         (model, tokenizer) 元组。
@@ -231,9 +294,16 @@ def _load_model_and_tokenizer(
             f"提示：先运行 `python spark/run.py train` 训练模型"
         )
 
-    from spark.model.model import CometSparkV05LM
-
-    model = CometSparkV05LM.from_pretrained(checkpoint)
+    # Part5K1 Task 11：按 model_level 选择对应的 LM 类（保留 VMPC 字段）
+    if model_level == "small":
+        from spark.small.model import CometSparkSmallLM
+        model = CometSparkSmallLM.from_pretrained(checkpoint)
+    elif model_level == "mate":
+        from spark.mate.model import CometSparkMateLM
+        model = CometSparkMateLM.from_pretrained(checkpoint)
+    else:
+        from spark.model.model import CometSparkV05LM
+        model = CometSparkV05LM.from_pretrained(checkpoint)
 
     # 加载 tokenizer：优先用 config_path，否则从模型 config 推断
     resolved_config = None
@@ -292,13 +362,25 @@ def cmd_train(args) -> int:
     """训练模型。
 
     调用 ``verse_infra.verse_trainer.train()``，训练后可选自动评估。
+    Part5K1 Task 11：支持 ``--model small|mate`` 选择双模型级别。
     """
-    config_path = _resolve_config_path(args.config, small=args.small)
+    # Part5K1 Task 11：向后兼容 --small 标志（走旧逻辑用 _SMALL_CONFIG）；
+    # 否则用新的 --model 参数（默认 small，走 _select_model_level）。
+    if getattr(args, "small", False):
+        config_path = _resolve_config_path(args.config, small=args.small)
+        model_level = "small"
+        factory = None
+    else:
+        config_path, factory, model_level = _select_model_level(args)
 
     # 打印模型信息
     if not args.quiet:
         _info(f"配置文件：{config_path}")
-        if args.small:
+        if model_level == "small":
+            _info("模式：Small 模型（0.06zB，VMPC-small 预设）")
+        elif model_level == "mate":
+            _info("模式：Mate 模型（0.2zB 旗舰，VMPC-mate 预设）")
+        elif args.small:
             _info("模式：小配置（快速调试）")
         else:
             _info("模式：1B 配置（正式训练）")
@@ -308,6 +390,7 @@ def cmd_train(args) -> int:
         _print_dry_run(
             "train",
             config=config_path,
+            model_level=model_level,
             max_steps=args.max_steps,
             batch_size=args.batch_size,
             device=args.device or "auto",
@@ -317,7 +400,7 @@ def cmd_train(args) -> int:
         )
         return 0
 
-    # 实际训练
+    # 实际训练（委托 verse_trainer，不重复造轮子）
     import verse_infra.verse_trainer as _vt
 
     result = _vt.train(
@@ -357,6 +440,216 @@ def cmd_train(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# 子命令：finetune（Part5K1 Task 11.2）
+# ---------------------------------------------------------------------------
+
+
+def cmd_finetune(args) -> int:
+    """微调模型（LoRA / 全量）。
+
+    委托 ``verse_infra.verse_trainer.train()``，通过 config overrides 写入
+    LoRA 参数（与 ``verse-finetune`` CLI 行为一致，不重复造轮子）。
+    """
+    config_path, factory, model_level = _select_model_level(args)
+
+    if not args.quiet:
+        _info(f"微调模式：model={model_level} config={config_path}")
+        _info(f"方法：{args.method} lora_r={args.lora_r} lora_alpha={args.lora_alpha}")
+
+    # dry-run：只打印不执行
+    if args.dry_run:
+        _print_dry_run(
+            "finetune",
+            config=config_path,
+            model_level=model_level,
+            method=args.method,
+            lora_r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            target_modules=args.target_modules,
+            checkpoint=args.checkpoint,
+            data=args.data,
+            lr=args.lr,
+            max_steps=args.max_steps,
+            device=args.device or "auto",
+        )
+        return 0
+
+    # 实际微调：委托 verse_trainer（复用 verse_infra.verse_trainer.cli._apply_config_overrides
+    # 把 LoRA 参数写入临时 config，再调用 train()）
+    from verse_infra.verse_trainer.cli import _apply_config_overrides
+    import verse_infra.verse_trainer as _vt
+
+    overrides = {}
+    if args.method == "lora":
+        overrides["method"] = "lora"
+        overrides["lora_r"] = int(args.lora_r)
+        overrides["lora_alpha"] = float(args.lora_alpha)
+        if args.target_modules:
+            overrides["target_modules"] = args.target_modules
+    else:
+        overrides["method"] = "full"
+
+    if args.max_steps is not None:
+        overrides["max_steps"] = int(args.max_steps)
+    if args.data is not None:
+        overrides["train_path"] = args.data
+    if args.lr is not None:
+        overrides["lr"] = float(args.lr)
+
+    effective_config = _apply_config_overrides(config_path, overrides)
+
+    # continue_from：从 checkpoint 继续微调（委托 train 的 continue_from 参数）
+    continue_from = args.checkpoint if args.checkpoint else None
+
+    result = _vt.train(
+        config_path=effective_config,
+        base_dir=os.path.dirname(config_path) or _REPO_ROOT,
+        device=args.device,
+        max_steps_override=args.max_steps,
+        enable_loss_optimizer=False,
+        continue_from=continue_from,
+        quiet=args.quiet,
+        verbose=args.verbose,
+    )
+
+    best_val_loss = result.get("best_val_loss", float("inf"))
+    _ok(f"微调完成！best_val_loss = {best_val_loss:.4f}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# 子命令：posttrain（Part5K1 Task 11.3）
+# ---------------------------------------------------------------------------
+
+
+def cmd_posttrain(args) -> int:
+    """后训练（SFT / DPO / RL）。
+
+    - SFT / DPO 模式：委托 ``verse_infra.verse_trainer.train()``（method=sft/dpo），
+      与 ``verse-posttrain --rl sft|dpo`` 行为一致。
+    - RL 模式：委托 ``verse_infra.verse_trainer.cli.posttrain_main``（--rl nexrl），
+      用 RLTrainer 包装 NexTrainer。
+    """
+    config_path, factory, model_level = _select_model_level(args)
+
+    if not args.quiet:
+        _info(f"后训练模式：model={model_level} mode={args.mode} config={config_path}")
+
+    # dry-run：只打印不执行
+    if args.dry_run:
+        _print_dry_run(
+            "posttrain",
+            config=config_path,
+            model_level=model_level,
+            mode=args.mode,
+            checkpoint=args.checkpoint,
+            data=args.data,
+            lr=args.lr,
+            max_steps=args.max_steps,
+            device=args.device or "auto",
+        )
+        return 0
+
+    # RL 模式：委托 verse_trainer.cli.posttrain_main（--rl nexrl）
+    if args.mode == "rl":
+        from verse_infra.verse_trainer.cli import posttrain_main
+
+        argv = ["--config", config_path, "--rl", "nexrl"]
+        if args.device:
+            argv += ["--device", args.device]
+        if args.data:
+            argv += ["--data", args.data]
+        if args.checkpoint:
+            argv += ["--prompts", args.checkpoint]
+        if args.max_steps is not None:
+            argv += ["--max-steps", str(args.max_steps)]
+        if not args.quiet:
+            _info(f"委托 verse-posttrain --rl nexrl")
+        return posttrain_main(argv)
+
+    # SFT / DPO 模式：委托 verse_trainer.train()（method=sft/dpo）
+    from verse_infra.verse_trainer.cli import _apply_config_overrides
+    import verse_infra.verse_trainer as _vt
+
+    overrides = {"method": args.mode}  # sft / dpo
+    if args.max_steps is not None:
+        overrides["max_steps"] = int(args.max_steps)
+    if args.data is not None:
+        overrides["train_path"] = args.data
+    if args.lr is not None:
+        overrides["lr"] = float(args.lr)
+
+    effective_config = _apply_config_overrides(config_path, overrides)
+
+    # continue_from：从 checkpoint 继续后训练
+    continue_from = args.checkpoint if args.checkpoint else None
+
+    result = _vt.train(
+        config_path=effective_config,
+        base_dir=os.path.dirname(config_path) or _REPO_ROOT,
+        device=args.device,
+        max_steps_override=args.max_steps,
+        enable_loss_optimizer=False,
+        continue_from=continue_from,
+        quiet=args.quiet,
+        verbose=args.verbose,
+    )
+
+    best_val_loss = result.get("best_val_loss", float("inf"))
+    _ok(f"后训练完成（{args.mode}）！best_val_loss = {best_val_loss:.4f}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# 子命令：continue（Part5K1 Task 11.4）
+# ---------------------------------------------------------------------------
+
+
+def cmd_continue(args) -> int:
+    """持续训练（从 checkpoint 继续追加训练）。
+
+    委托 ``verse_infra.verse_trainer.continue_train()``，不重复造轮子。
+    """
+    config_path, factory, model_level = _select_model_level(args)
+
+    if not args.quiet:
+        _info(f"持续训练：model={model_level} checkpoint={args.checkpoint} "
+              f"additional_steps={args.additional_steps}")
+
+    # dry-run：只打印不执行
+    if args.dry_run:
+        _print_dry_run(
+            "continue",
+            config=config_path,
+            model_level=model_level,
+            checkpoint=args.checkpoint,
+            additional_steps=args.additional_steps,
+            lr=args.lr,
+            device=args.device or "auto",
+            amp=args.amp,
+        )
+        return 0
+
+    # 实际持续训练：委托 verse_trainer.continue_train
+    import verse_infra.verse_trainer as _vt
+
+    result = _vt.continue_train(
+        checkpoint=args.checkpoint,
+        additional_steps=int(args.additional_steps),
+        config_path=config_path,
+        base_dir=os.path.dirname(config_path) or _REPO_ROOT,
+        device=args.device,
+        amp=args.amp,
+        quiet=args.quiet,
+        verbose=args.verbose,
+    )
+
+    best_val_loss = result.get("best_val_loss", float("inf"))
+    _ok(f"持续训练完成！best_val_loss = {best_val_loss:.4f}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # 子命令：eval
 # ---------------------------------------------------------------------------
 
@@ -365,8 +658,14 @@ def cmd_eval(args) -> int:
     """评估模型。
 
     调用 ``verse_infra.verse_trainer.evaluate()``。
+    Part5K1 Task 11：支持 ``--model small|mate`` 选择配置。
     """
-    config_path = _resolve_config_path(args.config)
+    # Part5K1 Task 11：优先用 _select_model_level（--model 参数）
+    if getattr(args, "model", None):
+        config_path, _factory, model_level = _select_model_level(args)
+    else:
+        config_path = _resolve_config_path(args.config)
+        model_level = None
 
     if args.checkpoint and not os.path.exists(args.checkpoint):
         raise FileNotFoundError(
@@ -377,6 +676,7 @@ def cmd_eval(args) -> int:
         _print_dry_run(
             "eval",
             config=config_path,
+            model_level=model_level,
             checkpoint=args.checkpoint or "auto",
             max_tokens=args.max_tokens,
             temperature=args.temperature,
@@ -415,11 +715,23 @@ def cmd_generate(args) -> int:
     """生成文本。
 
     加载模型后调用 ``model.generate()``。
+    Part5K1 Task 11：支持 ``--model small|mate`` 选择模型加载类。
     """
+    # Part5K1 Task 11：解析 model_level（用于选择 LM 类加载 checkpoint）
+    model_level = getattr(args, "model", None)
+    # 若指定 --model，解析对应 config 路径用于 tokenizer 加载
+    config_path = args.config
+    if model_level and not config_path:
+        try:
+            config_path, _factory, model_level = _select_model_level(args)
+        except Exception:
+            config_path = args.config
+
     if args.dry_run:
         _print_dry_run(
             "generate",
             checkpoint=args.checkpoint,
+            model_level=model_level,
             prompt=args.prompt,
             max_tokens=args.max_tokens,
             temperature=args.temperature,
@@ -428,7 +740,7 @@ def cmd_generate(args) -> int:
         return 0
 
     model, tokenizer = _load_model_and_tokenizer(
-        args.checkpoint, config_path=args.config
+        args.checkpoint, config_path=config_path, model_level=model_level
     )
 
     if not args.quiet:
@@ -523,18 +835,29 @@ def cmd_chat(args) -> int:
     """交互式聊天。
 
     加载模型后进入交互循环，支持 /quit /clear /save 命令。
+    Part5K1 Task 11：支持 ``--model small|mate`` 选择模型加载类。
     """
+    # Part5K1 Task 11：解析 model_level（用于选择 LM 类加载 checkpoint）
+    model_level = getattr(args, "model", None)
+    config_path = args.config
+    if model_level and not config_path:
+        try:
+            config_path, _factory, model_level = _select_model_level(args)
+        except Exception:
+            config_path = args.config
+
     if args.dry_run:
         _print_dry_run(
             "chat",
             checkpoint=args.checkpoint,
+            model_level=model_level,
             temperature=args.temperature,
             max_tokens=args.max_tokens,
         )
         return 0
 
     model, tokenizer = _load_model_and_tokenizer(
-        args.checkpoint, config_path=args.config
+        args.checkpoint, config_path=config_path, model_level=model_level
     )
 
     _print_model_info(model)
@@ -648,7 +971,11 @@ def cmd_compress(args) -> int:
     """压缩模型。
 
     调用 ``compress_pipeline()``，支持 prune/quantize/lora 组合。
+    Part5K1 Task 11：支持 ``--model small|mate`` 选择模型加载类。
     """
+    # Part5K1 Task 11：解析 model_level
+    model_level = getattr(args, "model", None)
+
     # 解析 --method
     methods = [m.strip() for m in args.method.split(",") if m.strip()]
     compress_config = {}
@@ -671,6 +998,7 @@ def cmd_compress(args) -> int:
         _print_dry_run(
             "compress",
             checkpoint=args.checkpoint,
+            model_level=model_level,
             methods=methods,
             config=compress_config,
             output=args.output or "auto",
@@ -680,10 +1008,17 @@ def cmd_compress(args) -> int:
     if not os.path.exists(args.checkpoint):
         raise FileNotFoundError(f"checkpoint 不存在：{args.checkpoint}")
 
-    from spark.model.model import CometSparkV05LM
     from verse_torch.compress import compress_pipeline
 
-    model = CometSparkV05LM.from_pretrained(args.checkpoint)
+    # Part5K1 Task 11：按 model_level 选择对应的 LM 类
+    if model_level == "small":
+        from spark.small.model import CometSparkSmallLM as _LMClass
+    elif model_level == "mate":
+        from spark.mate.model import CometSparkMateLM as _LMClass
+    else:
+        from spark.model.model import CometSparkV05LM as _LMClass
+
+    model = _LMClass.from_pretrained(args.checkpoint)
 
     if not args.quiet:
         _print_model_info(model)
@@ -694,8 +1029,8 @@ def cmd_compress(args) -> int:
         model.net, compress_config, return_stats=True
     )
 
-    # 构造新的 CometSparkV05LM，替换内部 net
-    new_model = CometSparkV05LM(model.config)
+    # 构造新的模型实例（与原模型同类），替换内部 net
+    new_model = _LMClass(model.config)
     new_model.net = compressed_model
 
     compressed_params = new_model.count_parameters()
@@ -727,7 +1062,11 @@ def cmd_compress(args) -> int:
 
 
 def cmd_convert(args) -> int:
-    """转换模型格式（.pt ↔ .vn）。"""
+    """转换模型格式（.pt ↔ .vn）。
+
+    Part5K1 Task 11：支持 ``--model small|mate``（仅用于记录，不影响转换逻辑）。
+    """
+    model_level = getattr(args, "model", None)
     src_lower = args.input.lower()
     dst_lower = args.output.lower()
 
@@ -736,6 +1075,7 @@ def cmd_convert(args) -> int:
             "convert",
             input=args.input,
             output=args.output,
+            model_level=model_level,
             direction=(
                 ".pt → .vn" if src_lower.endswith(".pt")
                 else ".vn → .pt" if src_lower.endswith(".vn")
@@ -835,12 +1175,15 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "用法示例：\n"
-            "  python spark/run.py train --small          # 快速训练\n"
-            "  python spark/run.py train                    # 1B 训练\n"
-            "  python spark/run.py eval --checkpoint ck.pt  # 评估\n"
-            "  python spark/run.py generate --prompt '你好' # 生成\n"
-            "  python spark/run.py chat --checkpoint ck.pt  # 聊天\n"
-            "  python spark/run.py compress --checkpoint ck.pt --method prune,quantize\n"
+            "  python spark/run.py train --model small       # Small 模型训练\n"
+            "  python spark/run.py train --model mate        # Mate 旗舰训练\n"
+            "  python spark/run.py finetune --model small --method lora  # LoRA 微调\n"
+            "  python spark/run.py posttrain --model small --mode sft    # SFT 后训练\n"
+            "  python spark/run.py continue --model small --checkpoint ck.pt  # 续训\n"
+            "  python spark/run.py eval --model small --checkpoint ck.pt  # 评估\n"
+            "  python spark/run.py generate --model small --prompt '你好' # 生成\n"
+            "  python spark/run.py chat --model small --checkpoint ck.pt  # 聊天\n"
+            "  python spark/run.py compress --model small --checkpoint ck.pt --method prune,quantize\n"
             "  python spark/run.py convert --input m.pt --output m.vn\n"
             "  python spark/run.py download --url <URL>\n"
         ),
@@ -849,8 +1192,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     # --- train ---
     p_train = subparsers.add_parser("train", help="训练模型")
-    p_train.add_argument("--config", default=None, help="配置文件路径")
-    p_train.add_argument("--small", action="store_true", help="使用小配置（快速调试）")
+    p_train.add_argument("--model", default="small", choices=["small", "mate"],
+                         help="模型级别（small / mate，默认 small）")
+    p_train.add_argument("--config", default=None, help="配置文件路径（覆盖 --model 默认配置）")
+    p_train.add_argument("--small", action="store_true",
+                         help="使用旧版小配置（向后兼容，等价于 --model small + 旧配置路径）")
     p_train.add_argument("--max-steps", type=int, default=None, help="覆盖 max_steps")
     p_train.add_argument("--batch-size", type=int, default=None, help="覆盖 batch_size")
     p_train.add_argument("--device", default=None, choices=["cpu", "cuda", "npu"],
@@ -866,8 +1212,70 @@ def build_parser() -> argparse.ArgumentParser:
     p_train.add_argument("--verbose", action="store_true", help="详细日志")
     p_train.set_defaults(func=cmd_train)
 
+    # --- finetune（Part5K1 Task 11.2）---
+    p_ft = subparsers.add_parser("finetune", help="微调模型（LoRA / 全量）")
+    p_ft.add_argument("--model", default="small", choices=["small", "mate"],
+                      help="模型级别（small / mate，默认 small）")
+    p_ft.add_argument("--config", default=None, help="配置文件路径（覆盖 --model 默认配置）")
+    p_ft.add_argument("--method", default="lora", choices=["lora", "full"],
+                      help="微调方法（lora / full，默认 lora）")
+    p_ft.add_argument("--lora-r", type=int, default=8, help="LoRA 秩（默认 8）")
+    p_ft.add_argument("--lora-alpha", type=float, default=16.0, help="LoRA alpha（默认 16）")
+    p_ft.add_argument("--target-modules", default=None,
+                      help="LoRA 目标模块（逗号分隔，如 qkv,proj）")
+    p_ft.add_argument("--checkpoint", default=None,
+                      help="基础 checkpoint 路径（从该 checkpoint 继续微调）")
+    p_ft.add_argument("--data", default=None, help="微调数据路径（jsonl）")
+    p_ft.add_argument("--lr", type=float, default=None, help="学习率覆盖")
+    p_ft.add_argument("--max-steps", type=int, default=None, help="覆盖 max_steps")
+    p_ft.add_argument("--device", default=None, choices=["cpu", "cuda", "npu"],
+                      help="设备（默认从 config 读取）")
+    p_ft.add_argument("--dry-run", action="store_true", help="只打印不执行")
+    p_ft.add_argument("--quiet", action="store_true", help="静默模式")
+    p_ft.add_argument("--verbose", action="store_true", help="详细日志")
+    p_ft.set_defaults(func=cmd_finetune)
+
+    # --- posttrain（Part5K1 Task 11.3）---
+    p_pt = subparsers.add_parser("posttrain", help="后训练（SFT / DPO / RL）")
+    p_pt.add_argument("--model", default="small", choices=["small", "mate"],
+                      help="模型级别（small / mate，默认 small）")
+    p_pt.add_argument("--config", default=None, help="配置文件路径（覆盖 --model 默认配置）")
+    p_pt.add_argument("--mode", default="sft", choices=["sft", "dpo", "rl"],
+                      help="后训练模式（sft / dpo / rl，默认 sft）")
+    p_pt.add_argument("--checkpoint", default=None,
+                      help="基础 checkpoint 路径（从该 checkpoint 继续后训练）")
+    p_pt.add_argument("--data", default=None, help="后训练数据路径（jsonl）")
+    p_pt.add_argument("--lr", type=float, default=None, help="学习率覆盖")
+    p_pt.add_argument("--max-steps", type=int, default=None, help="覆盖 max_steps")
+    p_pt.add_argument("--device", default=None, choices=["cpu", "cuda", "npu"],
+                      help="设备（默认从 config 读取）")
+    p_pt.add_argument("--dry-run", action="store_true", help="只打印不执行")
+    p_pt.add_argument("--quiet", action="store_true", help="静默模式")
+    p_pt.add_argument("--verbose", action="store_true", help="详细日志")
+    p_pt.set_defaults(func=cmd_posttrain)
+
+    # --- continue（Part5K1 Task 11.4）---
+    p_cont = subparsers.add_parser("continue", help="持续训练（从 checkpoint 续训）")
+    p_cont.add_argument("--model", default="small", choices=["small", "mate"],
+                        help="模型级别（small / mate，默认 small）")
+    p_cont.add_argument("--config", default=None, help="配置文件路径（覆盖 --model 默认配置）")
+    p_cont.add_argument("--checkpoint", required=True,
+                        help="checkpoint 文件路径（必填，从哪个 checkpoint 续训）")
+    p_cont.add_argument("--additional-steps", type=int, default=100,
+                        help="追加训练步数（默认 100）")
+    p_cont.add_argument("--lr", type=float, default=None, help="学习率覆盖（仅记录）")
+    p_cont.add_argument("--device", default=None, choices=["cpu", "cuda", "npu"],
+                        help="设备（默认从 config 读取）")
+    p_cont.add_argument("--amp", action="store_true", help="启用混合精度")
+    p_cont.add_argument("--dry-run", action="store_true", help="只打印不执行")
+    p_cont.add_argument("--quiet", action="store_true", help="静默模式")
+    p_cont.add_argument("--verbose", action="store_true", help="详细日志")
+    p_cont.set_defaults(func=cmd_continue)
+
     # --- eval ---
     p_eval = subparsers.add_parser("eval", help="评估模型")
+    p_eval.add_argument("--model", default=None, choices=["small", "mate"],
+                        help="模型级别（small / mate）")
     p_eval.add_argument("--config", default=None, help="配置文件路径")
     p_eval.add_argument("--checkpoint", default=None, help="checkpoint 文件路径")
     p_eval.add_argument("--max-tokens", type=int, default=None,
@@ -880,6 +1288,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # --- generate ---
     p_gen = subparsers.add_parser("generate", help="生成文本")
+    p_gen.add_argument("--model", default=None, choices=["small", "mate"],
+                       help="模型级别（small / mate）")
     p_gen.add_argument("--checkpoint", default="checkpoints/best.pt",
                        help="checkpoint 文件路径")
     p_gen.add_argument("--config", default=None, help="配置文件路径（加载 tokenizer）")
@@ -894,6 +1304,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # --- chat ---
     p_chat = subparsers.add_parser("chat", help="交互式聊天")
+    p_chat.add_argument("--model", default=None, choices=["small", "mate"],
+                        help="模型级别（small / mate）")
     p_chat.add_argument("--checkpoint", default="checkpoints/best.pt",
                         help="checkpoint 文件路径")
     p_chat.add_argument("--config", default=None, help="配置文件路径（加载 tokenizer）")
@@ -905,6 +1317,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # --- compress ---
     p_comp = subparsers.add_parser("compress", help="压缩模型")
+    p_comp.add_argument("--model", default=None, choices=["small", "mate"],
+                        help="模型级别（small / mate）")
     p_comp.add_argument("--checkpoint", required=True, help="checkpoint 文件路径")
     p_comp.add_argument("--method", default="prune,quantize",
                         help="压缩方法（逗号分隔：prune,quantize,lora,ternary）")
@@ -919,6 +1333,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # --- convert ---
     p_conv = subparsers.add_parser("convert", help="转换模型格式（.pt ↔ .vn）")
+    p_conv.add_argument("--model", default=None, choices=["small", "mate"],
+                        help="模型级别（small / mate，仅记录用）")
     p_conv.add_argument("--input", required=True, help="输入文件路径")
     p_conv.add_argument("--output", required=True, help="输出文件路径")
     p_conv.add_argument("--chat-template", default=None, help="chat_template.jinja 路径")
