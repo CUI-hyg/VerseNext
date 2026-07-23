@@ -12,13 +12,13 @@
 - [x] 1.9 测试
 
 ## Task 2: Verse_Tokenizer jinja2 + ChatML + 工具调用
-- [ ] 2.1 jinja2 引擎集成（可选依赖，缺失时降级为字符串拼接）
-- [ ] 2.2 ChatML 模板定义（Qwen 风格 jinja2 模板字符串）
-- [ ] 2.3 工具调用模板（Qwen3 官方格式：tool 角色 + assistant JSON 工具调用 + tool 返回）
-- [ ] 2.4 tokenizer.json 内嵌 chat_template.jinja 字段
-- [ ] 2.5 apply_chat_template 全量升级（支持 tools 参数 + add_generation_prompt）
-- [ ] 2.6 BaseTokenizer/BPETokenizer/VerseTokenizer 统一升级
-- [ ] 2.7 测试
+- [x] 2.1 jinja2 引擎集成（可选依赖，缺失时降级为字符串拼接）
+- [x] 2.2 ChatML 模板定义（Qwen 风格 jinja2 模板字符串）
+- [x] 2.3 工具调用模板（Qwen3 官方格式：tool 角色 + assistant JSON 工具调用 + tool 返回）
+- [x] 2.4 tokenizer.json 内嵌 chat_template.jinja 字段
+- [x] 2.5 apply_chat_template 全量升级（支持 tools 参数 + add_generation_prompt）
+- [x] 2.6 BaseTokenizer/BPETokenizer/VerseTokenizer 统一升级
+- [x] 2.7 测试
 
 ## Task 3: 生成输出优化（不限制 token 数）
 - [x] 3.1 CometSparkV05LM.generate 移除 max_new_tokens 默认值，改为 EOS 自然停止 + 安全上限 100K

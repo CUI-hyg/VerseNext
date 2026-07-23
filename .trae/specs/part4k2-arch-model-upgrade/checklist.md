@@ -61,9 +61,9 @@
 
 ## Task 9: 文档
 - [x] README 更新
-- [ ] ADR 新增
-- [ ] training_guide + perf_tuning 更新
-- [ ] 压缩技术文档
+- [x] ADR 新增
+- [x] training_guide + perf_tuning 更新
+- [x] 压缩技术文档
 
 ## Task 10: 综合验收
 - [x] pytest tests/ 全量测试零失败
