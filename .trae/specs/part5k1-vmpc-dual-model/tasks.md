@@ -4,61 +4,61 @@
 
 ## 阶段 A：VerseTorch 底层精简（vnn 重命名 + 去壳）
 
-- [ ] Task 1: VerseTorch.nn → VerseTorch.vnn 重命名（BREAKING）
-  - [ ] SubTask 1.1: 新建 `packages/verse_torch/verse_torch/vnn.py`，把 `nn.py` 全部内容迁移过去（Module / Linear / Embedding / LayerNorm / RMSNorm / Dropout / Sequential / ModuleList / SwiGLUMLP / 初始化函数 / Conv1d / GroupNorm / KVCache 等）
-  - [ ] SubTask 1.2: `nn.py` 降级为 thin shim：`from .vnn import *` + 对 `TransformerLM`/`TransformerBlock`/`GQASelfAttention` 旧名抛 `ImportError`（不再 silent 兼容，落实 REMOVED Requirement）
-  - [ ] SubTask 1.3: 更新 `verse_torch/__init__.py`：新增 `from . import vnn` 导出，`nn` 仍指向 `vnn`（`nn = vnn` 别名），但推荐 `vnn`
-  - [ ] SubTask 1.4: 更新 `verse_torch` 内部模块导入：`compress.py` / `training.py` / `training_nex.py` / `layerwise_trainer.py` 中 `from . import nn` 改为 `from . import vnn as nn`（最小改动，保证不破坏现有逻辑）
-  - [ ] SubTask 1.5: 更新 `verse_nex` / `spark` / `tests` 中所有 `from verse_torch.nn import ...` → `from verse_torch.vnn import ...`（或 `from verse_torch import vnn; vnn.XXX`）
-  - [ ] SubTask 1.6: 新增 `tests/test_vnn_rename.py`：新导入路径可用 + 旧路径发 DeprecationWarning + transformer 系旧名抛 ImportError
+- [x] Task 1: VerseTorch.nn → VerseTorch.vnn 重命名（BREAKING）
+  - [x] SubTask 1.1: 新建 `packages/verse_torch/verse_torch/vnn.py`，把 `nn.py` 全部内容迁移过去（Module / Linear / Embedding / LayerNorm / RMSNorm / Dropout / Sequential / ModuleList / SwiGLUMLP / 初始化函数 / Conv1d / GroupNorm / KVCache 等）
+  - [x] SubTask 1.2: `nn.py` 降级为 thin shim：`from .vnn import *` + 对 `TransformerLM`/`TransformerBlock`/`GQASelfAttention` 旧名抛 `ImportError`（不再 silent 兼容，落实 REMOVED Requirement）
+  - [x] SubTask 1.3: 更新 `verse_torch/__init__.py`：新增 `from . import vnn` 导出，`nn` 仍指向 `vnn`（`nn = vnn` 别名），但推荐 `vnn`
+  - [x] SubTask 1.4: 更新 `verse_torch` 内部模块导入：`compress.py` / `training.py` / `training_nex.py` / `layerwise_trainer.py` 中 `from . import nn` 改为 `from . import vnn as nn`（最小改动，保证不破坏现有逻辑）
+  - [x] SubTask 1.5: 更新 `verse_nex` / `spark` / `tests` 中所有 `from verse_torch.nn import ...` → `from verse_torch.vnn import ...`（或 `from verse_torch import vnn; vnn.XXX`）
+  - [x] SubTask 1.6: 新增 `tests/test_vnn_rename.py`：新导入路径可用 + 旧路径发 DeprecationWarning + transformer 系旧名抛 ImportError
 
-- [ ] Task 2: VerseTorch 底层去壳与合并
-  - [ ] SubTask 2.1: 合并 `compress.py` 与 `quantize.py` 中重复的 bit 统计 / 参数遍历函数（`_iter_all_tensors` / `_iter_module_tensors` / `count_parameters` 等），统一到 `compress.py` 的单一实现，`quantize.py` 复用
-  - [ ] SubTask 2.2: 合并 `training.py` 与 `training_nex.py` 中重复的 collate / loss 辅助（`_as_tensor` / `_scalar` / `_cfg_get` 等），消除反复 import
-  - [ ] SubTask 2.3: 简化 `Module.__setattr__` 注册分支（减少 isinstance 判断链）
-  - [ ] SubTask 2.4: 合并 `LayerNorm` / `LayerNormFast` / `RMSNorm` 的公共归一化内核（提取 `_normalize_kernel`）
-  - [ ] SubTask 2.5: 运行全量测试，确认去壳后行为不变（零回归）
+- [x] Task 2: VerseTorch 底层去壳与合并
+  - [x] SubTask 2.1: 合并 `compress.py` 与 `quantize.py` 中重复的 bit 统计 / 参数遍历函数（`_iter_all_tensors` / `_iter_module_tensors` / `count_parameters` 等），统一到 `compress.py` 的单一实现，`quantize.py` 复用
+  - [x] SubTask 2.2: 合并 `training.py` 与 `training_nex.py` 中重复的 collate / loss 辅助（`_as_tensor` / `_scalar` / `_cfg_get` 等），消除反复 import
+  - [x] SubTask 2.3: 简化 `Module.__setattr__` 注册分支（减少 isinstance 判断链）
+  - [x] SubTask 2.4: 合并 `LayerNorm` / `LayerNormFast` / `RMSNorm` 的公共归一化内核（提取 `_normalize_kernel`）
+  - [x] SubTask 2.5: 运行全量测试，确认去壳后行为不变（零回归）
 
 ## 阶段 B：VMPC V1.5 技术
 
-- [ ] Task 3: VMPC 命名 + V1.5 门面
-  - [ ] SubTask 3.1: 新建 `packages/verse_torch/verse_torch/vmpc.py`：re-export `compress_pipeline` / `OutlierSafePruner` / `LoRALinear` / `KnowledgeDistiller` / `QLinear` / `compress_mod_experts` / `compression_report`（从 `compress` 导入同一对象，保证 `verse_torch.vmpc.compress_pipeline is verse_torch.compress.compress_pipeline`）
-  - [ ] SubTask 3.2: 实现 `VMPCRegularizer`：参数幅度 L2 正则 + 压缩感知 dropout + early-exit 自适应稀疏收紧（val_loss 连续 `patience` 步不降 → `target_sparsity *= 0.9`）；提供 `attach(trainer)` 挂载到 Trainer loss
-  - [ ] SubTask 3.3: 实现 `vmpc_compress(model, profile="small"|"mate")` 便捷函数：按预设一键压缩（small=ternary+高稀疏 sparsity=0.5，mate=int4+中稀疏 sparsity=0.3+蒸馏）
-  - [ ] SubTask 3.4: 更新 `verse_torch/__init__.py` 导出 `vmpc` / `VMPCRegularizer` / `vmpc_compress`
-  - [ ] SubTask 3.5: 新增 `tests/test_vmpc_facade.py`：门面导入同一性 + VMPCRegularizer 收紧 + vmpc_compress 预设
+- [x] Task 3: VMPC 命名 + V1.5 门面
+  - [x] SubTask 3.1: 新建 `packages/verse_torch/verse_torch/vmpc.py`：re-export `compress_pipeline` / `OutlierSafePruner` / `LoRALinear` / `KnowledgeDistiller` / `QLinear` / `compress_mod_experts` / `compression_report`（从 `compress` 导入同一对象，保证 `verse_torch.vmpc.compress_pipeline is verse_torch.compress.compress_pipeline`）
+  - [x] SubTask 3.2: 实现 `VMPCRegularizer`：参数幅度 L2 正则 + 压缩感知 dropout + early-exit 自适应稀疏收紧（val_loss 连续 `patience` 步不降 → `target_sparsity *= 0.9`）；提供 `attach(trainer)` 挂载到 Trainer loss
+  - [x] SubTask 3.3: 实现 `vmpc_compress(model, profile="small"|"mate")` 便捷函数：按预设一键压缩（small=ternary+高稀疏 sparsity=0.5，mate=int4+中稀疏 sparsity=0.3+蒸馏）
+  - [x] SubTask 3.4: 更新 `verse_torch/__init__.py` 导出 `vmpc` / `VMPCRegularizer` / `vmpc_compress`
+  - [x] SubTask 3.5: 新增 `tests/test_vmpc_facade.py`：门面导入同一性 + VMPCRegularizer 收紧 + vmpc_compress 预设
 
-- [ ] Task 4: VMPC V1.5 命中与质量优化（升级 compress.py）
-  - [ ] SubTask 4.1: `compress.py` 新增 `_compress_pipeline_v15(model, config, return_stats)`：在 V1.3 流程基础上增加 `contrastive_distill` + `logit_calibration` 步骤；`compress_pipeline` 默认 `version="1.5"`，V1.3 走 `_compress_pipeline_v13`
-  - [ ] SubTask 4.2: `KnowledgeDistiller` 新增 `contrastive_loss`（margin ranking loss，teacher/student logit top-k 排序一致性）；`compute_loss` 增加 `distill_contrastive` 参数
-  - [ ] SubTask 4.3: `QLinear.forward` 升级 outlier-aware 反量化：识别 outlier channel（|w| > 3σ）保留 fp16，其余 int4；减少反量化中间拷贝
-  - [ ] SubTask 4.4: 推理 logits 校准：`CometSparkNexLM.generate` 路径下对反量化 logits 做 temperature-aware sharpening（`logits / sqrt(var) * calib_factor`）
-  - [ ] SubTask 4.5: `compression_report` 新增 `vmpc_version` 字段
-  - [ ] SubTask 4.6: 数值稳定：V1.5 路径与 V1.3 前向输出吻合到 1e-2（float32）
-  - [ ] SubTask 4.7: 新增 `tests/test_vmpc_v15.py`：contrastive distill 排序一致性 + outlier 反量化 + 命中率提升（≥5%）+ 数值稳定
+- [x] Task 4: VMPC V1.5 命中与质量优化（升级 compress.py）
+  - [x] SubTask 4.1: `compress.py` 新增 `_compress_pipeline_v15(model, config, return_stats)`：在 V1.3 流程基础上增加 `contrastive_distill` + `logit_calibration` 步骤；`compress_pipeline` 默认 `version="1.5"`，V1.3 走 `_compress_pipeline_v13`
+  - [x] SubTask 4.2: `KnowledgeDistiller` 新增 `contrastive_loss`（margin ranking loss，teacher/student logit top-k 排序一致性）；`compute_loss` 增加 `distill_contrastive` 参数
+  - [x] SubTask 4.3: `QLinear.forward` 升级 outlier-aware 反量化：识别 outlier channel（|w| > 3σ）保留 fp16，其余 int4；减少反量化中间拷贝
+  - [x] SubTask 4.4: 推理 logits 校准：`CometSparkNexLM.generate` 路径下对反量化 logits 做 temperature-aware sharpening（`logits / sqrt(var) * calib_factor`）
+  - [x] SubTask 4.5: `compression_report` 新增 `vmpc_version` 字段
+  - [x] SubTask 4.6: 数值稳定：V1.5 路径与 V1.3 前向输出吻合到 1e-2（float32）
+  - [x] SubTask 4.7: 新增 `tests/test_vmpc_v15.py`：contrastive distill 排序一致性 + outlier 反量化 + 命中率提升（≥5%）+ 数值稳定
 
 ## 阶段 C：数据加载与训练资源优化
 
-- [ ] Task 5: JSONL 自修复与标准化（独立文件）
-  - [ ] SubTask 5.1: 新建 `packages/verse_infra/verse_infra/verse_trainer/jsonl_repair.py`：定义 `JSONLRepairError` 异常 + 异名字段映射表（`instruction/response`、`q/a`、`question/answer`、`input/output`、`user/assistant`）
-  - [ ] SubTask 5.2: 实现 `_standardize_fields(item)`：自动探测异名字段并批量转换为 `{"prompt":..., "completion":...}`；单字段 `text`/`content`/`raw` 保留为 `text`
-  - [ ] SubTask 5.3: 实现 `_repair_line(line)`：补全缺失引号/逗号、修复未闭合 JSON、去除 BOM/控制字符/行尾多余逗号；无法修复返回 None
-  - [ ] SubTask 5.4: 实现 `repair_jsonl(path, write_back=False, repair=True)`：逐行修复 + 标准化，返回 `List[dict]`；`write_back=True` 写到 `*.repaired.jsonl` 或覆盖
-  - [ ] SubTask 5.5: 修改 `data.py` 的 `load_jsonl`：默认 `repair=True` 调用 `repair_jsonl`；`repair=False` 走原严格解析（向后兼容）
-  - [ ] SubTask 5.6: 新增 `tests/test_jsonl_repair.py`：异名字段标准化 + 缺逗号修复 + 未闭合修复 + BOM 去除 + 无法修复抛错
+- [x] Task 5: JSONL 自修复与标准化（独立文件）
+  - [x] SubTask 5.1: 新建 `packages/verse_infra/verse_infra/verse_trainer/jsonl_repair.py`：定义 `JSONLRepairError` 异常 + 异名字段映射表（`instruction/response`、`q/a`、`question/answer`、`input/output`、`user/assistant`）
+  - [x] SubTask 5.2: 实现 `_standardize_fields(item)`：自动探测异名字段并批量转换为 `{"prompt":..., "completion":...}`；单字段 `text`/`content`/`raw` 保留为 `text`
+  - [x] SubTask 5.3: 实现 `_repair_line(line)`：补全缺失引号/逗号、修复未闭合 JSON、去除 BOM/控制字符/行尾多余逗号；无法修复返回 None
+  - [x] SubTask 5.4: 实现 `repair_jsonl(path, write_back=False, repair=True)`：逐行修复 + 标准化，返回 `List[dict]`；`write_back=True` 写到 `*.repaired.jsonl` 或覆盖
+  - [x] SubTask 5.5: 修改 `data.py` 的 `load_jsonl`：默认 `repair=True` 调用 `repair_jsonl`；`repair=False` 走原严格解析（向后兼容）
+  - [x] SubTask 5.6: 新增 `tests/test_jsonl_repair.py`：异名字段标准化 + 缺逗号修复 + 未闭合修复 + BOM 去除 + 无法修复抛错
 
-- [ ] Task 6: val.json 自动生成 + 数据预加载流水线
-  - [ ] SubTask 6.1: 在 `data.py` 实现 `ensure_val_split(train_path, val_path, val_ratio=0.05, write_back=True)`：val_path 不存在/空时从 train 末尾切分；写回 val_path + 日志 `(n_train, n_val)`
-  - [ ] SubTask 6.2: `CachedDataset` 升级预加载流水线：`preload=True` 时后台线程编码 + 主线程构建模型；`prefetch` 扩展到非 torch 环境（纯 threading 预取，移除 `self._torch is None` 的降级）
-  - [ ] SubTask 6.3: `trainer.py` 训练入口 `train()` 启动时调用 `ensure_val_split`（读取 config 的 data 段）
-  - [ ] SubTask 6.4: 新增 `tests/test_val_autogen.py`：val 不存在自动生成 + 比例正确 + write_back
+- [x] Task 6: val.json 自动生成 + 数据预加载流水线
+  - [x] SubTask 6.1: 在 `data.py` 实现 `ensure_val_split(train_path, val_path, val_ratio=0.05, write_back=True)`：val_path 不存在/空时从 train 末尾切分；写回 val_path + 日志 `(n_train, n_val)`
+  - [x] SubTask 6.2: `CachedDataset` 升级预加载流水线：`preload=True` 时后台线程编码 + 主线程构建模型；`prefetch` 扩展到非 torch 环境（纯 threading 预取，移除 `self._torch is None` 的降级）
+  - [x] SubTask 6.3: `trainer.py` 训练入口 `train()` 启动时调用 `ensure_val_split`（读取 config 的 data 段）
+  - [x] SubTask 6.4: 新增 `tests/test_val_autogen.py`：val 不存在自动生成 + 比例正确 + write_back
 
-- [ ] Task 7: 64+ 层训练加速（VerseNex 层融合 + chunked 前向）
-  - [ ] SubTask 7.1: `verse_nex/cometspark.py` 的 `CometSparkNexLM.forward` 新增层融合：相邻同型 VerseNexBlock 的 `RMSNorm + Linear` 合并为单次 matmul（CPU 下减少 Python 循环）
-  - [ ] SubTask 7.2: 实现 `chunked_forward(idx, chunk_size=8)`：`n_layer >= 64` 时自动启用，按 8 层分块前向，块间不保留中间梯度图（梯度检查点风格）
-  - [ ] SubTask 7.3: `forward` 自动检测 `n_layer >= 64` 走 chunked 路径，否则走原路径
-  - [ ] SubTask 7.4: 数值一致：chunked 前向与原前向 float32 吻合到 1e-3
-  - [ ] SubTask 7.5: 新增 `tests/test_layer_fusion.py`：层融合数值一致 + chunked 前向内存峰值降低 + 吞吐 ≥ 1.5×
+- [x] Task 7: 64+ 层训练加速（VerseNex 层融合 + chunked 前向）
+  - [x] SubTask 7.1: `verse_nex/cometspark.py` 的 `CometSparkNexLM.forward` 新增层融合：相邻同型 VerseNexBlock 的 `RMSNorm + Linear` 合并为单次 matmul（CPU 下减少 Python 循环）
+  - [x] SubTask 7.2: 实现 `chunked_forward(idx, chunk_size=8)`：`n_layer >= 64` 时自动启用，按 8 层分块前向，块间不保留中间梯度图（梯度检查点风格）
+  - [x] SubTask 7.3: `forward` 自动检测 `n_layer >= 64` 走 chunked 路径，否则走原路径
+  - [x] SubTask 7.4: 数值一致：chunked 前向与原前向 float32 吻合到 1e-3
+  - [x] SubTask 7.5: 新增 `tests/test_layer_fusion.py`：层融合数值一致 + chunked 前向内存峰值降低 + 吞吐 ≥ 1.5×
 
 - [ ] Task 8: VMT 完整智能分区训练（VMTTrainer）
   - [ ] SubTask 8.1: `verse_torch/layerwise_trainer.py` 新增 `VMTTrainer`（继承 `LayerWiseTrainer`）：新增 `freeze` 档（INT4 量化 + requires_grad=False）+ `optimize` 档（层融合 + 梯度累积）
@@ -71,15 +71,15 @@
 
 ## 阶段 D：双模型并行（spark 重构）
 
-- [ ] Task 9: spark 目录重构（small / mate 双模型）
-  - [ ] SubTask 9.1: 创建 `spark/small/config/cometspark_small.yml`（从 `cometspark_v05_small.yml` 迁移 + VMPC-small 预设：ternary + 高稀疏 + 0.06zB 目标）
-  - [ ] SubTask 9.2: 创建 `spark/mate/config/cometspark_mate.yml`（从 `cometspark_v05.yml` 迁移 + VMPC-mate 预设：int4 + 中稀疏 + 蒸馏 + 0.2zB 目标）
-  - [ ] SubTask 9.3: 创建 `spark/small/model/config.py`（`CometSparkSmallConfig`，从 `CometSparkV05Config` 派生 + VMPC-small 字段）+ `spark/small/model/model.py`（`CometSparkSmallLM` + `CometSparkSmall()` 工厂）
-  - [ ] SubTask 9.4: 创建 `spark/mate/model/config.py`（`CometSparkMateConfig`）+ `spark/mate/model/model.py`（`CometSparkMateLM` + `CometSparkMate()` 工厂）
-  - [ ] SubTask 9.5: 双模型均基于 `verse_nex.CometSparkNexLM`，VMPC 适配微调架构（expert 数 / 层 pattern / init_std）
-  - [ ] SubTask 9.6: 删除扁平旧目录 `spark/config/`、`spark/model/`、`spark/src/`（内容已迁移）
-  - [ ] SubTask 9.7: 更新 `spark/__init__.py` / `spark/_bootstrap.py` 适配新结构
-  - [ ] SubTask 9.8: 新增 `tests/test_dual_model.py`：构建 small/mate + VMPC 预设 + 参数量在预期区间
+- [x] Task 9: spark 目录重构（small / mate 双模型）
+  - [x] SubTask 9.1: 创建 `spark/small/config/cometspark_small.yml`（从 `cometspark_v05_small.yml` 迁移 + VMPC-small 预设：ternary + 高稀疏 + 0.06zB 目标）
+  - [x] SubTask 9.2: 创建 `spark/mate/config/cometspark_mate.yml`（从 `cometspark_v05.yml` 迁移 + VMPC-mate 预设：int4 + 中稀疏 + 蒸馏 + 0.2zB 目标）
+  - [x] SubTask 9.3: 创建 `spark/small/model/config.py`（`CometSparkSmallConfig`，从 `CometSparkV05Config` 派生 + VMPC-small 字段）+ `spark/small/model/model.py`（`CometSparkSmallLM` + `CometSparkSmall()` 工厂）
+  - [x] SubTask 9.4: 创建 `spark/mate/model/config.py`（`CometSparkMateConfig`）+ `spark/mate/model/model.py`（`CometSparkMateLM` + `CometSparkMate()` 工厂）
+  - [x] SubTask 9.5: 双模型均基于 `verse_nex.CometSparkNexLM`，VMPC 适配微调架构（expert 数 / 层 pattern / init_std）
+  - [~] SubTask 9.6: **保守策略**——保留扁平旧目录 `spark/config/`、`spark/model/`、`spark/src/`，只新建 `small/` 和 `mate/`。原因：`spark/run.py` 仍引用旧路径（`spark/config/cometspark_v05.yml` + `from spark.model.model import CometSparkV05LM`），删除会立即破坏 run.py。**旧目录待 Task 11 清理**（Task 11 升级 run.py 后再删除旧 config/model/src）。现有测试 `test_cometspark_v05.py` / `test_vmpc_facade.py` / `test_vnn_rename.py` 全部零回归验证通过。
+  - [x] SubTask 9.7: 更新 `spark/__init__.py` / `spark/_bootstrap.py` 适配新结构
+  - [x] SubTask 9.8: 新增 `tests/test_dual_model.py`：构建 small/mate + VMPC 预设 + 参数量在预期区间（32 个测试全部通过）
 
 - [ ] Task 10: checkpoint 重命名 + .vn 默认输出
   - [ ] SubTask 10.1: `CometSparkSmallLM` / `CometSparkMateLM` 的 `save` 增加 `format="pt"|"vn"` 参数，默认 `"vn"`；`save_pretrained` 同步
@@ -98,10 +98,10 @@
 
 ## 阶段 E：VerseNex 精简与文档
 
-- [ ] Task 12: VerseNex 精简（删除废弃别名）
-  - [ ] SubTask 12.1: `verse_nex/__init__.py` 移除已废弃 transformer 系别名导出（`HybridBlock`/`HybridLM` 标记 deprecated 后保留只读，但不新增导出）
-  - [ ] SubTask 12.2: 清理 `verse_nex` 内部对 `verse_torch.nn` 的旧导入（改用 `verse_torch.vnn`）
-  - [ ] SubTask 12.3: 运行 `tests/test_cometspark_*.py` / `test_verse_infra_imports.py` 确认零回归
+- [x] Task 12: VerseNex 精简（删除废弃别名）
+  - [x] SubTask 12.1: `verse_nex/__init__.py` 移除已废弃 transformer 系别名导出（`HybridBlock`/`HybridLM` 标记 deprecated 后保留只读，但不新增导出）
+  - [x] SubTask 12.2: 清理 `verse_nex` 内部对 `verse_torch.nn` 的旧导入（改用 `verse_torch.vnn`）
+  - [x] SubTask 12.3: 运行 `tests/test_cometspark_*.py` / `test_verse_infra_imports.py` 确认零回归
 
 - [ ] Task 13: 文档与代码注释升级
   - [ ] SubTask 13.1: 新增 `docs/architecture/adr-013-vmpc-naming-v15.md`（VMPC 命名 + V1.5 设计）

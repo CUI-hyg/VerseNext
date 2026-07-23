@@ -97,7 +97,8 @@ def main():
 
     # 延迟导入，便于 --help 快速响应
     from verse_torch import Tensor, no_grad
-    from verse_nex import HybridLM
+    # HybridLM 已 deprecated，从子模块导入（保留只读兼容）。
+    from verse_nex.hybrid import HybridLM
     from verse_infra.verse_tokenizer import CharTokenizer
     from verse_infra.verse_inference import ModelLoader, Sampler, StreamingGenerator
 

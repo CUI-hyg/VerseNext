@@ -6,7 +6,7 @@
 3. CachedDataset / load_jsonl 空行处理
 4. BatchLoader __len__ 返回 0 时 tqdm 不报错
 5. CometSparkNexLM._generate_recurrent 的 eos_id 正确传递
-6. compress_pipeline version 版本号比较（"1.30"/"1.3.0" → v13）
+6. compress_pipeline version 版本号比较（"1.30" → v15，"1.3.0" → v13）
 7. 性能优化正确性（cross_entropy np.asarray 路径一致性）
 8. evaluate.py _EVAL_MAX_SAFE_LIMIT 安全上限
 9. CometSparkV05LM save/load pathlib 路径处理
@@ -175,7 +175,9 @@ class TestLoadJsonlEmptyLines:
         from verse_infra.verse_trainer.data import load_jsonl
         jsonl_path = tmp_path / "no_trail.jsonl"
         jsonl_path.write_text('{"a": 1}\n{"b": 2}', encoding="utf-8")
-        items = load_jsonl(str(jsonl_path))
+        # repair=False 走严格解析：本用例验证"无尾换行"的解析能力，
+        # 不关心字段标准化（{"b": 2} 非训练字段，repair=True 会抛错）
+        items = load_jsonl(str(jsonl_path), repair=False)
         assert len(items) == 2
 
 
@@ -332,7 +334,7 @@ class TestCompressPipelineVersion:
         np.random.seed(42)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
-            return nn.TransformerLM(
+            return nn._TransformerLM(
                 vocab_size=32, n_layer=1, n_head=2,
                 n_embd=16, seq_len=16, dropout=0.0, tie_weights=True,
             )
@@ -347,16 +349,20 @@ class TestCompressPipelineVersion:
         )
         assert stats.get("version") == "1.3"
 
-    def test_version_1_30_goes_v13(self):
-        """version='1.30' 应走 v13 分支（修复前会走 v2）。"""
+    def test_version_1_30_goes_v15(self):
+        """version='1.30' 解析为 (1, 30) >= (1, 5)，应走 v15 分支。
+
+        修复前（字符串比较）会走 v2；引入 V1.5 默认路由后，
+        (1, 30) >= (1, 5) 命中 V1.5 流水线（当前最高版本）。
+        """
         from verse_torch.compress import compress_pipeline
         model = self._build_small_model()
         _, stats = compress_pipeline(
             model, {"prune": {"sparsity": 0.3}, "quantize": {"bits": 4}},
             return_stats=True, version="1.30",
         )
-        assert stats.get("version") == "1.3", (
-            f"version='1.30' 应走 v13 分支，实际 version={stats.get('version')}"
+        assert stats.get("version") == "1.5", (
+            f"version='1.30' 应走 v15 分支，实际 version={stats.get('version')}"
         )
 
     def test_version_1_3_0_goes_v13(self):

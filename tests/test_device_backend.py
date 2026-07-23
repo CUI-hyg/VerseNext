@@ -346,7 +346,7 @@ class TestModuleToDevice(unittest.TestCase):
 
     def setUp(self):
         _set_seed(42)
-        from verse_torch.nn import Linear
+        from verse_torch.vnn import Linear
         self.Linear = Linear
 
     def test_module_device_default(self):
@@ -665,7 +665,7 @@ class TestNewNNComponents(unittest.TestCase):
 
     def test_rotary_embedding_shape(self):
         """RotaryEmbedding 前向输出 shape 正确。"""
-        from verse_torch.nn import RotaryEmbedding
+        from verse_torch.vnn import RotaryEmbedding
         rope = RotaryEmbedding(dim=8, max_seq_len=32)
         x = Tensor(np.random.randn(2, 4, 8).astype(np.float32), requires_grad=True)
         out = rope(x)
@@ -673,7 +673,7 @@ class TestNewNNComponents(unittest.TestCase):
 
     def test_rotary_embedding_seq_len(self):
         """RotaryEmbedding 指定 seq_len 不报错。"""
-        from verse_torch.nn import RotaryEmbedding
+        from verse_torch.vnn import RotaryEmbedding
         rope = RotaryEmbedding(dim=8, max_seq_len=64)
         x = Tensor(np.random.randn(2, 4, 8).astype(np.float32), requires_grad=True)
         out = rope(x, seq_len=4)
@@ -681,7 +681,7 @@ class TestNewNNComponents(unittest.TestCase):
 
     def test_kvcache_is_abstract(self):
         """KVCache 方法未实现时抛 NotImplementedError。"""
-        from verse_torch.nn import KVCache
+        from verse_torch.vnn import KVCache
         cache = KVCache()
         # 基类方法应抛 NotImplementedError
         with self.assertRaises(NotImplementedError):
@@ -691,7 +691,7 @@ class TestNewNNComponents(unittest.TestCase):
 
     def test_static_cache_basic(self):
         """StaticCache 基本读写。"""
-        from verse_torch.nn import StaticCache
+        from verse_torch.vnn import StaticCache
         cache = StaticCache(num_layers=1, max_batch=2, max_seq=8,
                             num_heads=2, head_dim=4)
         k = Tensor(np.random.randn(2, 3, 2, 4).astype(np.float32))
@@ -703,7 +703,7 @@ class TestNewNNComponents(unittest.TestCase):
 
     def test_dynamic_cache_basic(self):
         """DynamicCache 基本追加读写。"""
-        from verse_torch.nn import DynamicCache
+        from verse_torch.vnn import DynamicCache
         cache = DynamicCache()
         k1 = Tensor(np.random.randn(2, 3, 2, 4).astype(np.float32))
         v1 = Tensor(np.random.randn(2, 3, 2, 4).astype(np.float32))
@@ -718,7 +718,7 @@ class TestNewNNComponents(unittest.TestCase):
 
     def test_groupnorm_shape(self):
         """GroupNorm 前向输出 shape 正确。"""
-        from verse_torch.nn import GroupNorm
+        from verse_torch.vnn import GroupNorm
         gn = GroupNorm(num_groups=2, num_channels=8)
         x = Tensor(np.random.randn(2, 8, 4).astype(np.float32), requires_grad=True)
         out = gn(x)
@@ -726,7 +726,7 @@ class TestNewNNComponents(unittest.TestCase):
 
     def test_groupnorm_normalization(self):
         """GroupNorm 归一化后每组均值≈0。"""
-        from verse_torch.nn import GroupNorm
+        from verse_torch.vnn import GroupNorm
         gn = GroupNorm(num_groups=2, num_channels=8, eps=1e-6)
         # weight=1, bias=0（默认初始化）
         x = Tensor(np.random.randn(1, 8, 4).astype(np.float32))
@@ -738,7 +738,7 @@ class TestNewNNComponents(unittest.TestCase):
 
     def test_conv1d_shape(self):
         """Conv1d 前向输出 shape 正确。"""
-        from verse_torch.nn import Conv1d
+        from verse_torch.vnn import Conv1d
         conv = Conv1d(in_channels=3, out_channels=4, kernel_size=3, padding=1)
         # (B, C_in, L)
         x = Tensor(np.random.randn(2, 3, 8).astype(np.float32), requires_grad=True)
@@ -747,7 +747,7 @@ class TestNewNNComponents(unittest.TestCase):
 
     def test_conv1d_no_padding(self):
         """Conv1d 无 padding 时长度缩减。"""
-        from verse_torch.nn import Conv1d
+        from verse_torch.vnn import Conv1d
         conv = Conv1d(in_channels=2, out_channels=4, kernel_size=3, padding=0)
         x = Tensor(np.random.randn(1, 2, 8).astype(np.float32))
         out = conv(x)
@@ -755,7 +755,7 @@ class TestNewNNComponents(unittest.TestCase):
 
     def test_layernorm_fast_shape(self):
         """LayerNormFast 前向输出 shape 正确。"""
-        from verse_torch.nn import LayerNormFast
+        from verse_torch.vnn import LayerNormFast
         ln = LayerNormFast(normalized_shape=8)
         x = Tensor(np.random.randn(2, 4, 8).astype(np.float32), requires_grad=True)
         out = ln(x)
@@ -763,7 +763,7 @@ class TestNewNNComponents(unittest.TestCase):
 
     def test_layernorm_fast_normalization(self):
         """LayerNormFast 归一化后均值≈0。"""
-        from verse_torch.nn import LayerNormFast
+        from verse_torch.vnn import LayerNormFast
         ln = LayerNormFast(normalized_shape=8, eps=1e-6)
         x = Tensor(np.random.randn(2, 4, 8).astype(np.float32))
         out = ln(x)
@@ -772,7 +772,7 @@ class TestNewNNComponents(unittest.TestCase):
 
     def test_layernorm_fast_matches_layernorm(self):
         """LayerNormFast 与 LayerNorm 数值一致。"""
-        from verse_torch.nn import LayerNorm, LayerNormFast
+        from verse_torch.vnn import LayerNorm, LayerNormFast
         np.random.seed(42)
         x_data = np.random.randn(2, 4, 8).astype(np.float32)
         ln1 = LayerNorm(normalized_shape=8)
@@ -788,7 +788,7 @@ class TestNewNNComponents(unittest.TestCase):
 
     def test_module_to_migrates_rotary(self):
         """Module.to('cpu') 迁移 RotaryEmbedding 的 cos/sin。"""
-        from verse_torch.nn import RotaryEmbedding
+        from verse_torch.vnn import RotaryEmbedding
         rope = RotaryEmbedding(dim=8, max_seq_len=16)
         # cos/sin 应为 Tensor
         self.assertTrue(hasattr(rope, "cos"))
@@ -917,7 +917,7 @@ class TestTrainerDevice(unittest.TestCase):
     def test_trainer_default_device(self):
         """Trainer 默认 device 为 'cpu'。"""
         from verse_torch import Trainer
-        from verse_torch.nn import Linear
+        from verse_torch.vnn import Linear
         from verse_torch.optim import SGD
         model = Linear(4, 2)
         opt = SGD(model.parameters(), lr=0.01)
@@ -927,7 +927,7 @@ class TestTrainerDevice(unittest.TestCase):
     def test_trainer_device_param(self):
         """Trainer 接受 device 参数。"""
         from verse_torch import Trainer
-        from verse_torch.nn import Linear
+        from verse_torch.vnn import Linear
         from verse_torch.optim import SGD
         model = Linear(4, 2)
         opt = SGD(model.parameters(), lr=0.01)
@@ -938,7 +938,7 @@ class TestTrainerDevice(unittest.TestCase):
     def test_trainer_autocast_cfg(self):
         """Trainer cfg autocast=True 启用 autocast。"""
         from verse_torch import Trainer
-        from verse_torch.nn import Linear
+        from verse_torch.vnn import Linear
         from verse_torch.optim import SGD
         model = Linear(4, 2)
         opt = SGD(model.parameters(), lr=0.01)
@@ -948,7 +948,7 @@ class TestTrainerDevice(unittest.TestCase):
     def test_distributed_trainer_basic(self):
         """DistributedTrainer 基本构造。"""
         from verse_torch import DistributedTrainer
-        from verse_torch.nn import Linear
+        from verse_torch.vnn import Linear
         from verse_torch.optim import SGD
         model = Linear(4, 2)
         opt = SGD(model.parameters(), lr=0.01)
@@ -963,7 +963,7 @@ class TestTrainerDevice(unittest.TestCase):
     def test_distributed_trainer_barrier_noop(self):
         """DistributedTrainer.barrier() 单进程时 no-op。"""
         from verse_torch import DistributedTrainer
-        from verse_torch.nn import Linear
+        from verse_torch.vnn import Linear
         from verse_torch.optim import SGD
         model = Linear(4, 2)
         opt = SGD(model.parameters(), lr=0.01)

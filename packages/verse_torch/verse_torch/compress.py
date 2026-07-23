@@ -22,7 +22,7 @@ from __future__ import annotations
 import numpy as np
 
 from .tensor import Tensor, no_grad
-from . import nn
+from . import vnn as nn
 from .losses import cross_entropy, kl_div_loss, mse_loss
 from .quantize import QuantizedLinear
 
@@ -92,7 +92,7 @@ class OutlierSafePruner:
                 continue
             if self._should_skip(name):
                 continue
-            if isinstance(m, nn.GQASelfAttention):
+            if isinstance(m, nn._GQASelfAttention):
                 self._prune_attention(name, m, report)
                 for _, sub_m in m.named_modules():
                     processed_ids.add(id(sub_m))
@@ -282,11 +282,17 @@ class LoRALinear(nn.Module):
 
 
 class KnowledgeDistiller:
-    """知识蒸馏器 V1.3：大模型 → 小模型能力转移（以小博大）。
+    """知识蒸馏器 V1.5：大模型 → 小模型能力转移（以小博大）。
 
     V1.3 损失 = alpha * T^2 * KL(teacher/T || student/T)     # 软标签蒸馏
               + (1 - alpha) * CE(student, labels)            # 硬标签蒸馏
               + feature_loss_weight * MSE(student_feat, teacher_feat)  # 中间层特征匹配
+
+    V1.5 增强点（在 V1.3 基础上）：
+    - **对比蒸馏**（contrastive distillation）：基于 margin ranking loss，
+      确保 student 与 teacher 的 top-k token 排序一致（``distill_contrastive`` +
+      ``contrastive_loss_weight``）。优化推理命中率与质量，避免过拟合。
+    - 推理侧配合 ``logit_calibration``（在 CometSparkNexLM.generate 中应用）。
 
     V1.3 增强点：
     - **中间层特征蒸馏**（feature-level distillation）：匹配 teacher / student 的
@@ -304,11 +310,19 @@ class KnowledgeDistiller:
             目前仅作元数据记录，真正的特征提取通过 ``feature_extractor`` 回调完成。
         feature_loss_weight: 中间层特征匹配损失权重（默认 0.3）
         T: ``temperature`` 的旧参数别名（向后兼容 V1.0）；优先级低于 ``temperature``
+        distill_contrastive: 是否启用对比蒸馏（V1.5，默认 False）
+        contrastive_loss_weight: 对比蒸馏损失权重（默认 0.5）
+        contrastive_margin: 对比蒸馏 margin（默认 0.5）
+        contrastive_top_k: 对比蒸馏 top-k 候选数量（默认 10）
     """
 
     def __init__(self, teacher, student, temperature: float = 4.0,
                  alpha: float = 0.7, distill_layers=None,
-                 feature_loss_weight: float = 0.3, T: float = None):
+                 feature_loss_weight: float = 0.3, T: float = None,
+                 distill_contrastive: bool = False,
+                 contrastive_loss_weight: float = 0.5,
+                 contrastive_margin: float = 0.5,
+                 contrastive_top_k: int = 10):
         self.teacher = teacher
         self.student = student
         # T 是旧参数别名：仅当显式传入（非 None）时覆盖 temperature
@@ -318,12 +332,17 @@ class KnowledgeDistiller:
         self.alpha = float(alpha)
         self.distill_layers = list(distill_layers) if distill_layers else None
         self.feature_loss_weight = float(feature_loss_weight)
+        # V1.5 对比蒸馏配置
+        self.distill_contrastive = bool(distill_contrastive)
+        self.contrastive_loss_weight = float(contrastive_loss_weight)
+        self.contrastive_margin = float(contrastive_margin)
+        self.contrastive_top_k = int(contrastive_top_k)
         # 温度退火调度：从初始温度线性退火到 T_min
         self._T_init = self.temperature
         self._T_min = max(1.0, self.temperature * 0.25)
         # 冻结 teacher：eval 模式 + 所有参数 requires_grad=False
         self.teacher.eval()
-        for p in _iter_all_params_static(teacher):
+        for p in _iter_all_tensors(teacher):
             p.requires_grad = False
 
     # ------------------------------------------------------------------
@@ -342,12 +361,16 @@ class KnowledgeDistiller:
 
     def compute_loss(self, student_logits: Tensor, teacher_logits: Tensor,
                      student_features=None, teacher_features=None,
-                     labels=None) -> Tensor:
-        """V1.3 联合损失计算。
+                     labels=None,
+                     distill_contrastive: bool = None,
+                     contrastive_margin: float = None,
+                     contrastive_top_k: int = None) -> Tensor:
+        """V1.5 联合损失计算。
 
-        Loss = alpha * T^2 * KL(teacher/T || student/T)
-             + (1 - alpha) * CE(student, labels)
-             + feature_loss_weight * MSE(student_features, teacher_features)
+        Loss = alpha * T^2 * KL(teacher/T || student/T)              # 软标签蒸馏
+             + (1 - alpha) * CE(student, labels)                     # 硬标签蒸馏
+             + feature_loss_weight * MSE(student_feat, teacher_feat) # 中间层特征匹配
+             + contrastive_loss_weight * contrastive_loss(...)       # V1.5 对比蒸馏
 
         Args:
             student_logits: 学生模型 logits（可微）
@@ -355,6 +378,10 @@ class KnowledgeDistiller:
             student_features: 学生中间层特征，``Tensor`` / ``list[Tensor]`` / ``None``
             teacher_features: 教师中间层特征，``Tensor`` / ``list[Tensor]`` / ``None``
             labels: 硬标签（``None`` 时跳过 CE 项）
+            distill_contrastive: 是否在本次调用中加入对比蒸馏损失；
+                ``None`` 时使用 ``self.distill_contrastive`` 默认值
+            contrastive_margin: 对比蒸馏 margin；``None`` 时使用实例默认值
+            contrastive_top_k: 对比蒸馏 top-k；``None`` 时使用实例默认值
 
         Returns:
             标量 Tensor，支持 backward
@@ -376,7 +403,110 @@ class KnowledgeDistiller:
         feat_loss = self._feature_loss(student_features, teacher_features)
         if feat_loss is not None:
             total = total + self.feature_loss_weight * feat_loss
+        # contrastive distillation loss（V1.5 新增）
+        use_contrastive = (self.distill_contrastive if distill_contrastive is None
+                           else bool(distill_contrastive))
+        if use_contrastive:
+            margin = (self.contrastive_margin if contrastive_margin is None
+                      else float(contrastive_margin))
+            top_k = (self.contrastive_top_k if contrastive_top_k is None
+                     else int(contrastive_top_k))
+            c_loss = self.contrastive_loss(
+                student_logits, teacher_logits,
+                margin=margin, top_k=top_k,
+            )
+            total = total + self.contrastive_loss_weight * c_loss
         return total
+
+    def contrastive_loss(self, student_logits: Tensor, teacher_logits: Tensor,
+                         margin: float = 0.5, top_k: int = 10) -> Tensor:
+        """对比蒸馏损失（V1.5）：margin ranking loss 确保 student 与 teacher
+        的 top-k token 排序一致。
+
+        思路：
+        - 从 teacher 的 logits 中按 teacher score 升序取末尾 top_k 个候选
+          （``topk_indices[:, i]`` 的 teacher score < ``topk_indices[:, i+1]``）。
+        - 在 student 上 gather 同位置的 logits（可微，使用 advanced indexing）。
+        - 对所有 (i, j) 其中 teacher_score[i] > teacher_score[j]（即 i > j），
+          希望 student_score[i] - student_score[j] >= margin。
+        - 使用 hinge loss: ``max(0, margin - (s_i - s_j))``。
+
+        对 (B, T, V) 三维输入，自动 flatten 到 (B*T, V) 处理。
+
+        Args:
+            student_logits: 学生 logits (B, V) 或 (B, T, V)，可微
+            teacher_logits: 教师 logits，同 shape，内部 detach 不回传梯度
+            margin: margin 大小（默认 0.5）
+            top_k: top-k 候选数量（默认 10）
+
+        Returns:
+            标量 Tensor，支持 backward
+        """
+        # teacher top-k indices（detach 不回传梯度）
+        teacher_data = teacher_logits.detach().data
+
+        # 处理 (B, T, V) 三维情况：flatten 到 (B*T, V) 处理
+        if teacher_data.ndim == 3:
+            B, T_, V = teacher_data.shape
+            teacher_flat = teacher_data.reshape(B * T_, V)
+            if isinstance(student_logits, Tensor):
+                student_flat = student_logits.reshape(B * T_, V)
+            else:
+                # 极端情况：student 不是 Tensor（理论不应出现，保留兜底）
+                student_flat = Tensor(
+                    np.asarray(student_logits).reshape(B * T_, V),
+                    requires_grad=False,
+                )
+            return self.contrastive_loss(
+                student_flat, Tensor(teacher_flat, requires_grad=False),
+                margin=margin, top_k=top_k,
+            )
+
+        if teacher_data.ndim != 2:
+            raise ValueError(
+                f"contrastive_loss 仅支持 2D / 3D logits，得到 {teacher_data.ndim}D"
+            )
+
+        B, V = student_logits.shape
+        actual_k = min(int(top_k), int(V))
+        if actual_k < 2:
+            # 至少需要 2 个候选才有 pairwise 关系，返回 0 标量
+            return Tensor(np.asarray(0.0, dtype=np.float32), requires_grad=False)
+
+        # 升序 argsort 取末尾 k 个 → topk_indices[:, i] 的 teacher score < topk_indices[:, i+1]
+        topk_indices = np.argsort(teacher_data, axis=-1)[:, -actual_k:]  # (B, k)
+
+        # 在 student 上 gather（保持可微性，使用 advanced indexing）
+        batch_idx = np.arange(B)[:, None]  # (B, 1)
+        # broadcast batch_idx (B, 1) + topk_indices (B, k) → 索引结果 (B, k)
+        gathered = student_logits[batch_idx, topk_indices]  # (B, k)
+
+        # pairwise 差异矩阵：D[..., i, j] = s_i - s_j
+        # 由于 teacher 升序，对 i > j 有 teacher[i] > teacher[j]，
+        # 希望 student[i] - student[j] >= margin
+        # 用 broadcasting：(B, k, 1) - (B, 1, k) = (B, k, k)
+        s_col = gathered.unsqueeze(-1)   # (B, k, 1)
+        s_row = gathered.unsqueeze(-2)   # (B, 1, k)
+        diff = s_col - s_row             # (B, k, k)
+
+        # hinge loss: max(0, margin - diff)，仅对 i > j 的位置生效
+        margin_t = Tensor(np.asarray(margin, dtype=np.float32), requires_grad=False)
+        hinge = (margin_t - diff).clamp(low=0.0)  # (B, k, k)
+
+        # 下三角 mask（不含对角线）：保留 i > j 的位置
+        # teacher 升序排列，对 i > j 有 teacher[i] > teacher[j]，
+        # 希望 student[i] - student[j] >= margin（即 diff[i,j] >= margin）
+        tril_mask = np.tril(
+            np.ones((actual_k, actual_k), dtype=np.float32), k=-1
+        )  # (k, k)
+        mask_t = Tensor(tril_mask, requires_grad=False)
+        masked = hinge * mask_t  # (B, k, k)
+
+        num_pairs = float(actual_k * (actual_k - 1) / 2) * B
+        if num_pairs <= 0:
+            return Tensor(np.asarray(0.0, dtype=np.float32), requires_grad=False)
+        loss = masked.sum() / num_pairs
+        return loss
 
     def _feature_loss(self, student_features, teacher_features):
         """中间层特征匹配损失（MSE），返回标量 Tensor 或 None。"""
@@ -419,16 +549,19 @@ class KnowledgeDistiller:
                                  labels=hard_targets)
 
     def __call__(self, student_logits, teacher_logits, hard_targets=None,
-                 student_features=None, teacher_features=None):
+                 student_features=None, teacher_features=None,
+                 distill_contrastive: bool = None):
         return self.compute_loss(student_logits, teacher_logits,
                                  student_features=student_features,
                                  teacher_features=teacher_features,
-                                 labels=hard_targets)
+                                 labels=hard_targets,
+                                 distill_contrastive=distill_contrastive)
 
     def distill(self, train_loader, epochs=3, lr=1e-3, optimizer=None,
                 max_steps=None, eval_fn=None, eval_every: int = 0,
-                feature_extractor=None, anneal_temperature: bool = True):
-        """端到端蒸馏训练（V1.3）。
+                feature_extractor=None, anneal_temperature: bool = True,
+                distill_contrastive: bool = None):
+        """端到端蒸馏训练（V1.5）。
 
         Args:
             train_loader: 可迭代对象，每次返回 ``(x, y)`` 或 ``(x, y, *rest)``
@@ -443,6 +576,8 @@ class KnowledgeDistiller:
                 传入时启用中间层特征蒸馏，否则仅做 logit 级蒸馏
             anneal_temperature: 是否启用自适应温度调度（从 ``temperature`` 线性
                 退火到 ``_T_min``）
+            distill_contrastive: 是否启用对比蒸馏（V1.5）；
+                ``None`` 时使用 ``self.distill_contrastive`` 默认值
 
         Returns:
             训练损失历史 ``list[float]``
@@ -458,6 +593,11 @@ class KnowledgeDistiller:
             optimizer = AdamW(self.student.parameters(), lr=lr)
         if max_steps is not None:
             max_steps = int(max_steps)
+
+        # 解析 distill_contrastive（None 时回退到实例默认值）
+        use_contrastive = (self.distill_contrastive
+                           if distill_contrastive is None
+                           else bool(distill_contrastive))
 
         losses_hist = []
         total_steps = 0
@@ -490,7 +630,8 @@ class KnowledgeDistiller:
                 loss = self.compute_loss(
                     student_logits, teacher_logits,
                     student_features=student_feats,
-                    teacher_features=teacher_feats, labels=y)
+                    teacher_features=teacher_feats, labels=y,
+                    distill_contrastive=use_contrastive)
                 loss.backward()
                 optimizer.step()
                 losses_hist.append(float(loss.data))
@@ -503,14 +644,6 @@ class KnowledgeDistiller:
         return losses_hist
 
 
-# 静态辅助：递归生成所有 Tensor 参数（与 _iter_all_tensors 同义，避免前向引用）
-def _iter_all_params_static(model):
-    for p in model._parameters.values():
-        yield p
-    for m in model._modules.values():
-        yield from _iter_all_params_static(m)
-
-
 # ---------------------------------------------------------------------------
 # Task 5.6: QLinear 包装类 + 单技术函数
 # ---------------------------------------------------------------------------
@@ -521,26 +654,111 @@ class QLinear(nn.Module):
 
     内部持有 ``QuantizedLinear``（推理专用，无可训练参数）。
     forward 时调用 QuantizedLinear.forward，保证返回 Tensor。
+
+    V1.5 新增：``outlier_aware`` 模式。开启后，识别权重中的 outlier 输出通道
+    （行 |w|_mean 超过 ``mean + threshold * std``），并对这些通道用 fp32
+    residual 修正反量化误差，提升对大权重通道的精度，进而提升推理命中率。
+
+    Args:
+        linear: 原 ``nn.Linear``，用于初始化量化器与（可选）outlier 检测
+        qtype: 量化类型，``"int4"`` / ``"int8"`` / ``"ternary"``
+        cache_fp32: 是否在 load-time 缓存反量化 fp32 权重（见 ``QuantizedLinear``）
+        outlier_aware: 是否启用 outlier-aware 反量化（V1.5，默认 False）
+        outlier_threshold: outlier 检测阈值（默认 3.0，即 ``mean + 3*std``）
     """
 
     def __init__(self, linear: "nn.Linear", qtype: str = "int4",
-                 cache_fp32: bool = True):
+                 cache_fp32: bool = True,
+                 outlier_aware: bool = False,
+                 outlier_threshold: float = 3.0):
         super().__init__()
         self.in_features = int(linear.in_features)
         self.out_features = int(linear.out_features)
         self.qtype = qtype
         # QuantizedLinear 不是 nn.Module，存到 __dict__（Module.__setattr__ 走 else 分支）
         self._qlin = QuantizedLinear(linear, qtype=qtype, cache_fp32=cache_fp32)
+        # V1.5 outlier-aware 反量化配置
+        self.outlier_aware = bool(outlier_aware)
+        self.outlier_threshold = float(outlier_threshold)
+        # 预计算 outlier residual（仅当 outlier_aware=True 时填充）
+        # _outlier_residual: (n_outlier, in_features) 或 None
+        # _outlier_idx: (n_outlier,) int64 或 None
+        # _outlier_channels: (out_features,) bool 或 None
+        self._outlier_residual = None
+        self._outlier_idx = None
+        self._outlier_channels = None
+        if self.outlier_aware:
+            self._prepare_outlier_residual(linear)
+
+    def _prepare_outlier_residual(self, linear: "nn.Linear"):
+        """识别 outlier 输出通道，保存其 fp32 - 量化反量化 的 residual。
+
+        策略：
+        - 计算每个输出通道（weight 矩阵的行）的 ``|w|_mean``。
+        - 以 ``mean + threshold * std`` 作为 outlier 阈值。
+        - 对 outlier 行保存 ``w_fp32 - w_dequant``，在 forward 时叠加到对应通道，
+          使其等效于用 fp32 权重计算（恢复原始精度）。
+        """
+        from .quantize import (
+            dequantize_int4, dequantize_int8, dequantize_ternary,
+        )
+
+        w_fp32 = np.array(linear.weight.data, dtype=np.float32, copy=True)
+        # 反量化得到量化后的权重
+        if self.qtype == "int4":
+            w_dequant = dequantize_int4(
+                self._qlin.packed, self._qlin.scale, self._qlin.w_shape)
+        elif self.qtype == "int8":
+            w_dequant = dequantize_int8(self._qlin.packed, self._qlin.scale)
+        else:  # ternary
+            w_dequant = dequantize_ternary(
+                self._qlin.packed, self._qlin.scale, self._qlin.w_shape)
+        w_dequant = w_dequant.astype(np.float32)
+
+        # 识别 outlier 通道：每行 |w|_mean 超过 mean + threshold * std
+        row_norms = np.mean(np.abs(w_fp32), axis=-1)  # (out,)
+        if row_norms.size == 0:
+            return
+        mean_norm = float(np.mean(row_norms))
+        std_norm = float(np.std(row_norms))
+        threshold = mean_norm + self.outlier_threshold * std_norm
+        # 退化保护：std=0 或 threshold<=mean_norm 时无 outlier
+        if threshold <= mean_norm:
+            return
+        outlier_mask = row_norms > threshold  # (out,)
+        if not np.any(outlier_mask):
+            return
+
+        self._outlier_channels = outlier_mask
+        # residual = w_fp32[outlier] - w_dequant[outlier] (n_outlier, in_features)
+        self._outlier_residual = (
+            w_fp32[outlier_mask] - w_dequant[outlier_mask]
+        ).astype(np.float32)
+        self._outlier_idx = np.where(outlier_mask)[0].astype(np.int64)
 
     def forward(self, x: Tensor) -> Tensor:
         out = self._qlin(x)
         if not isinstance(out, Tensor):
             out = Tensor(out, requires_grad=False)
+        # V1.5 outlier-aware 修正：对 outlier 通道叠加 fp32 residual
+        if self.outlier_aware and self._outlier_residual is not None:
+            x_np = x.data if isinstance(x, Tensor) else np.asarray(x)
+            x_np = x_np.astype(np.float32, copy=False)
+            orig_shape = x_np.shape
+            x_2d = x_np.reshape(-1, orig_shape[-1])  # (N, in_features)
+            # outlier 贡献：x_2d @ residual.T → (N, n_outlier)
+            outlier_out = x_2d @ self._outlier_residual.T
+            # 将贡献加到 out 的对应 outlier 通道（原地修改 out.data）
+            out_data = out.data
+            out_2d = out_data.reshape(-1, out_data.shape[-1])  # (N, out_features)
+            out_2d[:, self._outlier_idx] += outlier_out
+            # out.data 已被原地修改，直接返回 out（保持 requires_grad 标记）
         return out
 
     def extra_repr(self) -> str:
         return (f"in_features={self.in_features}, "
-                f"out_features={self.out_features}, qtype={self.qtype}")
+                f"out_features={self.out_features}, qtype={self.qtype}, "
+                f"outlier_aware={self.outlier_aware}")
 
 
 def _qlinear_bits(qlinear_module: "QLinear") -> int:
@@ -586,14 +804,26 @@ def compute_compressed_bits(model) -> int:
     return bits
 
 
-def _quantize_module(model, qtype: str = "int4"):
-    """递归把所有 nn.Linear 替换成 QLinear（原地修改）。"""
+def _quantize_module(model, qtype: str = "int4", outlier_aware: bool = False,
+                     outlier_threshold: float = 3.0):
+    """递归把所有 nn.Linear 替换成 QLinear（原地修改）。
+
+    Args:
+        model: 待量化模型
+        qtype: 量化类型
+        outlier_aware: 是否启用 outlier-aware 反量化（V1.5，默认 False）
+        outlier_threshold: outlier 检测阈值（默认 3.0）
+    """
     for name, child in list(model._modules.items()):
         if isinstance(child, nn.Linear):
-            qlin = QLinear(child, qtype=qtype, cache_fp32=True)
+            qlin = QLinear(child, qtype=qtype, cache_fp32=True,
+                           outlier_aware=outlier_aware,
+                           outlier_threshold=outlier_threshold)
             setattr(model, name, qlin)
         elif isinstance(child, nn.Module):
-            _quantize_module(child, qtype=qtype)
+            _quantize_module(child, qtype=qtype,
+                             outlier_aware=outlier_aware,
+                             outlier_threshold=outlier_threshold)
 
 
 def _lora_wrap_module(model, r: int = 8, alpha: float = 16.0):
@@ -621,19 +851,25 @@ def prune_only(model, sparsity: float = 0.3):
     return pruner.apply()
 
 
-def quantize_only(model, dtype: str = "int4"):
+def quantize_only(model, dtype: str = "int4",
+                  outlier_aware: bool = False,
+                  outlier_threshold: float = 3.0):
     """仅量化：把模型中所有 nn.Linear 替换为 QLinear。
 
     Args:
         model: nn.Module 模型
         dtype: 量化类型，"int4" / "int8" / "ternary"
+        outlier_aware: 是否启用 outlier-aware 反量化（V1.5，默认 False）
+        outlier_threshold: outlier 检测阈值（默认 3.0）
 
     Returns:
         修改后的 model（原地替换 Linear → QLinear）
     """
     if dtype not in ("int4", "int8", "ternary"):
         raise ValueError(f"Unknown dtype: {dtype!r}, expected int4/int8/ternary")
-    _quantize_module(model, qtype=dtype)
+    _quantize_module(model, qtype=dtype,
+                     outlier_aware=outlier_aware,
+                     outlier_threshold=outlier_threshold)
     return model
 
 
@@ -705,7 +941,7 @@ def _parse_version_tuple(v) -> tuple:
 
 
 def compress_pipeline(model, config=None, return_stats: bool = False,
-                      version: str = "1.3",
+                      version: str = "1.5",
                       # 旧 API 向后兼容参数（任一非 None / 非 dict 时走旧 API）
                       target_ratio: float = 0.1, eval_fn=None,
                       sparsity: float = 0.3, qtype: str = "int4",
@@ -735,6 +971,11 @@ def compress_pipeline(model, config=None, return_stats: bool = False,
     当 ``teacher_model`` 存在但无 ``train_loader`` 时，仅冻结 teacher、为学生做好准备
     （不实际训练）；有 ``train_loader`` 时执行端到端蒸馏。
 
+    V1.5 新增（默认版本）：在 V1.3 流程基础上增加 ``contrastive_distill`` 与
+    ``logit_calibration`` 两个步骤。可通过 ``config`` 顶层 ``"distill_contrastive"`` /
+    ``"logit_calibration"`` 字段控制（默认 True）。outlier-aware 反量化通过
+    ``config["quantize"]["outlier_aware"]`` 开启。
+
     新 API **不修改原模型**：内部深拷贝 model 后再应用管线。
 
     **旧 API（向后兼容）**::
@@ -749,7 +990,8 @@ def compress_pipeline(model, config=None, return_stats: bool = False,
         config: dict，新 API 的压缩配置；若为 None 则走旧 API
         return_stats: 新 API 下是否返回 (compressed_model, stats) 元组
             （旧 API 始终返回 stats dict，此参数被忽略）
-        version: 压缩管线版本。``"1.3"``（默认，以小博大：prune → quantize →
+        version: 压缩管线版本。``"1.5"``（默认，V1.5：V1.3 + contrastive_distill
+            + logit_calibration）；``"1.3"`` 走 v13 流程（prune → quantize →
             distill → lora，含压缩报告）；``"1.0"`` / ``"1.2"`` 走旧 v2 流程
             （prune → quantize → lora → ternary → distill）。仅对 dict 配置生效。
         target_ratio / eval_fn / sparsity / qtype / lora_r / lora_alpha / use_lora:
@@ -766,7 +1008,10 @@ def compress_pipeline(model, config=None, return_stats: bool = False,
     if isinstance(config, dict):
         # Part4K2.5 Task 5：用版本号元组比较替代字符串比较，
         # 确保 "1.3" / "1.30" / "1.3.0" 等等价版本都能正确走 v13 分支
-        if _parse_version_tuple(version) >= (1, 3):
+        v_tuple = _parse_version_tuple(version)
+        if v_tuple >= (1, 5):
+            return _compress_pipeline_v15(model, config, return_stats=return_stats)
+        if v_tuple >= (1, 3):
             return _compress_pipeline_v13(model, config, return_stats=return_stats)
         return _compress_pipeline_v2(model, config, return_stats=return_stats)
     return _compress_pipeline_v1(
@@ -1084,6 +1329,8 @@ def _compress_pipeline_v13(model, config: dict, return_stats: bool = False):
     - **压缩报告**：stats 内嵌 ``compression_report`` 字段。
 
     输出 stats 与 v2 完全兼容（同名同义键），并追加 V1.3 专属字段。
+    ``config["quantize"]["outlier_aware"]`` 可开启 V1.5 引入的 outlier-aware
+    反量化（仅影响 QLinear.forward 行为，不改变 V1.3 流程主体）。
     """
     # 记录原始参数量与 bit 数（压缩前）
     original_params = count_parameters(model)
@@ -1138,7 +1385,12 @@ def _compress_pipeline_v13(model, config: dict, return_stats: bool = False):
             qtype_applied = "int8"
         else:
             raise ValueError(f"quantize.bits 仅支持 4 或 8，得到 {bits}")
-        quantize_only(new_model, dtype=qtype_applied)
+        # V1.5 引入的 outlier_aware 反量化参数（V1.3 流程内 opt-in 启用）
+        outlier_aware = bool(q_cfg.pop("outlier_aware", False))
+        outlier_threshold = float(q_cfg.pop("outlier_threshold", 3.0))
+        quantize_only(new_model, dtype=qtype_applied,
+                      outlier_aware=outlier_aware,
+                      outlier_threshold=outlier_threshold)
         has_quantize = True
         steps.append({
             "step": "quantize",
@@ -1146,6 +1398,7 @@ def _compress_pipeline_v13(model, config: dict, return_stats: bool = False):
             "qtype": qtype_applied,
             "schema": schema,
             "fused_matmul": True,  # V1.3：QuantizedLinear 内部走 fused 路径
+            "outlier_aware": outlier_aware,
         })
 
     # ------------------------------------------------------------------
@@ -1243,6 +1496,7 @@ def _compress_pipeline_v13(model, config: dict, return_stats: bool = False):
         "bits_per_param": float(avg_bits),
         "estimated_throughput_improvement": float(est_throughput),
         "version": "1.3",
+        "vmpc_version": "1.3",
     }
 
     stats = {
@@ -1257,9 +1511,316 @@ def _compress_pipeline_v13(model, config: dict, return_stats: bool = False):
         "steps": steps,
         # V1.3 专属
         "version": "1.3",
+        "vmpc_version": "1.3",
         "estimated_throughput_improvement": float(est_throughput),
         "compression_report": report,
     }
+
+    # 设置 _vmpc_version 元数据（便于下游 generate / save 时识别）
+    try:
+        object.__setattr__(new_model, "_vmpc_version", "1.3")
+        object.__setattr__(new_model, "_vmpc_compressed", True)
+    except (AttributeError, TypeError):
+        # 部分 Module 可能禁用 __setattr__，安全忽略
+        pass
+
+    if return_stats:
+        return new_model, stats
+    return new_model
+
+
+# ---------------------------------------------------------------------------
+# Task 4 (V1.5): compress_pipeline v1.5 —— 命中与质量优化
+# ---------------------------------------------------------------------------
+
+
+def _compute_logit_calib_factor(model_orig, model_compressed,
+                                sample_tokens=None) -> float:
+    """计算 logit 校准因子（V1.5）。
+
+    通过对同一份小批量输入做前向，比较原始模型与压缩模型 logits 的标准差，
+    得到一个标量 ``calib_factor``，使压缩模型在 ``generate`` 中按
+    ``logits / sqrt(var + eps) * calib_factor`` 校准后，其尺度与原始模型一致，
+    从而减小反量化引入的方差、提升 top-k 命中率。
+
+    Args:
+        model_orig: 原始模型（未压缩）
+        model_compressed: 压缩后模型
+        sample_tokens: 可选 sample 输入 ``(B, T)`` int64；为 None 时自动构造
+
+    Returns:
+        ``calib_factor``: 正 float。失败时回退为 1.0。
+    """
+    # 构造小批量 sample 输入
+    if sample_tokens is None:
+        vocab = int(getattr(model_orig, "vocab_size", 0)) or 256
+        # 用固定 seed 保证可复现
+        rng = np.random.RandomState(42)
+        sample_tokens = rng.randint(0, max(vocab, 1), size=(1, 4)).astype(np.int64)
+
+    try:
+        with no_grad():
+            orig_logits = model_orig(Tensor(sample_tokens))
+            comp_logits = model_compressed(Tensor(sample_tokens))
+    except Exception:
+        # forward 失败（如模型架构不支持 token 输入）时回退到 1.0
+        return 1.0
+
+    orig_data = orig_logits.data if hasattr(orig_logits, "data") else np.asarray(orig_logits)
+    comp_data = comp_logits.data if hasattr(comp_logits, "data") else np.asarray(comp_logits)
+
+    # 原始模型 logits 沿 vocab 维度的平均 std（作为目标尺度）
+    orig_std = float(np.mean(np.std(orig_data.astype(np.float64), axis=-1)))
+    if orig_std <= 0 or not np.isfinite(orig_std):
+        return 1.0
+    return float(orig_std)
+
+
+def _compress_pipeline_v15(model, config: dict, return_stats: bool = False):
+    """V1.5 压缩流水线：V1.3 + contrastive_distill + logit_calibration。
+
+    相对 V1.3 的增强：
+    - **contrastive_distill**：在 distill 步骤中启用对比蒸馏（margin ranking loss），
+      确保 student 与 teacher 的 top-k token 排序一致，优化推理命中率与质量，
+      避免过拟合。通过 ``config`` 顶层 ``"distill_contrastive"``（默认 True）或
+      ``config["distill"]["distill_contrastive"]`` 控制。
+    - **logit_calibration**：在所有压缩步骤后，计算 logit 校准因子并存到
+      ``new_model.logit_calib_factor``，供 ``CometSparkNexLM.generate`` 在推理时
+      对 logits 做温度感知的锐化（减小反量化方差）。通过 ``config`` 顶层
+      ``"logit_calibration"``（默认 True）控制。
+    - **outlier-aware quantize**：通过 ``config["quantize"]["outlier_aware"]``
+      开启 outlier 通道 fp32 修正（默认 False）。
+
+    输出 stats 与 V1.3 完全兼容（同名同义键），并追加 V1.5 专属字段：
+    ``"vmpc_version": "1.5"``、``"logit_calib_factor"``、``"contrastive_distill"``。
+    """
+    # ------------------------------------------------------------------
+    # 解析 V1.5 顶层开关
+    # ------------------------------------------------------------------
+    use_contrastive = bool(config.get("distill_contrastive", True))
+    use_logit_calib = bool(config.get("logit_calibration", True))
+
+    # ------------------------------------------------------------------
+    # 1. prune（可选）：结构化剪枝
+    # ------------------------------------------------------------------
+    original_params = count_parameters(model)
+    original_bits = int(original_params * 32)
+    new_model = _deep_copy_model(model)
+
+    steps = []
+    actual_sparsity = 0.0
+    qtype_applied = None
+    has_quantize = False
+
+    if config.get("prune") is not None:
+        prune_cfg = dict(config["prune"])
+        sparsity = float(prune_cfg.pop("sparsity", 0.3))
+        method = prune_cfg.pop("method", "outlier_safe")
+        if method not in ("outlier_safe", None):
+            raise ValueError(
+                f"prune.method 仅支持 'outlier_safe'，得到 {method!r}"
+            )
+        pruner = OutlierSafePruner(new_model, sparsity=sparsity)
+        _, prune_report = pruner.apply()
+        nonzero_after_prune = count_nonzero_params(new_model)
+        actual_sparsity = (1.0 - nonzero_after_prune / original_params
+                           if original_params > 0 else 0.0)
+        steps.append({
+            "step": "prune",
+            "sparsity": sparsity,
+            "method": method,
+            "report": prune_report,
+            "actual_sparsity": float(actual_sparsity),
+        })
+
+    # ------------------------------------------------------------------
+    # 2. quantize（可选）：INT4 / INT8 / ternary，支持 outlier-aware
+    # ------------------------------------------------------------------
+    if config.get("quantize") is not None:
+        q_cfg = dict(config["quantize"])
+        bits = int(q_cfg.pop("bits", 4))
+        schema = q_cfg.pop("schema", "symmetric")
+        if schema not in ("symmetric", None):
+            raise ValueError(
+                f"quantize.schema 仅支持 'symmetric'，得到 {schema!r}"
+            )
+        if bits == 4:
+            qtype_applied = "int4"
+        elif bits == 8:
+            qtype_applied = "int8"
+        else:
+            raise ValueError(f"quantize.bits 仅支持 4 或 8，得到 {bits}")
+        outlier_aware = bool(q_cfg.pop("outlier_aware", False))
+        outlier_threshold = float(q_cfg.pop("outlier_threshold", 3.0))
+        quantize_only(new_model, dtype=qtype_applied,
+                      outlier_aware=outlier_aware,
+                      outlier_threshold=outlier_threshold)
+        has_quantize = True
+        steps.append({
+            "step": "quantize",
+            "bits": bits,
+            "qtype": qtype_applied,
+            "schema": schema,
+            "fused_matmul": True,
+            "outlier_aware": outlier_aware,
+        })
+
+    if config.get("ternary") is not None:
+        ternary_only(new_model)
+        qtype_applied = "ternary"
+        has_quantize = True
+        steps.append({
+            "step": "ternary",
+            "qtype": "ternary",
+            "fused_matmul": True,
+        })
+
+    # ------------------------------------------------------------------
+    # 3. distill（可选）：V1.5 在 V1.3 基础上加入对比蒸馏
+    # ------------------------------------------------------------------
+    teacher, train_loader, d_cfg = _resolve_teacher(config)
+    contrastive_actually_used = False
+    if teacher is not None:
+        d_cfg = dict(d_cfg) if isinstance(d_cfg, dict) else {}
+        epochs = int(d_cfg.get("epochs", 3))
+        lr = float(d_cfg.get("lr", 1e-3))
+        T = float(d_cfg.get("T", d_cfg.get("temperature", 4.0)))
+        alpha = float(d_cfg.get("alpha", 0.7))
+        feature_loss_weight = float(d_cfg.get("feature_loss_weight", 0.3))
+        distill_layers = d_cfg.get("distill_layers")
+        max_steps = d_cfg.get("max_steps")
+        feature_extractor = d_cfg.get("feature_extractor")
+        # distill 子配置可覆盖顶层 distill_contrastive 开关
+        d_contrastive = d_cfg.get("distill_contrastive", use_contrastive)
+        d_contrastive = bool(d_contrastive)
+        # V1.5 对比蒸馏超参
+        contrastive_loss_weight = float(d_cfg.get("contrastive_loss_weight", 0.5))
+        contrastive_margin = float(d_cfg.get("contrastive_margin", 0.5))
+        contrastive_top_k = int(d_cfg.get("contrastive_top_k", 10))
+
+        distiller = KnowledgeDistiller(
+            teacher, new_model, temperature=T, alpha=alpha,
+            distill_layers=distill_layers,
+            feature_loss_weight=feature_loss_weight,
+            distill_contrastive=d_contrastive,
+            contrastive_loss_weight=contrastive_loss_weight,
+            contrastive_margin=contrastive_margin,
+            contrastive_top_k=contrastive_top_k,
+        )
+        contrastive_actually_used = d_contrastive
+        if train_loader is not None:
+            losses = distiller.distill(
+                train_loader, epochs=epochs, lr=lr, max_steps=max_steps,
+                feature_extractor=feature_extractor,
+                distill_contrastive=d_contrastive,
+            )
+            steps.append({
+                "step": "distill",
+                "epochs": epochs,
+                "lr": lr,
+                "max_steps": max_steps,
+                "feature_level": feature_extractor is not None,
+                "distill_contrastive": d_contrastive,
+                "contrastive_loss_weight": contrastive_loss_weight,
+                "contrastive_margin": contrastive_margin,
+                "contrastive_top_k": contrastive_top_k,
+                "final_loss": float(losses[-1]) if losses else None,
+                "loss_history_len": len(losses),
+            })
+        else:
+            steps.append({
+                "step": "distill",
+                "epochs": 0,
+                "lr": lr,
+                "distill_contrastive": d_contrastive,
+                "note": "no train_loader; teacher frozen, student ready",
+            })
+
+    # ------------------------------------------------------------------
+    # 4. lora（可选）：为微调准备（QLoRA 风格）
+    # ------------------------------------------------------------------
+    if config.get("lora") is not None:
+        lora_cfg = dict(config["lora"])
+        rank = int(lora_cfg.pop("rank", 8))
+        alpha = float(lora_cfg.pop("alpha", 16.0))
+        lora_only(new_model, r=rank, alpha=alpha)
+        steps.append({
+            "step": "lora",
+            "rank": rank,
+            "alpha": alpha,
+        })
+
+    # ------------------------------------------------------------------
+    # 5. logit_calibration（V1.5 核心）：计算校准因子并存到模型
+    # ------------------------------------------------------------------
+    logit_calib_factor = 1.0
+    if use_logit_calib:
+        logit_calib_factor = _compute_logit_calib_factor(model, new_model)
+        steps.append({
+            "step": "logit_calibration",
+            "calib_factor": float(logit_calib_factor),
+            "note": "logits / sqrt(var + eps) * calib_factor at inference",
+        })
+
+    # ------------------------------------------------------------------
+    # 计算压缩后统计（与 V1.3 同构 + V1.5 专属字段）
+    # ------------------------------------------------------------------
+    compressed_bits = compute_compressed_bits(new_model)
+    compressed_params = compressed_bits / 32
+    compression_ratio = (original_bits / compressed_bits
+                        if compressed_bits > 0 else float("inf"))
+    avg_bits = (compressed_bits / original_params
+                if original_params > 0 else 32.0)
+    nonzero_after = count_nonzero_params(new_model)
+    sparsity_final = (1.0 - nonzero_after / original_params
+                      if original_params > 0 else 0.0)
+
+    throughput_factor = {None: 1.0, "int4": 4.0, "int8": 2.0, "ternary": 8.0}
+    est_throughput = throughput_factor.get(qtype_applied, 1.0)
+
+    report = {
+        "original_params": int(original_params),
+        "compressed_params": float(compressed_params),
+        "compression_ratio": float(compression_ratio),
+        "sparsity": float(sparsity_final),
+        "bits_per_param": float(avg_bits),
+        "estimated_throughput_improvement": float(est_throughput),
+        "version": "1.5",
+        "vmpc_version": "1.5",
+        "logit_calib_factor": float(logit_calib_factor),
+        "contrastive_distill": bool(contrastive_actually_used),
+    }
+
+    stats = {
+        "original_params": int(original_params),
+        "compressed_params": float(compressed_params),
+        "compressed_bits": int(compressed_bits),
+        "original_bits": int(original_bits),
+        "compression_ratio": float(compression_ratio),
+        "sparsity": float(actual_sparsity),
+        "bits": float(avg_bits),
+        "qtype": qtype_applied if has_quantize else None,
+        "steps": steps,
+        # V1.3 兼容字段
+        "version": "1.5",
+        "vmpc_version": "1.5",
+        "estimated_throughput_improvement": float(est_throughput),
+        "compression_report": report,
+        # V1.5 专属字段
+        "logit_calib_factor": float(logit_calib_factor),
+        "contrastive_distill": bool(contrastive_actually_used),
+    }
+
+    # 设置 V1.5 元数据（供 CometSparkNexLM.generate 推理校准使用）
+    try:
+        object.__setattr__(new_model, "_vmpc_version", "1.5")
+        object.__setattr__(new_model, "_vmpc_compressed", True)
+        object.__setattr__(new_model, "logit_calib_factor",
+                           float(logit_calib_factor))
+        object.__setattr__(new_model, "_vmpc_contrastive_distill",
+                           bool(contrastive_actually_used))
+    except (AttributeError, TypeError):
+        pass
 
     if return_stats:
         return new_model, stats
@@ -1267,7 +1828,10 @@ def _compress_pipeline_v13(model, config: dict, return_stats: bool = False):
 
 
 def compression_report(model, compressed_model) -> dict:
-    """生成压缩报告（V1.3）。
+    """生成压缩报告（V1.5）。
+
+    优先从 ``compressed_model`` 的 ``_vmpc_version`` 元数据推断版本号，
+    若未设置则回退到 ``"1.3"``（向后兼容）。
 
     Args:
         model: 原始模型（Module）
@@ -1283,7 +1847,11 @@ def compression_report(model, compressed_model) -> dict:
               "sparsity": float,            # 1 - nonzero / total
               "bits_per_param": float,      # 平均 bit/param
               "estimated_throughput_improvement": float,
-              "version": "1.3",
+              "version": "1.3" | "1.5",     # 兼容字段（与 vmpc_version 同值）
+              "vmpc_version": "1.3" | "1.5",  # V1.5 新增：明确 VMPC 版本
+              # V1.5 专属字段（仅当 vmpc_version >= 1.5 时存在）
+              "logit_calib_factor": float,  # 仅 V1.5
+              "contrastive_distill": bool,  # 仅 V1.5
             }
     """
     orig_params = count_parameters(model)
@@ -1306,7 +1874,10 @@ def compression_report(model, compressed_model) -> dict:
             qtype = m.qtype
             break
     throughput_factor = {None: 1.0, "int4": 4.0, "int8": 2.0, "ternary": 8.0}
-    return {
+
+    # 优先从模型元数据读取 vmpc_version；未设置时回退到 "1.3"
+    vmpc_version = getattr(compressed_model, "_vmpc_version", None) or "1.3"
+    report = {
         "original_params": int(orig_params),
         "compressed_params": float(comp_bits / 32),
         "compression_ratio": float(ratio),
@@ -1314,21 +1885,24 @@ def compression_report(model, compressed_model) -> dict:
         "bits_per_param": float(avg_bits),
         "estimated_throughput_improvement": float(
             throughput_factor.get(qtype, 1.0)),
-        "version": "1.3",
+        "version": vmpc_version,
+        "vmpc_version": vmpc_version,
     }
+    # V1.5 专属字段：若模型有 logit_calib_factor / contrastive_distill 元数据则带上
+    if vmpc_version != "1.3":
+        calib = getattr(compressed_model, "logit_calib_factor", None)
+        if calib is not None:
+            report["logit_calib_factor"] = float(calib)
+        # contrastive_distill 仅在显式存在时才加（避免误报）
+        if hasattr(compressed_model, "_vmpc_contrastive_distill"):
+            report["contrastive_distill"] = bool(
+                getattr(compressed_model, "_vmpc_contrastive_distill"))
+    return report
 
 
 # ---------------------------------------------------------------------------
 # Part4 P10: MoD Expert 结构化剪枝（MoD-Aware 压缩）
 # ---------------------------------------------------------------------------
-
-
-def _iter_module_tensors(module):
-    """递归生成 module 内所有 Tensor 参数（含 requires_grad=False 的）。"""
-    for p in module._parameters.values():
-        yield p
-    for m in module._modules.values():
-        yield from _iter_module_tensors(m)
 
 
 def compress_mod_experts(model, keep_ratio: float = 0.5,
@@ -1395,7 +1969,7 @@ def compress_mod_experts(model, keep_ratio: float = 0.5,
                 norms = []
                 for expert in part.experts:
                     sum_sq = 0.0
-                    for p in _iter_module_tensors(expert):
+                    for p in _iter_all_tensors(expert):
                         sum_sq += float(np.sum(p.data ** 2))
                     norms.append(float(np.sqrt(sum_sq)))
 

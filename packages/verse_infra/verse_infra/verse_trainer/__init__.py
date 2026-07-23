@@ -57,6 +57,7 @@ from .trainer import (
     set_emergency_save_fn,
     clear_emergency_save_fn,
     ChunkOOMError,
+    migrate_checkpoint_dir,
 )
 from .evaluate import evaluate
 from .visualize import visualize
@@ -87,6 +88,8 @@ __all__ = [
     "set_emergency_save_fn",
     "clear_emergency_save_fn",
     "ChunkOOMError",
+    # Checkpoint 工具
+    "migrate_checkpoint_dir",
     # 评估
     "evaluate",
     "visualize",

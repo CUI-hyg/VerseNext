@@ -29,6 +29,7 @@ from verse_infra.verse_trainer import (  # noqa: F401,E402  显式重导出常�
     collate_fn, load_jsonl, train, ParallelTrainerSafe, _safe_chunk_run,
     install_signal_handlers, reset_shutdown_flag, is_shutdown_requested,
     ChunkOOMError, evaluate, visualize, LossOptimizer, RLTrainer,
+    migrate_checkpoint_dir,
 )
 from verse_infra.verse_trainer import __version__  # noqa: F401,E402
 

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from typing import List, Optional
 
 import numpy as np
@@ -31,20 +32,41 @@ try:
 except Exception:  # pragma: no cover - verse_tokenizer 不可用时的降级
     _EOS_STR = "<|eos|>"
 
+# Part5K1 Task 5：JSONL 自修复与字段标准化
+from .jsonl_repair import repair_jsonl, JSONLRepairError
+
 
 # ---------------------------------------------------------------------------
 # load_jsonl
 # ---------------------------------------------------------------------------
 
 
-def load_jsonl(path: str) -> List[dict]:
+def load_jsonl(path: str, repair: bool = True) -> List[dict]:
     """读取 JSONL 文件，每行一个 JSON 对象（或 JSON 数组）。
+
+    Part5K1 Task 5 升级：新增 ``repair`` 参数。
+
+    - ``repair=True``（默认）：调用 :func:`repair_jsonl` 进行字段标准化
+      + 损坏行保守修复（缺逗号 / 未闭合 / BOM / 行尾多余逗号等），
+      异名字段（``instruction``/``response`` 等）自动映射为标准
+      ``prompt``/``completion`` 或 ``text``。
+    - ``repair=False``：走原严格解析逻辑（向后兼容），遇到任何解析失败
+      抛 :class:`ValueError`。
 
     Args:
         path: JSONL 文件路径
+        repair: 是否启用自修复 + 字段标准化（默认 True）
     Returns:
         List：每行解析为的 dict 或 list
+    Raises:
+        JSONLRepairError: ``repair=True`` 时存在无法修复的行
+        ValueError: ``repair=False`` 时任意行解析失败
     """
+    if repair:
+        # 自修复 + 字段标准化模式
+        return repair_jsonl(path, write_back=False, repair=True)
+
+    # 严格解析模式（原逻辑，向后兼容）
     items: List = []
     with open(path, "r", encoding="utf-8") as f:
         for line_no, raw in enumerate(f, start=1):
@@ -58,6 +80,117 @@ def load_jsonl(path: str) -> List[dict]:
                     f"JSONL 解析失败：{path} 第 {line_no} 行 - {e}"
                 ) from e
     return items
+
+
+# ---------------------------------------------------------------------------
+# ensure_val_split（Part5K1 Task 6.1）
+# ---------------------------------------------------------------------------
+
+
+def count_lines(path: str) -> int:
+    """统计文件中非空行数（空行不计入）。
+
+    用于 :func:`ensure_val_split` 判断 val_path 是否已存在有效样本，
+    以及计算切分后的样本计数。
+    """
+    if not os.path.exists(path):
+        return 0
+    n = 0
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                n += 1
+    return n
+
+
+def ensure_val_split(
+    train_path: str,
+    val_path: str,
+    val_ratio: float = 0.05,
+    write_back: bool = True,
+):
+    """确保 val 集存在：val_path 不存在或为空时，从 train 末尾切分 val_ratio 比例。
+
+    Part5K1 Task 6.1：自动 val.json 生成。
+
+    逻辑：
+        1. 若 ``val_path`` 存在且非空（非空行数 > 0），**保守不动**，
+           直接返回 ``(count_lines(train_path), count_lines(val_path))``。
+        2. 否则读取 ``train_path``（调用 :func:`load_jsonl` + 自修复），
+           从末尾切分 ``val_ratio`` 比例作为 val。
+        3. ``write_back=True`` 时把 val 写到 ``val_path``，**不覆盖** train_path
+           （保守起见，train 文件原样保留；如果用户想要 train 也更新，可
+           后续扩展 ``update_train`` 参数，默认不更新）。
+        4. 返回 ``(n_train, n_val)``。
+
+    切分规则：
+        - ``n_val = max(1, int(len(data) * val_ratio))``：保证至少 1 条 val
+          （``val_ratio=0.0`` 也会切出 1 条）
+        - ``n_val`` 不超过 ``len(data)``（``val_ratio=1.0`` 时全部作为 val）
+        - ``n_train = len(data) - n_val``
+        - 从末尾切：``val_data = data[n_train:]``（保证 val 是最新数据）
+
+    Args:
+        train_path: 训练集 JSONL 路径
+        val_path: 验证集 JSONL 路径（不存在或空时自动生成）
+        val_ratio: val 占 train 的比例（默认 0.05 = 5%）
+        write_back: 是否把切分结果写回 val_path（默认 True）
+
+    Returns:
+        (n_train, n_val): 切分后的训练/验证样本数。
+        若 val_path 已存在且非空，n_train/n_val 反映当前实际计数
+        （此时不会重新切分）。
+
+    Raises:
+        FileNotFoundError: train_path 不存在
+        ValueError: train_path 为空（无可读样本）或 val_ratio 越界
+    """
+    # 边界校验：val_ratio 必须在 [0, 1]
+    if val_ratio < 0 or val_ratio > 1:
+        raise ValueError(f"val_ratio 必须在 [0, 1] 范围内，收到 {val_ratio}")
+
+    # 1. 检查 val_path：存在且非空（大小 > 0 且非空行 > 0）则直接返回计数
+    if os.path.exists(val_path) and os.path.getsize(val_path) > 0:
+        n_existing_val = count_lines(val_path)
+        if n_existing_val > 0:
+            # val 已存在有效样本，保守不动
+            return (count_lines(train_path), n_existing_val)
+
+    # 2. 读取训练样本（启用 JSONL 自修复）
+    data = load_jsonl(train_path, repair=True)
+    if not data:
+        raise ValueError(f"训练集为空：{train_path}")
+
+    # 3. 计算切分点：val_ratio=0.0 时至少 1 条 val，val_ratio=1.0 时全部作为 val
+    n_val = max(1, int(len(data) * val_ratio))
+    if n_val > len(data):
+        n_val = len(data)
+    n_train = len(data) - n_val
+
+    # 4. 切分（从末尾切，保证 val 是最新数据）
+    val_data = data[len(data) - n_val:]
+
+    # 5. 写回 val_path（不覆盖 train_path）
+    if write_back:
+        # 确保目录存在
+        val_dir = os.path.dirname(os.path.abspath(val_path))
+        os.makedirs(val_dir, exist_ok=True)
+        with open(val_path, "w", encoding="utf-8") as f:
+            for item in val_data:
+                f.write(json.dumps(item, ensure_ascii=False) + "\n")
+        print(
+            f"[ensure_val_split] 从 train 切分 val: n_train={n_train}, "
+            f"n_val={n_val}, val_ratio={val_ratio}",
+            flush=True,
+        )
+    else:
+        print(
+            f"[ensure_val_split] (write_back=False) 切分 val: "
+            f"n_train={n_train}, n_val={n_val}, val_ratio={val_ratio}",
+            flush=True,
+        )
+
+    return (n_train, n_val)
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +447,10 @@ class CachedDataset:
        内存，而是通过 ``np.load(..., mmap_mode='r')`` 内存映射 .npz 解包
        后的临时文件，按 batch 读取。仅当 ``__getitem__`` 被调用时才
        触发对应区间的磁盘读取。
+    3. **后台预加载**（Part5K1 Task 6.2）：``preload=True`` 时，
+       ``__init__`` 启动后台线程执行编码 + 缓存写入，主线程可并行构建
+       模型；首次 ``__getitem__`` / ``__len__`` 调用时 ``join`` 等待完成。
+       适用于大模型 + 大数据集场景，编码耗时与模型构建耗时重叠。
 
     缓存文件包含：
     - ``ids`` : int64 数组（全部 token id 顺序拼接）
@@ -331,6 +468,11 @@ class CachedDataset:
         cache_path: 缓存文件路径；None 则默认 ``<data_path>.cache.npz``
         lazy: 是否启用流式 lazy load（默认 False，全量载入内存）
         min_tokens: 最少 token 数（保留接口）
+        preload: 是否启用后台预加载（默认 False，同步构建）。
+            ``preload=True`` 时 ``__init__`` 立即返回，后台线程异步编码；
+            首次 ``__getitem__`` / ``__len__`` 调用时阻塞等待完成。
+            若缓存命中（``_try_load_cache`` 成功），preload 不生效，
+            直接同步加载。
     """
 
     def __init__(
@@ -341,26 +483,105 @@ class CachedDataset:
         cache_path: Optional[str] = None,
         lazy: bool = False,
         min_tokens: int = 0,
+        preload: bool = False,
     ):
         self.tok = tok
         self.data_path = data_path
         self.seq_len = int(seq_len)
         self.min_tokens = int(min_tokens)
         self.lazy = bool(lazy)
+        self.preload = bool(preload)
 
         if cache_path is None:
             cache_path = f"{data_path}.cache.npz"
         self.cache_path = cache_path
 
+        # Part5K1 Task 6.2: 后台预加载状态
+        # 预先初始化属性，避免 preload 模式下 __getitem__ 早调用时报 AttributeError
+        self._preload_thread: Optional[threading.Thread] = None
+        self._preload_error: Optional[BaseException] = None
+        self._preload_done = threading.Event()
+        # 缓存未就位时，self.ids / self.mask / self.n_blocks 用占位值
+        self.ids = None
+        self.mask = None
+        self.n_blocks = 0
+        self._archive = None
+        self._cached_source = ""
+
         # 尝试加载缓存；若缓存不存在 / 过期 / 损坏，则重建
         loaded = self._try_load_cache()
-        if not loaded:
+        if loaded:
+            # 缓存命中：preload 不生效（无编码可做）
+            return
+
+        # 缓存未命中
+        if self.preload:
+            # preload=True：启动后台线程异步编码 + 缓存写入
+            # 主线程可继续构建模型，构造函数立即返回
+            self._preload_thread = threading.Thread(
+                target=self._preload_worker,
+                name="CachedDataset-preload",
+                daemon=True,
+            )
+            self._preload_thread.start()
+        else:
+            # preload=False：同步构建（原逻辑，向后兼容）
             self._build_and_save_cache()
             # 重建后再加载一次（确保 ids/mask 已就位）
             if not self._try_load_cache():
                 raise RuntimeError(
                     f"CachedDataset 缓存重建后仍无法加载：{self.cache_path}"
                 )
+
+    # ------------------------------------------------------------------
+    # 后台预加载（Part5K1 Task 6.2）
+    # ------------------------------------------------------------------
+
+    def _preload_worker(self) -> None:
+        """后台线程执行编码 + 缓存写入 + 加载。
+
+        任何异常都捕获并记录到 ``self._preload_error``，由主线程在
+        ``_wait_for_preload`` 中重新抛出（避免异常被 daemon 线程吞掉）。
+        """
+        try:
+            self._build_and_save_cache()
+            loaded = self._try_load_cache()
+            if not loaded:
+                self._preload_error = RuntimeError(
+                    f"CachedDataset 缓存重建后仍无法加载：{self.cache_path}"
+                )
+        except BaseException as e:  # noqa: BLE001
+            # 捕获所有异常（含 SystemExit / KeyboardInterrupt 子类），
+            # 让主线程能看到失败原因
+            self._preload_error = e
+        finally:
+            self._preload_done.set()
+
+    def _wait_for_preload(self) -> None:
+        """等待后台预加载完成（首次 ``__getitem__`` / ``__len__`` 时调用）。
+
+        若预加载线程未启动（preload=False 或缓存命中），立即返回。
+        否则阻塞等待 ``_preload_done`` 事件，完成后检查是否有异常。
+        """
+        if self._preload_thread is None:
+            return
+        if not self._preload_done.is_set():
+            print(
+                "[CachedDataset] 等待后台预加载完成...",
+                flush=True,
+            )
+            self._preload_done.wait()
+        # 清理线程引用（join 用于回收资源，事件已保证完成）
+        if self._preload_thread is not None and self._preload_thread.is_alive():
+            # 极端情况下事件已 set 但线程未退出（如 finally 中阻塞），
+            # 给 5 秒超时避免死锁
+            self._preload_thread.join(timeout=5.0)
+        self._preload_thread = None
+        # 检查后台线程是否抛了异常
+        if self._preload_error is not None:
+            err = self._preload_error
+            self._preload_error = None
+            raise err
 
     # ------------------------------------------------------------------
     # 缓存加载 / 重建
@@ -471,6 +692,8 @@ class CachedDataset:
     # ------------------------------------------------------------------
 
     def __len__(self) -> int:
+        # Part5K1 Task 6.2: preload 模式下首次调用需等待后台编码完成
+        self._wait_for_preload()
         return self.n_blocks
 
     def __getitem__(self, i: int):
@@ -479,7 +702,12 @@ class CachedDataset:
         与 :class:`TextDataset.__getitem__` 完全一致；mask=0 的位置 y=-100。
         lazy 模式下 self.ids 是 mmap 数组，切片会触发磁盘读取并返回
         普通 ndarray（拷贝），不持有 mmap 引用。
+
+        Part5K1 Task 6.2: preload 模式下首次调用 ``_wait_for_preload``
+        阻塞等待后台编码完成。
         """
+        # Part5K1 Task 6.2: preload 模式下首次调用需等待后台编码完成
+        self._wait_for_preload()
         if i < 0 or i >= self.n_blocks:
             raise IndexError(f"index {i} 超出范围 [0, {self.n_blocks})")
         start = i * self.seq_len
@@ -544,6 +772,9 @@ class BatchLoader:
     - ``prefetch=True``（默认与 pin_memory 同步开启）时，当前 batch 训练的
       同时在后台线程预取下一个 batch，掩盖 IO 延迟。
 
+    Part5K1 Task 6.2 升级：``prefetch`` 不再依赖 torch，纯 threading 预取
+    在无 torch 环境也能工作（``pin_memory`` 仍依赖 torch，无 torch 时自动降级）。
+
     Args:
         dataset: TextDataset / CachedDataset 或任何实现 __len__ / __getitem__ 的对象
         batch_size: batch 大小
@@ -552,9 +783,9 @@ class BatchLoader:
         drop_last: 是否丢弃最后不足 batch_size 的样本
         seed: 随机种子（仅 shuffle=True 时生效）
         num_workers: 占位参数（CPU-only，默认 0，忽略）
-        pin_memory: 是否启用锁页内存预拷贝（默认 False）
+        pin_memory: 是否启用锁页内存预拷贝（默认 False，无 torch 时强制 False）
         persistent_workers: 占位参数（默认 False，忽略）
-        prefetch: 是否启用预取（默认与 pin_memory 同步开启）
+        prefetch: 是否启用预取（默认与 pin_memory 同步开启；不依赖 torch）
     """
 
     def __init__(
@@ -583,15 +814,16 @@ class BatchLoader:
         self.persistent_workers = persistent_workers
         # Part4K2 Task 5.4: prefetch 默认跟随 pin_memory
         self.prefetch = bool(prefetch) if prefetch is not None else self.pin_memory
-        # 检测 torch 可用性（pin_memory / prefetch 仅在有 torch 时生效）
+        # 检测 torch 可用性（pin_memory 依赖 torch；prefetch 不依赖 torch）
         try:
             import torch as _torch  # type: ignore
             self._torch = _torch
         except Exception:
             self._torch = None
-            # 无 torch 时 pin_memory / prefetch 自动降级为 False
+            # 无 torch 时仅 pin_memory 降级（pin_memory 需要 torch.Tensor.pin_memory）
+            # prefetch 保持用户设置不变：Part5K1 Task 6.2 升级为纯 threading 预取，
+            # 不再依赖 torch，可在无 torch 环境正常工作
             self.pin_memory = False
-            self.prefetch = False
 
     def __len__(self) -> int:
         n = len(self.dataset)
@@ -645,6 +877,9 @@ class BatchLoader:
 
         Part4K2 Task 5.4: prefetch=True 时，下一个 batch 在后台线程预取，
         当前 batch yield 后立即可用，掩盖 collate + pin_memory 耗时。
+
+        Part5K1 Task 6.2 升级：prefetch 不再依赖 torch，纯 threading 预取
+        在无 torch 环境也能工作（pin_memory 仍依赖 torch，无 torch 时自动降级）。
         """
         n = len(self.dataset)
         indices = np.arange(n)
@@ -664,17 +899,16 @@ class BatchLoader:
         def _materialize(b_idx):
             batch = [self.dataset[int(i)] for i in b_idx]
             collated = self.collate_fn(batch)
-            # pin_memory 预拷贝到锁页内存
+            # pin_memory 预拷贝到锁页内存（无 torch 时 _pin_batch 原样返回）
             return self._pin_batch(collated)
 
-        if not self.prefetch or self._torch is None or len(batch_slices) <= 1:
+        if not self.prefetch or len(batch_slices) <= 1:
             # 不预取：同步迭代
             for b_idx in batch_slices:
                 yield _materialize(b_idx)
             return
 
-        # prefetch=True：用一个后台线程预取下一个 batch
-        import threading
+        # prefetch=True：用一个后台线程预取下一个 batch（纯 threading，不依赖 torch）
         import queue as _queue
 
         # 队列长度 1（只预取一个 batch，避免内存翻倍）
@@ -806,6 +1040,8 @@ class SingleSampleDataset:
 
 __all__ = [
     "load_jsonl",
+    "count_lines",
+    "ensure_val_split",
     "TextDataset",
     "CachedDataset",
     "SingleSampleDataset",

@@ -37,7 +37,7 @@ from __future__ import annotations
 import numpy as np
 
 from verse_torch import Tensor, no_grad
-from verse_torch.nn import (
+from verse_torch.vnn import (
     Module,
     ModuleList,
     Linear,

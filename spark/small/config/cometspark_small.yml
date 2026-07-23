@@ -1,0 +1,96 @@
+# CometSpark Small（0.06zB 目标）VMPC-small 预设（Part5K1 Task 9.1）
+#
+# 双模型并行中的 small 档：0.06zB 小模型（1zB ≈ 1000B 等效能力）。
+# 用于 3 核 CPU / 5GB 内存沙箱下快速跑通端到端流程（训练 / 生成 / 压缩 / 打分）。
+#
+# VMPC-small 预设：
+# - ternary 量化（2bit/值，高压缩比）+ 高稀疏剪枝（sparsity=0.5）
+# - use_lora=false：不包装 LoRA（小模型无需微调适配器）
+# - distill=false：不蒸馏（无 teacher 模型）
+#
+# 架构配置（极小，调试用 byte tokenizer）：
+# - vocab_size=256（ByteTokenizer，无网络依赖）
+# - n_embd=64, n_layer=2, n_head=4, n_kv_head=2
+# - mod_every=2 + n_layer=2 → 1 mod + 1 trisparse（极小 MoD）
+# - num_dense_parts=2, num_experts_per_part=2, top_k=1
+# - init_std=0.04（small 用更高 init_std，加速小模型收敛）
+# - 200 步约 10-30 秒可完成，内存占用 < 500MB
+#
+# checkpoint.save_dir=mf_small（Task 10 会用）
+
+model:
+  arch: versenex
+  vocab_size: 256
+  n_layer: 2
+  n_embd: 64
+  n_head: 4
+  n_kv_head: 2
+  seq_len: 64
+  dropout: 0.0
+  tie_weights: true
+
+  # VerseNex / TriSparse / MoD（极小配置）
+  mod_every: 2
+  num_dense_parts: 2
+  num_experts_per_part: 2
+  top_k: 1
+  expert_hidden: null
+  window_size: 32
+  num_global_tokens: 4
+  use_alibi: true
+  use_rope: false
+  rope_theta: 10000.0
+  max_position_embeddings: 256
+  aux_loss_weight: 0.01
+
+  # tokenizer（调试用 byte，无网络）
+  tokenizer_repo: Qwen/Qwen3.5-35B-A3B
+
+  # VerseNex 优化（解决胡乱输出）
+  embedding_scale: true
+  temperature_scaling: 1.0
+  # small 用更高 init_std，加速小模型收敛
+  init_std: 0.04
+
+  # 训练 / 设备
+  device: cpu
+  parallel_chunks: 1
+
+# VMPC-small 预设（Part5K1 Task 9.1）
+vmpc:
+  profile: small
+  prune_sparsity: 0.5
+  quantize_dtype: ternary
+  use_lora: false
+  distill: false
+
+training:
+  batch_size: 8
+  micro_batch: 4
+  lr: 0.003
+  weight_decay: 0.01
+  no_decay: true
+  grad_clip: 1.0
+  label_smoothing: 0.1
+  max_steps: 200
+  warmup: 20
+  eval_interval: 20
+  patience: 5
+  grad_accum: 1
+  log_interval: 10
+  seed: 42
+  enable_progress_bar: true
+  realtime_plot: true
+  eta_window: 20
+  parallel_chunks: 1
+
+tokenizer:
+  kind: byte
+  vocab_size: 259
+
+data:
+  train_path: data/train.jsonl
+  val_path: data/val.jsonl
+
+checkpoint:
+  save_dir: mf_small

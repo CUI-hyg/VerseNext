@@ -601,7 +601,7 @@ class LoRATrainer(VerseNexTrainer):
         合并后模型结构与 LoRA 包装前一致，可直接用于推理 / 保存。
         """
         from .compress import LoRALinear
-        from . import nn
+        from . import vnn as nn
 
         # 递归遍历 _modules，把每个 LoRALinear 替换为 merge 后的 Linear
         def _replace_in_module(parent):

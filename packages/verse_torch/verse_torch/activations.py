@@ -15,7 +15,7 @@ from __future__ import annotations
 import numpy as np
 
 from .tensor import Tensor
-from .nn import Module
+from .vnn import Module
 
 
 class SiLU(Module):

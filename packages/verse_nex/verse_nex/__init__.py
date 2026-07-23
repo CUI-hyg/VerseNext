@@ -23,7 +23,8 @@ from .linear_attention import RetNet
 from .mamba2 import Mamba2Block
 from .rwkv7 import RWKV7TimeMix, RWKV7ChannelMix, RWKV7Block
 from .sparse_attention import TopKChunkSparseAttention
-from .hybrid import HybridBlock, HybridLM
+# Part5K1 Task 12: HybridBlock / HybridLM 已 deprecated，从顶层导出移除。
+# 模块本身保留只读兼容，仍可通过 `from verse_nex.hybrid import HybridBlock` 访问。
 # Part4 新增
 from .tri_sparse_attn import TriSparseAttention
 from .moe import Router, Expert, DensePart, MoDLayer
@@ -80,9 +81,6 @@ __all__ = [
     "RWKV7Block",
     # Sparse Attention
     "TopKChunkSparseAttention",
-    # Hybrid
-    "HybridBlock",
-    "HybridLM",
     # Part4: TriSparseAttention（三路并行稀疏注意力）
     "TriSparseAttention",
     # Part4: MoD（多稠密分区架构）

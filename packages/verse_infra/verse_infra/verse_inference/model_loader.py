@@ -40,8 +40,10 @@ from typing import Optional
 import numpy as np
 
 from verse_torch import Tensor, no_grad
-from verse_nex import HybridLM, Mamba2Block, RWKV7Block
-from verse_nex.hybrid import HybridBlock
+from verse_nex import Mamba2Block, RWKV7Block
+# Part5K1 Task 12: HybridLM/HybridBlock 已从 verse_nex 顶层导出移除（deprecated），
+# 改为从子模块 verse_nex.hybrid 导入（保留只读兼容）。
+from verse_nex.hybrid import HybridBlock, HybridLM
 
 
 # ---------------------------------------------------------------------------

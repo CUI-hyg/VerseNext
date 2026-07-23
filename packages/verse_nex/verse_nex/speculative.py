@@ -44,7 +44,7 @@ from typing import Callable, List, Optional, Tuple, Union
 import numpy as np
 
 from verse_torch import Tensor, no_grad
-from verse_torch.nn import Linear, Module, ModuleList
+from verse_torch.vnn import Linear, Module, ModuleList
 
 
 # ---------------------------------------------------------------------------
