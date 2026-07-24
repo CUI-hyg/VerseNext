@@ -90,6 +90,57 @@ def _model_has_aux(model) -> bool:
     return False
 
 
+def _count_mod_layers(model) -> int:
+    """统计模型中实际的 MoD 层数（Part5K1.1：MoD 显示稳定性修复）。
+
+    优先从 ``layer_pattern`` 统计 ``"mod"`` 条目；其次遍历 ``blocks`` 的
+    ``layer_kind``；再退化为遍历子模块统计 ``MoDLayer`` 实例。返回 0 表示
+    该模型无 MoD 层（无论 ``forward_with_aux`` 是否存在）。
+
+    这解决了旧版"声明启用 aux_loss 路径但日志无 aux="的语义不一致：``_model_has_aux``
+    只检查方法是否存在（CometSparkNexLM 永远有该方法），不区分有无 MoD 层。
+    """
+    # 1. layer_pattern（CometSparkNexLM / CometSparkV05LM.net 上）
+    for obj in (model, getattr(model, "net", None)):
+        if obj is None:
+            continue
+        pattern = getattr(obj, "layer_pattern", None)
+        if pattern:
+            try:
+                return int(sum(1 for k in pattern if str(k) == "mod"))
+            except Exception:
+                pass
+    # 2. blocks 的 layer_kind
+    for obj in (model, getattr(model, "net", None)):
+        if obj is None:
+            continue
+        blocks = getattr(obj, "blocks", None)
+        if blocks is not None:
+            try:
+                cnt = sum(
+                    1 for b in blocks if getattr(b, "layer_kind", "") == "mod"
+                )
+                if cnt > 0:
+                    return int(cnt)
+                # blocks 存在但无 mod，返回 0（明确无 MoD）
+                if hasattr(obj, "layer_pattern") or hasattr(obj, "blocks"):
+                    return 0
+            except Exception:
+                pass
+    # 3. 退化：遍历子模块统计 MoDLayer 实例
+    try:
+        named_modules = getattr(model, "named_modules", None)
+        if callable(named_modules):
+            cnt = 0
+            for _, m in named_modules():
+                if type(m).__name__ == "MoDLayer":
+                    cnt += 1
+            return cnt
+    except Exception:
+        pass
+    return 0
+
+
 def _call_forward_with_aux(model, x) -> tuple:
     """调用模型的 ``forward_with_aux``，自动选择 model 或 model.net 层级。
 
@@ -204,12 +255,26 @@ class VerseNexTrainer:
 
         # 是否启用 aux 路径
         self.use_aux = _model_has_aux(model)
+        # Part5K1.1：一次性探测实际 MoD 层数，用于确定性地控制 aux 显示
+        # （旧版用运行时 aux_val>0 判断，NaN 或 0 时会隐藏 aux，造成
+        # "有时显示有 MoD，有时无 MoD"的假象；改为配置驱动，显示稳定）
+        self._n_mod_layers = _count_mod_layers(model)
+        self._has_mod_layers = self._n_mod_layers > 0
         if self.use_aux:
-            print(
-                f"[VerseNexTrainer] 检测到 forward_with_aux，启用 aux_loss 路径 "
-                f"(aux_loss_weight={self.aux_loss_weight})",
-                flush=True,
-            )
+            if self._has_mod_layers:
+                print(
+                    f"[VerseNexTrainer] 检测到 forward_with_aux + {self._n_mod_layers} 个 "
+                    f"MoD 层，启用 aux_loss 路径 (aux_loss_weight={self.aux_loss_weight})",
+                    flush=True,
+                )
+            else:
+                # 有 forward_with_aux 方法但无 MoD 层：aux 恒为 0，不显示 aux
+                print(
+                    "[VerseNexTrainer] 检测到 forward_with_aux，但模型无 MoD 层"
+                    "（layer_pattern 全为 trisparse），aux_loss 恒为 0，"
+                    "训练日志不显示 aux（这是预期行为，非 bug）",
+                    flush=True,
+                )
         else:
             print(
                 "[VerseNexTrainer] 模型未提供 forward_with_aux，"
@@ -381,8 +446,10 @@ class VerseNexTrainer:
             lr_now = getattr(self.optimizer, "lr", None)
             if use_tqdm:
                 postfix = {"loss": f"{ce_val:.4f}"}
-                if self.use_aux and aux_val > 0:
-                    postfix["aux"] = f"{aux_val:.4f}"
+                # Part5K1.1：基于 _has_mod_layers 确定性显示 aux（不再用 aux_val>0）
+                if self.use_aux and self._has_mod_layers:
+                    # NaN 时显示 nan（信息性），不再隐藏
+                    postfix["aux"] = f"{aux_val:.4f}" if math.isfinite(aux_val) else "nan"
                 if self.val_losses:
                     postfix["val"] = f"{self.val_losses[-1]:.4f}"
                 if lr_now is not None:
@@ -404,8 +471,12 @@ class VerseNexTrainer:
             ):
                 last_log_step = step
                 msg = f"[step {step:>6d}/{self.max_steps}] train_loss={ce_val:.6f}"
-                if self.use_aux and aux_val > 0:
-                    msg += f" aux={aux_val:.6f}"
+                # Part5K1.1：基于 _has_mod_layers 确定性显示 aux
+                if self.use_aux and self._has_mod_layers:
+                    if math.isfinite(aux_val):
+                        msg += f" aux={aux_val:.6f}"
+                    else:
+                        msg += " aux=nan"
                 if self.val_losses:
                     msg += f" val_loss={self.val_losses[-1]:.6f}"
                 if lr_now is not None:

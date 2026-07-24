@@ -68,6 +68,9 @@ class CometSparkMateLM(CometSparkV05LM):
         net: 内部 :class:`verse_nex.CometSparkNexLM` 实例（由父类构造）。
     """
 
+    # 覆盖父类 _config_class，使 from_pretrained / load_vn 用 Mate 配置（保留 VMPC 字段）
+    _config_class = CometSparkMateConfig
+
     def __init__(self, config: CometSparkMateConfig):
         # 委托父类构造（V05LM 内部组合 CometSparkNexLM，config 驱动架构）
         # CometSparkMateConfig 是 CometSparkV05Config 的子类，字段完全兼容
@@ -181,42 +184,10 @@ class CometSparkMateLM(CometSparkV05LM):
             raise ValueError(f"未知 format: {format}，支持 'pt' / 'vn'")
 
     # ------------------------------------------------------------------
-    # from_pretrained 覆盖：使用 CometSparkMateConfig
+    # from_pretrained / load_vn：继承父类健壮实现（通过 _config_class 用 Mate 配置）
+    # Part5K1.1：移除 buggy 覆盖，父类 from_pretrained 已支持
+    #   .vn / .pt(含config) / 纯 state_dict(best.pt) / 目录，并自动回落 config。
     # ------------------------------------------------------------------
-
-    @classmethod
-    def from_pretrained(cls, path: str) -> "CometSparkMateLM":
-        """从目录或单文件加载完整模型。
-
-        目录模式（HuggingFace 风格）：
-            path/
-              config.yml    ← CometSparkMateConfig（model + vmpc + checkpoint 段）
-              model.pt      ← state_dict (pickle)
-
-        单文件模式：
-            path.pt → {"arch": "versenex", "config": dict, "state_dict": dict}
-        """
-        if os.path.isdir(path):
-            config = CometSparkMateConfig.from_pretrained(path)
-            model = cls(config)
-            model_pt = os.path.join(path, "model.pt")
-            if os.path.exists(model_pt):
-                with open(model_pt, "rb") as f:
-                    sd = pickle.load(f)
-                if isinstance(sd, dict) and "state_dict" in sd:
-                    sd = sd["state_dict"]
-                model.load_state_dict(sd, strict=False)
-            return model
-
-        # 单文件模式
-        with open(path, "rb") as f:
-            payload = pickle.load(f)
-        cfg_dict = payload["config"]
-        config = CometSparkMateConfig.from_dict(cfg_dict)
-        model = cls(config)
-        sd = payload["state_dict"] if "state_dict" in payload else payload
-        model.load_state_dict(sd, strict=False)
-        return model
 
 
 # ---------------------------------------------------------------------------

@@ -38,6 +38,8 @@ from spark.model.config import (
 # ---------------------------------------------------------------------------
 
 _VMPC_FIELD_MAP = {
+    "enabled": "vmpc_enabled",
+    "version": "vmpc_version",
     "profile": "vmpc_profile",
     "prune_sparsity": "vmpc_prune_sparsity",
     "quantize_dtype": "vmpc_quantize_dtype",
@@ -102,6 +104,9 @@ class CometSparkSmallConfig(CometSparkV05Config):
     # checkpoint 目录（Task 10 用）
     checkpoint_save_dir: str = "mf_small"
 
+    # Part5K1.1：VMPC 总开关默认 True（与父类一致，启用 V2 + .vn 强制）
+    # 如需 legacy .pt 路径，在 YAML 中写 ``vmpc.enabled: false``。
+
     # ------------------------------------------------------------------
     # YAML 持久化（读取 model + vmpc + checkpoint 段）
     # ------------------------------------------------------------------
@@ -140,6 +145,8 @@ class CometSparkSmallConfig(CometSparkV05Config):
 
         # 提取 vmpc 字段到独立段
         vmpc_seg = {
+            "enabled": full.pop("vmpc_enabled", True),
+            "version": full.pop("vmpc_version", "2.0"),
             "profile": full.pop("vmpc_profile", "small"),
             "prune_sparsity": full.pop("vmpc_prune_sparsity", 0.5),
             "quantize_dtype": full.pop("vmpc_quantize_dtype", "ternary"),

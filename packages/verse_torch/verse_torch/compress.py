@@ -1,4 +1,4 @@
-"""verse_torch.compress: 模型压缩 PoC 模块（阶段 5，Task 5.2-5.6）.
+"""verse_torch.compress: 模型压缩 PoC 模块（阶段 5，Task 5.2-5.6 + Part5K1.1 VMPC V2）.
 
 提供：
 - ``OutlierSafePruner``: 结构化剪枝（mask + 冻结策略，PoC 简化版）
@@ -8,6 +8,21 @@
 - 单技术函数: ``prune_only`` / ``quantize_only`` / ``lora_only`` /
   ``distill_only`` / ``ternary_only``
 - ``QLinear``: 把 ``QuantizedLinear`` 包装为 ``nn.Module`` 子类，便于嵌入模型树
+
+VMPC V2（Part5K1.1）
+--------------------
+VMPC V2 ≠ 单纯的量化/剪枝/蒸馏，而是 ``VN 容器 + 传统压缩原子 + VSC`` 的联合管线：
+
+- **VN 容器**：所有权重以 ``.vn`` 格式持久化（多空间缓存，详见 :mod:`verse_torch.vn_format`）
+- **传统压缩原子**：复用 V1.x 的 prune / quantize / lora / ternary / distill
+- **VSC（VerseNext Space Compression）**：从存储/算力/时间三维空间优化模型，
+  详见 :mod:`verse_torch.vsc`
+
+V2 在 V1.5 流程之上新增：
+- 压缩后调用 :func:`verse_torch.vsc.vsc_plan` 生成 VSC 计划
+- 把 VSC 计划存入 ``new_model._vsc_plan``（供 .vn 写入 + 推理调度使用）
+- 报告新增 ``zB_equivalent`` / ``effective_B`` 字段
+  （Part5K1.1 约定：1zB ≈ 1010B 等效处理能力）
 
 设计约束：
 - 仅使用 NumPy + 标准库，不依赖 torch/tensorflow/jax。
@@ -19,12 +34,31 @@
 
 from __future__ import annotations
 
+from typing import List, Optional
+
 import numpy as np
 
 from .tensor import Tensor, no_grad
 from . import vnn as nn
 from .losses import cross_entropy, kl_div_loss, mse_loss
 from .quantize import QuantizedLinear
+
+# Part5K1.1: VSC 联动导入（VMPC V2 专属）
+from .vsc import (
+    VSCPlan,
+    vsc_plan as _vsc_plan,
+    apply_storage_rearrange as _apply_storage_rearrange,
+    estimate_vsc_benefits as _estimate_vsc_benefits,
+)
+
+
+# ---------------------------------------------------------------------------
+# Part5K1.1: 等效能力换算常量
+# ---------------------------------------------------------------------------
+
+# 1zB ≈ 1010B 等效处理能力（VMPC V2.0 下的约定）
+# 用于在压缩报告中把压缩后模型的等效能力换算为 zB 单位
+ZB_EQUIVALENT_B_RATIO = 1010
 
 
 # ---------------------------------------------------------------------------
@@ -941,7 +975,7 @@ def _parse_version_tuple(v) -> tuple:
 
 
 def compress_pipeline(model, config=None, return_stats: bool = False,
-                      version: str = "1.5",
+                      version: str = "2.0",
                       # 旧 API 向后兼容参数（任一非 None / 非 dict 时走旧 API）
                       target_ratio: float = 0.1, eval_fn=None,
                       sparsity: float = 0.3, qtype: str = "int4",
@@ -990,9 +1024,11 @@ def compress_pipeline(model, config=None, return_stats: bool = False,
         config: dict，新 API 的压缩配置；若为 None 则走旧 API
         return_stats: 新 API 下是否返回 (compressed_model, stats) 元组
             （旧 API 始终返回 stats dict，此参数被忽略）
-        version: 压缩管线版本。``"1.5"``（默认，VMPC V1.5：VMPC V1.3 + contrastive_distill
-            + logit_calibration）；``"1.3"`` 走 v13 流程（prune → quantize →
-            distill → lora，含压缩报告）；``"1.0"`` / ``"1.2"`` 走旧 v2 流程
+        version: 压缩管线版本。``"2.0"``（VMPC V2 默认，**VSC + VN 容器 +
+            传统压缩原子** 联合管线，报告含 ``zB_equivalent`` / ``effective_B``）；
+            ``"1.5"``（VMPC V1.5：V1.3 + contrastive_distill + logit_calibration）；
+            ``"1.3"`` 走 v13 流程（prune → quantize → distill → lora，含压缩报告）；
+            ``"1.0"`` / ``"1.2"`` 走旧 v2 流程
             （prune → quantize → lora → ternary → distill）。仅对 dict 配置生效。
         target_ratio / eval_fn / sparsity / qtype / lora_r / lora_alpha / use_lora:
             旧 API 参数，仅当 ``config`` 不是 dict 时生效
@@ -1008,7 +1044,12 @@ def compress_pipeline(model, config=None, return_stats: bool = False,
     if isinstance(config, dict):
         # Part4K2.5 Task 5：用版本号元组比较替代字符串比较，
         # 确保 "1.3" / "1.30" / "1.3.0" 等等价版本都能正确走 v13 分支
+        # Part5K1.1：v_tuple >= (2, 0) → VMPC V2 新管线（VSC + VN 联动）
         v_tuple = _parse_version_tuple(version)
+        if v_tuple >= (2, 0):
+            return _compress_pipeline_v2_vmpc(
+                model, config, return_stats=return_stats
+            )
         if v_tuple >= (1, 5):
             return _compress_pipeline_v15(model, config, return_stats=return_stats)
         if v_tuple >= (1, 3):
@@ -1123,6 +1164,308 @@ def _deep_copy_model(model):
                 {k: v.copy() for k, v in sd.items()}, strict=False
             )
         return new_model
+
+
+# ---------------------------------------------------------------------------
+# Part5K1.1: VMPC V2.0 压缩管线（VSC + VN 联动 + 传统压缩原子）
+# ---------------------------------------------------------------------------
+
+
+def _collect_state_dict_for_vsc(model) -> dict:
+    """从模型中提取 ``{name: ndarray}``，供 VSC 计划生成使用。
+
+    遍历 ``named_parameters``，把所有 fp32 / QLinear / LoRALinear 张量
+    拉平为 ndarray（QLinear 用 packed 形态，LoRALinear 包含 A/B）。
+    """
+    sd: dict = {}
+    try:
+        for name, p in model.named_parameters():
+            data = getattr(p, "data", None)
+            if data is None:
+                continue
+            arr = data if isinstance(data, np.ndarray) else np.asarray(data)
+            sd[name] = arr
+    except Exception:
+        # 兜底：直接拿 _parameters / _modules 递归
+        def _recurse(m, prefix=""):
+            for pname, p in m._parameters.items():
+                if p is None:
+                    continue
+                arr = p.data if isinstance(p.data, np.ndarray) else np.asarray(p.data)
+                sd[prefix + pname] = arr
+            for cname, cm in m._modules.items():
+                if cm is not None:
+                    _recurse(cm, prefix + cname + ".")
+        _recurse(model)
+    return sd
+
+
+def _infer_layer_pattern(model) -> List[str]:
+    """从模型推断 ``layer_pattern``（用于 VSC 调度）。
+
+    优先读 ``model.config.layer_pattern``；不可用时读 ``model.net.blocks``
+    的类型名（``mod`` / ``trisparse``）；最后回退到全 ``trisparse``。
+    """
+    # 1. config.layer_pattern
+    cfg = getattr(model, "config", None)
+    if cfg is not None:
+        lp = getattr(cfg, "layer_pattern", None)
+        if lp:
+            return list(lp)
+    # 2. 内部 net.blocks 类型推断
+    net = getattr(model, "net", None) or model
+    blocks = getattr(net, "blocks", None)
+    if blocks:
+        result: list = []
+        for b in blocks:
+            btype = type(b).__name__.lower()
+            if "mod" in btype or "router" in btype:
+                result.append("mod")
+            else:
+                result.append("trisparse")
+        return result
+    # 3. 兜底
+    n_layer = getattr(cfg, "n_layer", 4) if cfg is not None else 4
+    return ["trisparse"] * int(n_layer)
+
+
+def _compute_zb_effective(compressed_bits: int,
+                          original_params: int,
+                          est_throughput: float) -> dict:
+    """计算 VMPC V2.0 等效能力（``zB_equivalent`` / ``effective_B``）。
+
+    Part5K1.1 约定：**1zB ≈ 1010B 等效处理能力**。
+
+    计算逻辑：
+    - ``effective_B``：压缩后模型的等效 B 参数量。
+      传统压缩原子（quantize/prune/ternary）让存储 bit 数降低，但模型
+      实际能力会被 VSC 加权放大（更快的访存 + 更优的层调度）。
+      这里用 ``compressed_params * (1 + vsc_speedup_bonus)`` 估算等效 B。
+    - ``zB_equivalent``：``effective_B / ZB_EQUIVALENT_B_RATIO``。
+
+    Args:
+        compressed_bits: 压缩后总 bit 数
+        original_params: 原始参数量（fp32）
+        est_throughput: 估算吞吐率提升因子（如 INT4=4.0）
+
+    Returns:
+        ``{"effective_B": float, "zB_equivalent": float}``
+    """
+    # 压缩后等效 fp32 参数量
+    compressed_params = compressed_bits / 32.0
+    # VSC 加速 bonus：吞吐率提升 → 等效能力线性放大（上限 3×）
+    vsc_speedup_bonus = max(0.0, min(2.0, est_throughput - 1.0))
+    effective_b = compressed_params * (1.0 + vsc_speedup_bonus)
+    # 1zB ≈ 1010B 等效处理能力
+    zb_equivalent = effective_b / float(ZB_EQUIVALENT_B_RATIO)
+    return {
+        "effective_B": float(effective_b),
+        "zB_equivalent": float(zb_equivalent),
+    }
+
+
+def _compress_pipeline_v2_vmpc(model, config: dict,
+                               return_stats: bool = False):
+    """VMPC V2.0 压缩管线（Part5K1.1）：传统压缩原子 + VSC + VN 联动。
+
+    VMPC V2 ≠ 单纯的量化 / 剪枝 / 蒸馏，而是 ``VN 容器 + 传统压缩原子 + VSC``
+    的联合管线：
+
+    流程
+    ----
+    1. **传统压缩原子**（复用 V1.x）：``prune → quantize → ternary →
+       distill → lora → logit_calibration``，每步可选，与 V1.5 完全兼容。
+    2. **VSC 计划生成**：调用 :func:`verse_torch.vsc.vsc_plan` 生成
+       存储重排 + 算力感知调度 + 预取流水线计划。
+    3. **VSC 计划落地**：把计划存入 ``new_model._vsc_plan``，供后续
+       ``.vn`` 写入（:func:`apply_storage_rearrange`）与推理调度使用。
+    4. **等效能力报告**：基于 ``1zB ≈ 1010B`` 约定，计算
+       ``zB_equivalent`` / ``effective_B`` 字段。
+
+    与 V1.5 的关系
+    --------------
+    - V2 **完全复用** V1.5 的压缩原子实现（不重造轮子），仅在末尾新增
+      VSC + VN 联动 + 等效能力换算。
+    - V2 的 stats 与 V1.5 完全兼容（同名同义键），并追加 V2 专属字段：
+      ``"vmpc_version": "2.0"`` / ``"vsc_plan"`` / ``"zB_equivalent"`` /
+      ``"effective_B"``。
+
+    Args:
+        model: 原始模型（Module）
+        config: 压缩配置 dict，支持 V1.5 全部字段 + V2 专属字段：
+            - ``"vsc"`` (dict|True|False|None)：VSC 子配置；
+              ``True`` / ``None`` → 启用默认 VSC；``False`` → 跳过 VSC；
+              dict 形态支持 ``"compute_budget"`` / ``"prefetch_depth"`` /
+              ``"enable_layer_reorder"`` 三键。
+            - 其余字段（prune/quantize/ternary/distill/lora/logit_calibration/
+              distill_contrastive）语义与 V1.5 完全一致。
+        return_stats: 是否返回 ``(new_model, stats)`` 元组。
+
+    Returns:
+        - ``return_stats=False``: 返回压缩后的新模型
+        - ``return_stats=True``: 返回 ``(new_model, stats_dict)``
+    """
+    # ------------------------------------------------------------------
+    # 1. 委托 V1.5 完成全部传统压缩原子（prune/quantize/ternary/distill/lora/
+    #    logit_calibration），返回 (compressed_model, v15_stats)
+    # ------------------------------------------------------------------
+    # 解析 VSC 开关（先 pop 出来，避免 V1.5 看到陌生字段）
+    vsc_cfg = config.get("vsc", True)
+    # 复制 config，避免修改用户输入
+    v15_config = {k: v for k, v in config.items() if k != "vsc"}
+    # V1.5 默认 version="1.5"，直接走 V1.5 管线
+    new_model, v15_stats = _compress_pipeline_v15(
+        model, v15_config, return_stats=True
+    )
+
+    steps = list(v15_stats.get("steps", []))
+    qtype_applied = v15_stats.get("qtype")
+    has_quantize = qtype_applied is not None
+
+    # ------------------------------------------------------------------
+    # 2. VSC 计划生成（存储重排 + 算力感知调度 + 预取流水线）
+    # ------------------------------------------------------------------
+    vsc_plan_obj: Optional[VSCPlan] = None
+    vsc_benefits: dict = {}
+    if vsc_cfg is not False:
+        # 解析 VSC 子配置
+        vsc_params: dict = {}
+        if isinstance(vsc_cfg, dict):
+            vsc_params = dict(vsc_cfg)
+        compute_budget = float(vsc_params.get("compute_budget", 8.0))
+        prefetch_depth = int(vsc_params.get("prefetch_depth", 1))
+        enable_layer_reorder = bool(vsc_params.get("enable_layer_reorder", False))
+
+        # 收集张量名 + 推断 layer_pattern
+        state_dict = _collect_state_dict_for_vsc(new_model)
+        tensor_names = list(state_dict.keys())
+        layer_pattern = _infer_layer_pattern(new_model)
+
+        if tensor_names:
+            vsc_plan_obj = _vsc_plan(
+                tensor_names=tensor_names,
+                layer_pattern=layer_pattern,
+                compute_budget=compute_budget,
+                prefetch_depth=prefetch_depth,
+                enable_layer_reorder=enable_layer_reorder,
+                metadata={
+                    "source": "compress_pipeline_v2_vmpc",
+                    "qtype": qtype_applied,
+                    "tensor_count": len(tensor_names),
+                },
+            )
+            # 估算 VSC 收益
+            tensor_sizes = {
+                name: int(arr.nbytes)
+                for name, arr in state_dict.items()
+            }
+            vsc_benefits = _estimate_vsc_benefits(vsc_plan_obj, tensor_sizes)
+
+            steps.append({
+                "step": "vsc_plan",
+                "compute_budget": compute_budget,
+                "prefetch_depth": prefetch_depth,
+                "enable_layer_reorder": enable_layer_reorder,
+                "storage_group_count": len(vsc_plan_obj.storage_groups),
+                "prefetch_step_count": len(vsc_plan_obj.prefetch_plan),
+                "benefits": vsc_benefits,
+            })
+
+            # 把 VSC 计划落地到模型（供 .vn 写入 + 推理调度使用）
+            try:
+                object.__setattr__(new_model, "_vsc_plan", vsc_plan_obj)
+                object.__setattr__(new_model, "_vsc_benefits", vsc_benefits)
+            except (AttributeError, TypeError):
+                pass
+
+    # ------------------------------------------------------------------
+    # 3. 计算压缩后统计（V1.5 兼容 + V2 专属字段）
+    # ------------------------------------------------------------------
+    original_params = int(v15_stats.get("original_params", 0))
+    original_bits = int(v15_stats.get("original_bits", original_params * 32))
+    compressed_bits = int(v15_stats.get("compressed_bits", 0))
+    compressed_params = float(v15_stats.get("compressed_params", 0.0))
+    compression_ratio = float(v15_stats.get("compression_ratio", 0.0))
+    avg_bits = float(v15_stats.get("bits", 32.0))
+    actual_sparsity = float(v15_stats.get("sparsity", 0.0))
+    est_throughput = float(
+        v15_stats.get("estimated_throughput_improvement", 1.0)
+    )
+    logit_calib_factor = float(v15_stats.get("logit_calib_factor", 1.0))
+    contrastive_used = bool(v15_stats.get("contrastive_distill", False))
+
+    # 等效能力换算（1zB ≈ 1010B）
+    zb_metrics = _compute_zb_effective(
+        compressed_bits=compressed_bits,
+        original_params=original_params,
+        est_throughput=est_throughput,
+    )
+
+    # 把 VSC 加速比叠加到吞吐率估算
+    vsc_speedup = float(vsc_benefits.get("estimated_speedup", 1.0))
+    combined_throughput = est_throughput * vsc_speedup
+
+    # V2 报告（V1.5 兼容 + V2 专属）
+    report = {
+        "original_params": int(original_params),
+        "compressed_params": float(compressed_params),
+        "compression_ratio": float(compression_ratio),
+        "sparsity": float(actual_sparsity),
+        "bits_per_param": float(avg_bits),
+        "estimated_throughput_improvement": float(combined_throughput),
+        "version": "2.0",
+        "vmpc_version": "2.0",
+        "logit_calib_factor": float(logit_calib_factor),
+        "contrastive_distill": bool(contrastive_used),
+        # V2 专属
+        "vsc_enabled": vsc_plan_obj is not None,
+        "vsc_benefits": vsc_benefits,
+        "effective_B": zb_metrics["effective_B"],
+        "zB_equivalent": zb_metrics["zB_equivalent"],
+        "zb_ratio": int(ZB_EQUIVALENT_B_RATIO),
+    }
+
+    stats = {
+        "original_params": int(original_params),
+        "compressed_params": float(compressed_params),
+        "compressed_bits": int(compressed_bits),
+        "original_bits": int(original_bits),
+        "compression_ratio": float(compression_ratio),
+        "sparsity": float(actual_sparsity),
+        "bits": float(avg_bits),
+        "qtype": qtype_applied if has_quantize else None,
+        "steps": steps,
+        # 兼容字段
+        "version": "2.0",
+        "vmpc_version": "2.0",
+        "estimated_throughput_improvement": float(combined_throughput),
+        "compression_report": report,
+        "logit_calib_factor": float(logit_calib_factor),
+        "contrastive_distill": bool(contrastive_used),
+        # V2 专属字段
+        "vsc_enabled": vsc_plan_obj is not None,
+        "vsc_plan": (vsc_plan_obj.to_dict() if vsc_plan_obj is not None else None),
+        "vsc_benefits": vsc_benefits,
+        "effective_B": zb_metrics["effective_B"],
+        "zB_equivalent": zb_metrics["zB_equivalent"],
+        "zb_ratio": int(ZB_EQUIVALENT_B_RATIO),
+    }
+
+    # 设置 VMPC V2.0 元数据（供下游 .vn 写入 + 推理调度使用）
+    try:
+        object.__setattr__(new_model, "_vmpc_version", "2.0")
+        object.__setattr__(new_model, "_vmpc_compressed", True)
+        object.__setattr__(new_model, "logit_calib_factor",
+                           float(logit_calib_factor))
+        object.__setattr__(new_model, "_vmpc_contrastive_distill",
+                           bool(contrastive_used))
+        # VSC 计划已在步骤 2 落地，这里只补 vmpc_version 标记
+    except (AttributeError, TypeError):
+        pass
+
+    if return_stats:
+        return new_model, stats
+    return new_model
 
 
 def _compress_pipeline_v2(model, config: dict, return_stats: bool = False):
@@ -1828,7 +2171,7 @@ def _compress_pipeline_v15(model, config: dict, return_stats: bool = False):
 
 
 def compression_report(model, compressed_model) -> dict:
-    """生成压缩报告（VMPC V1.5）。
+    """生成压缩报告（VMPC V2.0 兼容）。
 
     优先从 ``compressed_model`` 的 ``_vmpc_version`` 元数据推断版本号，
     若未设置则回退到 ``"1.3"``（向后兼容）。
@@ -1847,11 +2190,17 @@ def compression_report(model, compressed_model) -> dict:
               "sparsity": float,            # 1 - nonzero / total
               "bits_per_param": float,      # 平均 bit/param
               "estimated_throughput_improvement": float,
-              "version": "1.3" | "1.5",     # 兼容字段（与 vmpc_version 同值）
-              "vmpc_version": "1.3" | "1.5",  # VMPC V1.5 新增：明确 VMPC 版本
-              # VMPC V1.5 专属字段（仅当 vmpc_version >= 1.5 时存在）
-              "logit_calib_factor": float,  # 仅 VMPC V1.5
-              "contrastive_distill": bool,  # 仅 VMPC V1.5
+              "version": "1.3" | "1.5" | "2.0",   # 兼容字段
+              "vmpc_version": "1.3" | "1.5" | "2.0",  # 明确 VMPC 版本
+              # VMPC V1.5+ 专属字段
+              "logit_calib_factor": float,
+              "contrastive_distill": bool,
+              # VMPC V2.0 专属字段（仅当 vmpc_version >= 2.0 时存在）
+              "vsc_enabled": bool,
+              "vsc_benefits": dict,
+              "effective_B": float,         # 等效 B 参数量
+              "zB_equivalent": float,       # 等效 zB（1zB ≈ 1010B）
+              "zb_ratio": int,              # 1010
             }
     """
     orig_params = count_parameters(model)
@@ -1877,18 +2226,28 @@ def compression_report(model, compressed_model) -> dict:
 
     # 优先从模型元数据读取 vmpc_version；未设置时回退到 "1.3"
     vmpc_version = getattr(compressed_model, "_vmpc_version", None) or "1.3"
+    base_throughput = float(throughput_factor.get(qtype, 1.0))
+
+    # VMPC V2.0：VSC 加速比叠加到吞吐率估算
+    vsc_benefits = getattr(compressed_model, "_vsc_benefits", None) or {}
+    vsc_enabled = bool(getattr(compressed_model, "_vsc_plan", None) is not None)
+    if vmpc_version == "2.0" and vsc_benefits:
+        vsc_speedup = float(vsc_benefits.get("estimated_speedup", 1.0))
+        combined_throughput = base_throughput * vsc_speedup
+    else:
+        combined_throughput = base_throughput
+
     report = {
         "original_params": int(orig_params),
         "compressed_params": float(comp_bits / 32),
         "compression_ratio": float(ratio),
         "sparsity": float(sparsity),
         "bits_per_param": float(avg_bits),
-        "estimated_throughput_improvement": float(
-            throughput_factor.get(qtype, 1.0)),
+        "estimated_throughput_improvement": float(combined_throughput),
         "version": vmpc_version,
         "vmpc_version": vmpc_version,
     }
-    # VMPC V1.5 专属字段：若模型有 logit_calib_factor / contrastive_distill 元数据则带上
+    # VMPC V1.5+ 专属字段：若模型有 logit_calib_factor / contrastive_distill 元数据则带上
     if vmpc_version != "1.3":
         calib = getattr(compressed_model, "logit_calib_factor", None)
         if calib is not None:
@@ -1897,6 +2256,19 @@ def compression_report(model, compressed_model) -> dict:
         if hasattr(compressed_model, "_vmpc_contrastive_distill"):
             report["contrastive_distill"] = bool(
                 getattr(compressed_model, "_vmpc_contrastive_distill"))
+
+    # VMPC V2.0 专属字段：等效能力（1zB ≈ 1010B）
+    if vmpc_version == "2.0":
+        report["vsc_enabled"] = vsc_enabled
+        report["vsc_benefits"] = vsc_benefits
+        zb_metrics = _compute_zb_effective(
+            compressed_bits=comp_bits,
+            original_params=orig_params,
+            est_throughput=base_throughput,
+        )
+        report["effective_B"] = zb_metrics["effective_B"]
+        report["zB_equivalent"] = zb_metrics["zB_equivalent"]
+        report["zb_ratio"] = int(ZB_EQUIVALENT_B_RATIO)
     return report
 
 
@@ -2040,4 +2412,6 @@ __all__ = [
     "count_parameters",
     "count_nonzero_params",
     "compute_compressed_bits",
+    # Part5K1.1: VMPC V2.0 常量
+    "ZB_EQUIVALENT_B_RATIO",
 ]

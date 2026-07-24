@@ -1,8 +1,8 @@
-"""CometSpark-V0.5-1B 模型配置（Part4K1 Task 8.3）。
+"""CometSpark-V0.5-1B 模型配置（Part5K1.1 目录重构，迁移自 ``spark/model/``）。
 
 基于 VerseNex 配置 + 1B 参数预算，针对 Qwen3.5-35B-A3B tokenizer（vocab 248320）
 缩放。本配置类只做"配置承载 + 持久化"，真正的模型构建由
-``spark/model/model.py`` 的 ``CometSparkV05LM`` 完成（基于 ``verse_nex`` 的
+``spark/src/model.py`` 的 ``CometSparkV05LM`` 完成（基于 ``verse_nex`` 的
 ``CometSparkNexLM``，不重造底层 ``VerseNexBlock``）。
 
 设计要点
@@ -14,6 +14,10 @@
   其中 embedding(vocab=248320)≈254M + 15 trisparse+5 MoD 层 ≈ 861M。
 - ``tokenizer_repo`` 指向 HuggingFace 上的 Qwen tokenizer，由
   ``verse_infra.verse_tokenizer.BPETokenizer.from_pretrained`` 加载。
+- **VMPC V2.0 总开关**（Part5K1.1）：``vmpc_enabled`` 默认 ``True``，启用后
+  强制 ``.vn`` 格式持久化；``vmpc_version="2.0"`` 走 VSC + VN 联动新管线。
+- **MoD V1.2 路由升级**（Part5K1.1）：``mod_version="1.2"`` 启用输入 LayerNorm
+  + 熵正则 + 稳定初始化；``mod_entropy_weight`` 控制熵正则权重。
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""CometSpark-V0.5-1B 语言模型（Part4K1 Task 8.4 完全重写）。
+"""CometSpark-V0.5-1B 语言模型（Part5K1.1 目录重构，迁移自 ``spark/model/``）。
 
 设计目标
 --------
@@ -16,12 +16,15 @@
 - **接口对齐**：``forward(idx)`` → logits / ``generate(idx, ...)`` → ndarray /
   ``save`` / ``load`` / ``from_pretrained`` / ``save_pretrained`` /
   ``count_parameters`` / ``state_dict`` / ``load_state_dict``。
+- **VMPC V2.0 联动**（Part5K1.1）：``save`` / ``save_pretrained`` 在
+  ``config.enforce_vn_format()`` 为 True 时强制 ``.vn`` 格式持久化，
+  并把 ``_vsc_plan`` 写入 ``.vn`` meta.json 供推理调度使用。
 
 依赖
 ----
 - ``verse_torch``（Tensor / nn / no_grad）
 - ``verse_nex``（``CometSparkNexLM`` + ``_build_v02_pattern``）
-- ``spark.model.config.CometSparkV05Config``
+- ``spark.src.config.CometSparkV05Config``（同目录）
 """
 
 from __future__ import annotations

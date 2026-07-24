@@ -119,6 +119,8 @@ class VerseNexBlock(Module):
         expert_hidden: Optional[int] = None,
         aux_loss_weight: float = 0.01,
         dense_part_names: Optional[list] = None,
+        mod_version: str = "1.2",
+        mod_entropy_weight: float = 1e-3,
         # SwiGLU
         mlp_hidden_multiple: int = 4,
         # Part4K2 Task 5.2: 激活检查点
@@ -169,6 +171,8 @@ class VerseNexBlock(Module):
                 dropout=dropout,
                 aux_loss_weight=aux_loss_weight,
                 dense_part_names=dense_part_names,
+                mod_version=mod_version,
+                entropy_weight=mod_entropy_weight,
             )
 
     # ------------------------------------------------------------------
@@ -313,6 +317,8 @@ class CometSparkNexLM(Module):
         expert_hidden: Optional[int] = None,
         aux_loss_weight: float = 0.01,
         dense_part_names: Optional[list] = None,
+        mod_version: str = "1.2",
+        mod_entropy_weight: float = 1e-3,
         # 其他
         tie_weights: bool = True,
         mlp_hidden_multiple: int = 4,
@@ -375,6 +381,8 @@ class CometSparkNexLM(Module):
                 expert_hidden=expert_hidden,
                 aux_loss_weight=aux_loss_weight,
                 dense_part_names=dense_part_names,
+                mod_version=mod_version,
+                mod_entropy_weight=mod_entropy_weight,
                 mlp_hidden_multiple=mlp_hidden_multiple,
             )
             blocks.append(block)

@@ -6,6 +6,9 @@
 - **优雅降级**：safetensors 不可用时自动降级为 numpy .npz（纯标准库 + numpy）。
 - **无损互转**：.vn ↔ .pt 权重数值完全一致。
 - **自描述**：meta.json 记录格式版本、架构、权重格式、压缩信息、创建时间。
+- **Part5K1.1 多空间缓存**：``VNCachedWeights`` 提供内存/硬盘混合缓存，
+  按访问优先级分层（高优先级放内存常驻，低优先级放硬盘 mmap 懒加载），
+  内存不足时自动降级到硬盘，配合 VMPC V2 + VSC 实现高性能压缩感知布局。
 
 .vn 文件结构
 ------------
@@ -35,6 +38,28 @@ meta.json 结构::
   ``compression_info`` 字段。
 - 读取时仅透传 ``compression_info``，**不自动反量化**（由模型加载逻辑处理），
   避免在格式层引入对量化方案的硬依赖。
+
+多空间缓存（Part5K1.1）
+-----------------------
+``VNCachedWeights`` 提供 3 种策略：
+
+- ``"hybrid"``（默认，推荐）：高优先级张量（小 + 频繁访问）放内存常驻，
+  低优先级张量（大 experts 权重）放硬盘 mmap 懒加载。
+- ``"memory"``：全部放内存（小模型 / 内存充足场景）。
+- ``"disk"``：全部放硬盘 mmap（大模型 / 内存紧张场景）。
+
+优先级判定（``_tensor_priority``）：
+
+- 高优先级（``"high"``）：名称匹配 ``tok_emb`` / ``head`` / ``norm`` /
+  ``wq`` / ``wk`` / ``wv`` / ``wo`` / ``pos_emb`` / ``router`` 等频繁访问张量，
+  或体积 < ``small_tensor_threshold``（默认 1MB）。
+- 低优先级（``"low"``）：其余大张量（典型为 MoD experts / FFN 中间权重）。
+
+内存预算（``memory_budget_mb``）：
+
+- 默认 ``None`` → 自动检测：``min(total_virtual_memory * 0.25, 4096MB)``。
+- 高优先级张量超出预算时，按 LRU 降级到硬盘（释放内存）。
+- 低优先级张量不占用内存预算（始终走 mmap 懒加载）。
 
 安全性
 ------
@@ -556,6 +581,475 @@ class VNFileReader:
 
 
 # ---------------------------------------------------------------------------
+# Part5K1.1: VNCachedWeights —— .vn 多空间缓存
+# ---------------------------------------------------------------------------
+
+
+# 高优先级张量名匹配模式（频繁访问的小张量 + 路由 / norm / embedding）
+_HIGH_PRIORITY_PATTERNS = (
+    "tok_emb", "head", "norm", "router", "gate",
+    "wq", "wk", "wv", "wo", "pos_emb", "ln",  # attention 核心
+    "final_norm", "embed", "lm_head",
+)
+
+# 默认小张量阈值：小于 1MB 的张量自动归为高优先级
+_DEFAULT_SMALL_TENSOR_BYTES = 1 * 1024 * 1024
+
+
+def _detect_memory_budget_mb() -> int:
+    """自动检测内存预算：``min(total_virtual_memory * 0.25, 4096MB)``。
+
+    失败时回退到 1024MB（保守默认值）。
+    """
+    try:
+        import psutil  # type: ignore
+        vm = psutil.virtual_memory()
+        budget = int(vm.total * 0.25 / (1024 * 1024))
+        return max(64, min(budget, 4096))
+    except Exception:
+        # 不可用时退到保守 1GB
+        return 1024
+
+
+def _tensor_priority(name: str, nbytes: int,
+                     small_threshold: int = _DEFAULT_SMALL_TENSOR_BYTES) -> str:
+    """判定张量的缓存优先级。
+
+    Args:
+        name: 张量名（如 ``blocks.0.attn.wq.weight``）
+        nbytes: 张量字节数
+        small_threshold: 小张量阈值（默认 1MB）
+
+    Returns:
+        ``"high"`` 或 ``"low"``
+    """
+    # 名称匹配高优先级模式
+    name_lower = name.lower()
+    for pat in _HIGH_PRIORITY_PATTERNS:
+        if pat in name_lower:
+            return "high"
+    # 小张量自动归为高优先级
+    if nbytes < small_threshold:
+        return "high"
+    return "low"
+
+
+class VNCachedWeights:
+    """.vn 多空间缓存（Part5K1.1）。
+
+    在 :class:`VNFileReader` 之上提供内存/硬盘混合缓存能力：
+
+    - **hybrid**（默认）：高优先级张量常驻内存，低优先级走硬盘 mmap 懒加载。
+    - **memory**：全部常驻内存（小模型 / 内存充足场景）。
+    - **disk**：全部走硬盘 mmap（大模型 / 内存紧张场景）。
+
+    特性：
+    - **按需加载**：首次访问张量时才真正读取（lazy load）。
+    - **LRU 降级**：内存预算超限时，按 LRU 顺序把高优先级张量降级到硬盘 mmap。
+    - **预取接口**：``prefetch(names)`` 主动把指定张量加载到内存。
+    - **释放接口**：``release(names)`` / ``release_low_priority()`` 主动释放内存。
+    - **零拷贝**：safetensors 可用时优先走 mmap，避免反序列化开销。
+
+    用法::
+
+        reader = VNFileReader("model.vn")
+        cached = VNCachedWeights(
+            reader, strategy="hybrid", memory_budget_mb=2048
+        )
+        # 访问张量（首次自动加载，后续从缓存读）
+        w = cached["blocks.0.attn.wq.weight"]
+        # 主动预取下一层
+        cached.prefetch(["blocks.1.attn.wq.weight", ...])
+        # 释放内存（如训练完一层后）
+        cached.release_low_priority()
+        cached.close()  # 关闭底层 reader
+
+    Args:
+        reader: :class:`VNFileReader` 实例（所有权转移到本类，close 时一并关闭）
+        strategy: 缓存策略（``"hybrid"`` / ``"memory"`` / ``"disk"``）
+        memory_budget_mb: 内存预算（MB）；``None`` 自动检测
+        small_tensor_threshold: 小张量阈值（字节），小于此值自动归为高优先级
+    """
+
+    VALID_STRATEGIES = ("hybrid", "memory", "disk")
+
+    def __init__(
+        self,
+        reader: "VNFileReader",
+        strategy: str = "hybrid",
+        memory_budget_mb: Optional[int] = None,
+        small_tensor_threshold: int = _DEFAULT_SMALL_TENSOR_BYTES,
+    ):
+        if strategy not in self.VALID_STRATEGIES:
+            raise ValueError(
+                f"strategy 仅支持 {self.VALID_STRATEGIES}，得到 {strategy!r}"
+            )
+        self._reader = reader
+        self._strategy = strategy
+        self._small_threshold = int(small_tensor_threshold)
+        self._memory_budget_bytes = (
+            int(memory_budget_mb * 1024 * 1024) if memory_budget_mb is not None
+            else _detect_memory_budget_mb() * 1024 * 1024
+        )
+
+        # 缓存状态
+        # _memory_cache: name -> ndarray（常驻内存）
+        # _disk_mmap_cache: name -> mmap-like lazy loader（safetensors 或 npz）
+        # _priority: name -> "high" / "low"
+        # _access_order: LRU 顺序（list of name，最近访问的在末尾）
+        # _memory_used_bytes: 当前内存缓存占用
+        self._memory_cache: dict = {}
+        self._priority: dict = {}
+        self._access_order: list = []
+        self._memory_used_bytes = 0
+
+        # 硬盘 mmap 懒加载所需的 safetensors handle / npz 落盘临时文件
+        # （由 _ensure_disk_loader 按需初始化）
+        self._disk_loader: Optional[_VNDiskLoader] = None
+
+        # 张量名 / 体积信息（首次访问时从 reader 读取并缓存）
+        self._tensor_names: Optional[list] = None
+
+    # ------------------------------------------------------------------
+    # 元信息
+    # ------------------------------------------------------------------
+
+    @property
+    def strategy(self) -> str:
+        """当前缓存策略。"""
+        return self._strategy
+
+    @property
+    def memory_budget_mb(self) -> float:
+        """内存预算（MB）。"""
+        return self._memory_budget_bytes / (1024 * 1024)
+
+    @property
+    def memory_used_mb(self) -> float:
+        """当前内存缓存占用（MB）。"""
+        return self._memory_used_bytes / (1024 * 1024)
+
+    def tensor_names(self) -> list:
+        """返回所有张量名（lazy 探测）。"""
+        if self._tensor_names is None:
+            self._tensor_names = self._probe_tensor_names()
+        return list(self._tensor_names)
+
+    def _probe_tensor_names(self) -> list:
+        """探测 .vn 内的张量名列表。
+
+        优先用 safetensors 的 keys()；不可用时读 npz 的 files。
+        """
+        wfmt = self._reader.weight_format
+        if wfmt == "safetensors" and _HAS_SAFETENSORS and _WEIGHTS_ST_NAME in self._reader._names:
+            self._ensure_disk_loader()
+            if self._disk_loader is not None:
+                return list(self._disk_loader.keys())
+        # npz 路径：读取一次得到 keys（成本较高，但仅在首次访问时发生）
+        weights = self._reader.read_weights(mmap=False)
+        return list(weights.keys())
+
+    def priority_of(self, name: str) -> str:
+        """返回张量优先级（``"high"`` / ``"low"``）。"""
+        if name not in self._priority:
+            # 通过 reader 探测单张量的 nbytes（避免全量读取）
+            nbytes = self._tensor_nbytes(name)
+            self._priority[name] = _tensor_priority(
+                name, nbytes, self._small_threshold
+            )
+        return self._priority[name]
+
+    def _tensor_nbytes(self, name: str) -> int:
+        """估算张量的字节数（不实际读取数据）。"""
+        # safetensors 路径：从 disk loader 拿到 dtype/shape 后估算
+        self._ensure_disk_loader()
+        if self._disk_loader is not None:
+            info = self._disk_loader.tensor_info(name)
+            if info is not None:
+                return info["nbytes"]
+        # npz 路径：无法在不读取的情况下拿到 size，返回大值（保守判为 low）
+        return 10 * 1024 * 1024  # 10MB placeholder
+
+    # ------------------------------------------------------------------
+    # 硬盘 lazy loader 初始化
+    # ------------------------------------------------------------------
+
+    def _ensure_disk_loader(self) -> None:
+        """按需初始化硬盘 lazy loader（safetensors mmap / npz 落盘）。"""
+        if self._disk_loader is not None:
+            return
+        wfmt = self._reader.weight_format
+        if wfmt == "safetensors" and _HAS_SAFETENSORS and _WEIGHTS_ST_NAME in self._reader._names:
+            # safetensors mmap 零拷贝
+            tmp_path = self._reader._extract_to_temp(
+                _WEIGHTS_ST_NAME, suffix=".safetensors"
+            )
+            self._disk_loader = _VNSafetensorsLoader(tmp_path)
+            # 临时文件由 disk_loader 持有，close 时清理
+            self._reader._weight_tmp_path = tmp_path
+        elif _WEIGHTS_NPZ_NAME in self._reader._names:
+            # npz 落盘 + NpzFile 懒加载
+            tmp_path = self._reader._extract_to_temp(
+                _WEIGHTS_NPZ_NAME, suffix=".npz"
+            )
+            self._disk_loader = _VNNpzLoader(tmp_path)
+            self._reader._weight_tmp_path = tmp_path
+
+    # ------------------------------------------------------------------
+    # 核心访问 API
+    # ------------------------------------------------------------------
+
+    def __getitem__(self, name: str) -> np.ndarray:
+        """访问张量（首次自动加载，后续从缓存读）。"""
+        return self.get(name)
+
+    def __contains__(self, name: str) -> bool:
+        try:
+            return name in self.tensor_names()
+        except Exception:
+            return False
+
+    def get(self, name: str) -> np.ndarray:
+        """读取张量。高优先级 + memory 策略走内存；其余走硬盘 mmap。"""
+        # 1. 内存命中
+        if name in self._memory_cache:
+            self._touch_lru(name)
+            return self._memory_cache[name]
+
+        # 2. 决定是否进入内存
+        strategy = self._strategy
+        priority = self.priority_of(name)
+
+        if strategy == "memory":
+            target_memory = True
+        elif strategy == "disk":
+            target_memory = False
+        else:  # hybrid
+            target_memory = (priority == "high")
+
+        # 3. 读取张量
+        arr = self._load_from_disk(name)
+
+        if target_memory:
+            # 检查内存预算
+            self._ensure_memory_budget(arr.nbytes)
+            self._memory_cache[name] = arr
+            self._memory_used_bytes += arr.nbytes
+            self._touch_lru(name)
+
+        return arr
+
+    def _load_from_disk(self, name: str) -> np.ndarray:
+        """从硬盘 lazy loader 读取张量。"""
+        self._ensure_disk_loader()
+        if self._disk_loader is not None:
+            return self._disk_loader.get_tensor(name)
+        # 兜底：用 reader 的 read_weights（成本较高，但保证可用）
+        weights = self._reader.read_weights(mmap=True)
+        return weights[name]
+
+    # ------------------------------------------------------------------
+    # LRU 管理
+    # ------------------------------------------------------------------
+
+    def _touch_lru(self, name: str) -> None:
+        """更新 LRU 顺序（移到末尾）。"""
+        if name in self._access_order:
+            self._access_order.remove(name)
+        self._access_order.append(name)
+
+    def _ensure_memory_budget(self, incoming_bytes: int) -> None:
+        """确保内存预算足够容纳 incoming_bytes；不够则按 LRU 降级。"""
+        target = self._memory_used_bytes + incoming_bytes
+        if target <= self._memory_budget_bytes:
+            return
+        # 按 LRU 顺序（从头部开始）降级，直到预算足够
+        while self._access_order and target > self._memory_budget_bytes:
+            victim = self._access_order.pop(0)
+            if victim not in self._memory_cache:
+                continue
+            arr = self._memory_cache.pop(victim)
+            self._memory_used_bytes -= arr.nbytes
+            target -= arr.nbytes
+
+    # ------------------------------------------------------------------
+    # 预取 / 释放
+    # ------------------------------------------------------------------
+
+    def prefetch(self, names) -> None:
+        """主动把指定张量预取到内存（用于训练前预热 / 流水线预取）。"""
+        for name in names:
+            if name not in self._memory_cache:
+                # 强制加载到内存（忽略 hybrid 策略下的优先级）
+                arr = self._load_from_disk(name)
+                self._ensure_memory_budget(arr.nbytes)
+                self._memory_cache[name] = arr
+                self._memory_used_bytes += arr.nbytes
+                self._touch_lru(name)
+
+    def release(self, names) -> None:
+        """释放指定张量的内存缓存（降级到硬盘 mmap）。"""
+        for name in names:
+            if name in self._memory_cache:
+                arr = self._memory_cache.pop(name)
+                self._memory_used_bytes -= arr.nbytes
+                if name in self._access_order:
+                    self._access_order.remove(name)
+
+    def release_low_priority(self) -> int:
+        """释放所有低优先级张量的内存缓存。
+
+        Returns:
+            释放的张量数量
+        """
+        released = 0
+        to_release = [n for n in list(self._memory_cache.keys())
+                      if self.priority_of(n) == "low"]
+        for name in to_release:
+            arr = self._memory_cache.pop(name)
+            self._memory_used_bytes -= arr.nbytes
+            if name in self._access_order:
+                self._access_order.remove(name)
+            released += 1
+        return released
+
+    def clear(self) -> None:
+        """清空所有内存缓存。"""
+        self._memory_cache.clear()
+        self._access_order.clear()
+        self._memory_used_bytes = 0
+
+    # ------------------------------------------------------------------
+    # 关闭
+    # ------------------------------------------------------------------
+
+    def close(self) -> None:
+        """清空缓存并关闭底层 reader。"""
+        self.clear()
+        if self._disk_loader is not None:
+            try:
+                self._disk_loader.close()
+            except Exception:
+                pass
+            self._disk_loader = None
+        if self._reader is not None:
+            try:
+                self._reader.close()
+            except Exception:
+                pass
+            self._reader = None
+
+    def __enter__(self) -> "VNCachedWeights":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# 硬盘 lazy loader 内部实现
+# ---------------------------------------------------------------------------
+
+
+class _VNDiskLoader:
+    """硬盘 lazy loader 基类（safetensors / npz 共同接口）。"""
+
+    def get_tensor(self, name: str) -> np.ndarray:
+        raise NotImplementedError
+
+    def tensor_info(self, name: str) -> Optional[dict]:
+        raise NotImplementedError
+
+    def keys(self) -> list:
+        raise NotImplementedError
+
+    def close(self) -> None:
+        pass
+
+
+class _VNSafetensorsLoader(_VNDiskLoader):
+    """safetensors mmap 零拷贝 loader。"""
+
+    def __init__(self, path: str):
+        self._path = path
+        self._handle = safe_open(path, framework="numpy")
+        self._keys = list(self._handle.keys())
+        # 缓存 tensor_info（name -> {dtype, shape, nbytes}）
+        self._info_cache: dict = {}
+
+    def get_tensor(self, name: str) -> np.ndarray:
+        return self._handle.get_tensor(name)
+
+    def tensor_info(self, name: str) -> Optional[dict]:
+        if name not in self._info_cache:
+            if name not in self._keys:
+                return None
+            # safetensors 没有 metadata() 接口，需要 get_slice 或 get_tensor 推断
+            # 这里用 get_tensor 一次后缓存（适合懒加载场景）
+            try:
+                arr = self._handle.get_tensor(name)
+                self._info_cache[name] = {
+                    "dtype": str(arr.dtype),
+                    "shape": list(arr.shape),
+                    "nbytes": int(arr.nbytes),
+                }
+            except Exception:
+                return None
+        return self._info_cache[name]
+
+    def keys(self) -> list:
+        return list(self._keys)
+
+    def close(self) -> None:
+        # safetensors 的 safe_open handle 没有显式 close，靠 GC 回收
+        self._handle = None
+
+
+class _VNNpzLoader(_VNDiskLoader):
+    """npz 落盘 + NpzFile 懒加载。"""
+
+    def __init__(self, path: str):
+        self._path = path
+        self._npz = np.load(path, allow_pickle=False)
+        self._keys = list(self._npz.files)
+        self._info_cache: dict = {}
+
+    def get_tensor(self, name: str) -> np.ndarray:
+        return self._npz[name]
+
+    def tensor_info(self, name: str) -> Optional[dict]:
+        if name not in self._info_cache:
+            if name not in self._keys:
+                return None
+            try:
+                arr = self._npz[name]
+                self._info_cache[name] = {
+                    "dtype": str(arr.dtype),
+                    "shape": list(arr.shape),
+                    "nbytes": int(arr.nbytes),
+                }
+            except Exception:
+                return None
+        return self._info_cache[name]
+
+    def keys(self) -> list:
+        return list(self._keys)
+
+    def close(self) -> None:
+        try:
+            self._npz.close()
+        except Exception:
+            pass
+        self._npz = None
+
+
+# ---------------------------------------------------------------------------
 # .pt ↔ .vn 转换
 # ---------------------------------------------------------------------------
 
@@ -673,6 +1167,7 @@ __all__ = [
     "VN_FORMAT_VERSION",
     "VNFileWriter",
     "VNFileReader",
+    "VNCachedWeights",
     "pt_to_vn",
     "vn_to_pt",
     "convert_format",

@@ -41,6 +41,7 @@ from verse_torch.vnn import (
     Module,
     ModuleList,
     Linear,
+    LayerNorm,
     Dropout,
     SwiGLUMLP,
     normal_,
@@ -265,6 +266,13 @@ class Router(Module):
         aux_loss_weight: load balancing loss 的权重系数
         z_loss_weight: router z-loss 的权重系数（0 表示不计算 z-loss）
         jitter: 训练时加到输入的均匀噪声幅度（0 表示不加）
+        mod_version: MoD 路由版本（Part5K1.1）。
+            - ``"1.1"``：原版路由（gate 直接作用于输入）。
+            - ``"1.2"``（默认）：路由输入 LayerNorm + 熵正则 + 更稳的 gate 初始化，
+              提升路由稳定性与能力，缓解训练初期 router collapse。
+        entropy_weight: 路由熵正则权重（仅 V1.2，默认 1e-3）。鼓励 router 概率分布
+            更均匀，与 load_balance loss 互补（前者作用于 soft prob，后者作用于
+            hard 派发比例）。
     """
 
     def __init__(
@@ -275,6 +283,8 @@ class Router(Module):
         aux_loss_weight: float = 0.01,
         z_loss_weight: float = 0.001,
         jitter: float = 0.0,
+        mod_version: str = "1.2",
+        entropy_weight: float = 1e-3,
     ):
         super().__init__()
         if top_k < 1:
@@ -288,14 +298,27 @@ class Router(Module):
         self.aux_loss_weight = aux_loss_weight
         self.z_loss_weight = z_loss_weight
         self.jitter = jitter
+        self.mod_version = str(mod_version)
+        self.entropy_weight = float(entropy_weight)
 
         # 路由线性层（无 bias，与 Switch Transformer 一致）
         self.gate = Linear(dim, num_routes, bias=False)
-        normal_(self.gate.weight, std=0.02)
+        # V1.2：更小的 init std，配合 router_norm 让初始 logits 更平稳，
+        # 减少训练初期某 expert 被过度偏好的倾向
+        init_std = 0.01 if self.mod_version >= "1.2" else 0.02
+        normal_(self.gate.weight, std=init_std)
+
+        # V1.2：路由输入 LayerNorm（GShard 风格），稳定 gate 输入分布。
+        # 默认初始化（gamma=1, beta=0）近似 no-op，加载旧 V1.1 权重时无突变。
+        if self.mod_version >= "1.2":
+            self.router_norm = LayerNorm(dim)
+        else:
+            self.router_norm = None
 
         # 最近一次 forward 的 aux loss 分项（供外部读取）
         self._last_load_balance_loss = None
         self._last_z_loss = None
+        self._last_entropy_loss = None
 
     def forward(self, x: Tensor):
         """前向计算。
@@ -319,6 +342,10 @@ class Router(Module):
             router_input = x + noise
         else:
             router_input = x
+
+        # V1.2：路由输入 LayerNorm，稳定 gate 输入分布（GShard 风格）
+        if self.router_norm is not None:
+            router_input = self.router_norm(router_input)
 
         # Router logits: (B, T, num_routes)
         logits = self.gate(router_input)
@@ -363,8 +390,27 @@ class Router(Module):
         else:
             z_loss = Tensor(np.zeros((), dtype=np.float32), requires_grad=False)
 
-        # 总 aux loss = load_balance + z_loss
-        aux_loss = load_balance_loss + z_loss
+        # --- V1.2：路由熵正则（鼓励 soft prob 均匀，防 collapse）---
+        # H = -Σ_i P_i log(P_i + eps)；最大化 H → 最小化 -H
+        # 与 load_balance 互补：load_balance 作用于 hard 派发比例 f_i，
+        # 熵正则直接作用于 soft prob P_i，在 top-k collapse 早期即可生效
+        if self.mod_version >= "1.2" and self.entropy_weight > 0:
+            probs_np = probs.data.astype(np.float64)
+            P_mean = probs_np.mean(axis=(0, 1))  # (num_routes,)
+            eps = 1e-8
+            entropy = -float(np.sum(P_mean * np.log(P_mean + eps)))
+            max_entropy = float(np.log(self.num_routes))  # 均匀分布的熵
+            # 归一化到 [0,1]：1 - H/H_max ∈ [0,1]，0=均匀，1=完全 collapse
+            entropy_gap = 1.0 - (entropy / max_entropy) if max_entropy > 0 else 0.0
+            entropy_loss = Tensor(
+                np.asarray(self.entropy_weight * entropy_gap, dtype=np.float32),
+                requires_grad=False,
+            )
+        else:
+            entropy_loss = Tensor(np.zeros((), dtype=np.float32), requires_grad=False)
+
+        # 总 aux loss = load_balance + z_loss + entropy
+        aux_loss = load_balance_loss + z_loss + entropy_loss
 
         # 缓存分项供外部读取
         # 用 object.__setattr__ 绕过 nn.Module.__setattr__ 的自动注册，
@@ -372,6 +418,7 @@ class Router(Module):
         # ParallelTrainer 合并 chunk 时 "Unexpected keys" 报错
         object.__setattr__(self, "_last_load_balance_loss", load_balance_loss)
         object.__setattr__(self, "_last_z_loss", z_loss)
+        object.__setattr__(self, "_last_entropy_loss", entropy_loss)
 
         # 索引张量（不可微）
         dispatched_indices = Tensor(topk_idx, requires_grad=False)
@@ -451,6 +498,8 @@ class DensePart(Module):
         dropout: dropout 概率
         aux_loss_weight: load balancing loss 权重
         z_loss_weight: router z-loss 权重
+        mod_version: MoD 路由版本（Part5K1.1，默认 ``"1.2"``，透传给内部 Router）
+        entropy_weight: 路由熵正则权重（透传给内部 Router）
     """
 
     def __init__(
@@ -462,6 +511,8 @@ class DensePart(Module):
         dropout: float = 0.0,
         aux_loss_weight: float = 0.01,
         z_loss_weight: float = 0.001,
+        mod_version: str = "1.2",
+        entropy_weight: float = 1e-3,
     ):
         super().__init__()
         if top_k > num_experts:
@@ -481,13 +532,15 @@ class DensePart(Module):
             [Expert(dim, expert_hidden, dropout) for _ in range(num_experts)]
         )
 
-        # 内部 expert router
+        # 内部 expert router（透传 V1.2 参数）
         self.router = Router(
             dim,
             num_experts,
             top_k=top_k,
             aux_loss_weight=aux_loss_weight,
             z_loss_weight=z_loss_weight,
+            mod_version=mod_version,
+            entropy_weight=entropy_weight,
         )
 
     def forward(self, x: Tensor, part_weights: Tensor):
@@ -554,6 +607,8 @@ class MoDLayer(Module):
         aux_loss_weight: load balancing loss 权重
         z_loss_weight: router z-loss 权重（防 logits 过大）
         dense_part_names: 分区名称列表（可选，用于调试/可视化）
+        mod_version: MoD 路由版本（Part5K1.1，默认 ``"1.2"``，透传给所有 Router）
+        entropy_weight: 路由熵正则权重（透传给所有 Router）
 
     Note:
         - 5 DensePart × 8 Expert × top-3 双层门控结构（默认）
@@ -572,6 +627,8 @@ class MoDLayer(Module):
         aux_loss_weight: float = 0.01,
         z_loss_weight: float = 0.001,
         dense_part_names: list = None,
+        mod_version: str = "1.2",
+        entropy_weight: float = 1e-3,
     ):
         super().__init__()
         if num_dense_parts < 1:
@@ -595,6 +652,7 @@ class MoDLayer(Module):
         self.expert_hidden = expert_hidden
         self.aux_loss_weight = aux_loss_weight
         self.z_loss_weight = z_loss_weight
+        self.mod_version = str(mod_version)
 
         # 分区名称（可选）
         if dense_part_names is not None:
@@ -614,6 +672,8 @@ class MoDLayer(Module):
             top_k=num_dense_parts,
             aux_loss_weight=aux_loss_weight,
             z_loss_weight=z_loss_weight,
+            mod_version=mod_version,
+            entropy_weight=entropy_weight,
         )
 
         # 第二层：DensePart 列表
@@ -627,6 +687,8 @@ class MoDLayer(Module):
                     dropout=dropout,
                     aux_loss_weight=aux_loss_weight,
                     z_loss_weight=z_loss_weight,
+                    mod_version=mod_version,
+                    entropy_weight=entropy_weight,
                 )
                 for _ in range(num_dense_parts)
             ]

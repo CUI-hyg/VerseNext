@@ -295,15 +295,16 @@ def _load_model_and_tokenizer(
         )
 
     # Part5K1 Task 11：按 model_level 选择对应的 LM 类（保留 VMPC 字段）
+    # Part5K1.1：传入 config_path，加载纯 state_dict(best.pt) 时用正确配置重建
     if model_level == "small":
         from spark.small.model import CometSparkSmallLM
-        model = CometSparkSmallLM.from_pretrained(checkpoint)
+        model = CometSparkSmallLM.from_pretrained(checkpoint, config_path=config_path)
     elif model_level == "mate":
         from spark.mate.model import CometSparkMateLM
-        model = CometSparkMateLM.from_pretrained(checkpoint)
+        model = CometSparkMateLM.from_pretrained(checkpoint, config_path=config_path)
     else:
         from spark.model.model import CometSparkV05LM
-        model = CometSparkV05LM.from_pretrained(checkpoint)
+        model = CometSparkV05LM.from_pretrained(checkpoint, config_path=config_path)
 
     # 加载 tokenizer：优先用 config_path，否则从模型 config 推断
     resolved_config = None

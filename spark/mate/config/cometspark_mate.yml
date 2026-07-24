@@ -62,8 +62,12 @@ model:
   device: cpu
   parallel_chunks: 1
 
-# VMPC-mate 预设（Part5K1 Task 9.2）
+# VMPC-mate 预设（Part5K1 Task 9.2 + Part5K1.1 V2 升级）
+# Part5K1.1: vmpc.enabled 默认 true → 启用 VMPC V2 (VSC + .vn 容器)
+# 关闭时（enabled: false）走 legacy .pt + 旧压缩原子
 vmpc:
+  enabled: true
+  version: "2.0"
   profile: mate
   prune_sparsity: 0.3
   quantize_dtype: int4
