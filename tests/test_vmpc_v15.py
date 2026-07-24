@@ -1,10 +1,13 @@
-"""Part5K1 Task 4：VMPC V1.5 命中与质量优化测试.
+"""Part5K1.1：传统压缩管线 V1.5（legacy）命中与质量优化测试.
+
+Part5K1.1 起 VMPC V2.0 走 VSC 引擎（``verse_torch.vmpc.VMPCV2``），V1.5 传统
+管线作为 ``use_vmpc=False`` 时的 legacy 后端保留。本测试覆盖 legacy 路径的正确性。
 
 覆盖：
 1. ``KnowledgeDistiller.contrastive_loss`` 排序一致性 + 可微 + 3D flatten
 2. ``compute_loss`` 含对比蒸馏项（distill_contrastive=True 时 loss 增大）
 3. ``QLinear`` outlier-aware 反量化（outlier 通道精度恢复）
-4. ``compress_pipeline`` 默认版本为 V1.5（版本路由）
+4. ``compress_pipeline`` 默认版本为 V1.5（版本路由，legacy）
 5. V1.3 仍可正常工作（向后兼容）
 6. V1.5 与 V1.3 数值稳定性（禁用 V1.5 增强后压缩比一致）
 7. V1.5 stats 包含 logit_calib_factor / contrastive_distill / vmpc_version 字段

@@ -1,13 +1,16 @@
-"""Part5K1 Task 3：VMPC（VerseNext Model Parameters Compression）V1.5 门面测试.
+"""Part5K1.1：VMPC（VerseNext Model Parameters Compression）V2.0 门面 + legacy 兼容测试.
+
+Part5K1.1 起 ``verse_torch.vmpc`` 是 VMPC V2.0 的独立实现（VMPCV2 + VSC 引擎），
+但仍 re-export ``verse_torch.compress`` 的对象作为向后兼容门面（legacy 路径）。
 
 覆盖：
-1. 门面导入同一性（``verse_torch.vmpc.X is verse_torch.compress.X``）
+1. 门面导入同一性（``verse_torch.vmpc.X is verse_torch.compress.X``，legacy 兼容）
 2. ``VMPCRegularizer`` 实例化
 3. ``compute_penalty`` 返回非负 float
 4. ``step`` 收紧逻辑（val_loss 平台期 → target_sparsity 减小）
 5. ``step`` 早停（target_sparsity 降到下限 → should_stop=True）
-6. ``vmpc_compress`` small 预设
-7. ``vmpc_compress`` mate 预设
+6. ``vmpc_compress`` small 预设（V2.0 路径）
+7. ``vmpc_compress`` mate 预设（V2.0 路径）
 8. ``vmpc_compress`` 未知 profile 抛 ValueError
 9. 顶层导出（``from verse_torch import vmpc, VMPCRegularizer, vmpc_compress``）
 

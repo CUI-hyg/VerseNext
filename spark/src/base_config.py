@@ -1,8 +1,13 @@
 """CometSpark-V0.5-1B 模型配置（Part4K1 Task 8.3）。
 
+.. note::
+    Part5K1.1 目录优化：本模块从 ``spark/model/config.py`` 迁移到
+    ``spark/src/base_config.py``，作为 small / mate 双模型的公共基类配置。
+    旧路径 ``spark.model.config`` 已删除，请改用 ``spark.src.base_config``。
+
 基于 VerseNex 配置 + 1B 参数预算，针对 Qwen3.5-35B-A3B tokenizer（vocab 248320）
 缩放。本配置类只做"配置承载 + 持久化"，真正的模型构建由
-``spark/model/model.py`` 的 ``CometSparkV05LM`` 完成（基于 ``verse_nex`` 的
+``spark/src/base_model.py`` 的 ``CometSparkV05LM`` 完成（基于 ``verse_nex`` 的
 ``CometSparkNexLM``，不重造底层 ``VerseNexBlock``）。
 
 设计要点

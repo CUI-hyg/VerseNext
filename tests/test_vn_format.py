@@ -419,7 +419,7 @@ class TestCometSparkSaveLoadVn:
 
     def test_save_load_vn_roundtrip(self, tmp_dir):
         """Small 模型 save_vn → load_vn，权重数值一致。"""
-        from spark.model.model import CometSparkV05Small, CometSparkV05LM
+        from spark.src.base_model import CometSparkV05Small, CometSparkV05LM
 
         model = CometSparkV05Small()
         orig_sd = {k: np.asarray(v).copy() for k, v in model.state_dict().items()}
@@ -442,7 +442,7 @@ class TestCometSparkSaveLoadVn:
 
     def test_save_vn_then_convert_to_pt(self, tmp_dir):
         """save_vn 写出后，vn_to_pt 能还原为 .pt 且权重一致。"""
-        from spark.model.model import CometSparkV05Small
+        from spark.src.base_model import CometSparkV05Small
 
         model = CometSparkV05Small()
         orig_sd = {k: np.asarray(v).copy() for k, v in model.state_dict().items()}

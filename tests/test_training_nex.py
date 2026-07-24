@@ -58,8 +58,8 @@ from verse_torch.training_nex import (
     _dpo_collate,
 )
 # Part4K1 Task 8.9: 从 spark/model 导入（替代 data/demo/model）
-from spark.model.model import CometSparkV05Small as CometSparkV02Small
-from spark.model.model import CometSparkV05Small as CometSparkSmall
+from spark.src.base_model import CometSparkV05Small as CometSparkV02Small
+from spark.src.base_model import CometSparkV05Small as CometSparkSmall
 
 
 # ---------------------------------------------------------------------------
@@ -170,8 +170,8 @@ def test_verse_nex_trainer_without_aux(tmp_path):
     等效于标准 CE 路径。
     """
     # 用显式 layer_pattern 构造真正无 MoD 层的模型
-    from spark.model.config import CometSparkV05Config
-    from spark.model.model import CometSparkV05LM
+    from spark.src.base_config import CometSparkV05Config
+    from spark.src.base_model import CometSparkV05LM
     config = CometSparkV05Config(
         arch="versenex",
         vocab_size=256,

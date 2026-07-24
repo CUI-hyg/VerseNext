@@ -12,10 +12,10 @@ LossOptimizer / RLTrainer）。不重造训练逻辑。
 - VerseNex 原生 arch（``forward_with_aux`` + MoD aux loss）
 
 CLI 入口（推荐）：
-    verse-train --config spark/config/cometspark_v05.yml --device cpu
-    verse-finetune --config spark/config/cometspark_v05.yml --method lora
-    verse-posttrain --config spark/config/cometspark_v05.yml --rl nexrl
-    verse-eval --config spark/config/cometspark_v05.yml --score
+    verse-train --config spark/small/config/cometspark_small.yml --device cpu
+    verse-finetune --config spark/mate/config/cometspark_mate.yml --method lora
+    verse-posttrain --config spark/mate/config/cometspark_mate.yml --rl nexrl
+    verse-eval --config spark/small/config/cometspark_small.yml --score
 """
 
 from __future__ import annotations
@@ -48,8 +48,9 @@ def build_model_from_config(config_dict: dict, vocab_size: int):
         config 是 :class:`CometSparkV05Config` 实例。
     """
     # 延迟导入避免循环
-    from spark.model.config import CometSparkV05Config
-    from spark.model.model import CometSparkV05LM
+    # Part5K1.1：基类已从 spark.model.* 迁移到 spark.src.base_*
+    from spark.src.base_config import CometSparkV05Config
+    from spark.src.base_model import CometSparkV05LM
 
     merged = dict(config_dict)
     merged["vocab_size"] = vocab_size

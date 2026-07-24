@@ -1,5 +1,10 @@
 """CometSpark-V0.5-1B 语言模型（Part4K1 Task 8.4 完全重写）。
 
+.. note::
+    Part5K1.1 目录优化：本模块从 ``spark/model/model.py`` 迁移到
+    ``spark/src/base_model.py``，作为 small / mate 双模型的公共基类 LM。
+    旧路径 ``spark.model.model`` 已删除，请改用 ``spark.src.base_model``。
+
 设计目标
 --------
 - **不重造底层 block**：直接组合 ``verse_nex.CometSparkNexLM``（内部用
@@ -21,7 +26,7 @@
 ----
 - ``verse_torch``（Tensor / nn / no_grad）
 - ``verse_nex``（``CometSparkNexLM`` + ``_build_v02_pattern``）
-- ``spark.model.config.CometSparkV05Config``
+- ``spark.src.base_config.CometSparkV05Config``
 """
 
 from __future__ import annotations
@@ -37,7 +42,7 @@ import numpy as np
 
 from verse_torch import Tensor, no_grad
 
-from .config import CometSparkV05Config
+from .base_config import CometSparkV05Config
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +100,15 @@ class CometSparkV05LM:
                 n_layer=config.n_layer,
                 mod_every=config.mod_every,
             )
+            # Part5K1.1 修复 MoD 抽风：将自动生成的 layer_pattern 固化回 config，
+            # 保证 save（config.to_dict）→ load（from_dict）路径一致，避免
+            # "有时显示无 MoD, 有时显示有 MoD" 的不确定性。固化后 config.layer_pattern
+            # 成为显式列表，不再依赖运行时重新生成。
+            try:
+                object.__setattr__(config, "layer_pattern", list(layer_pattern))
+            except Exception:
+                # config 可能不是 dataclass（罕见），忽略，退回原行为
+                pass
 
         # 构造内部 CometSparkNexLM（不重造底层）
         self.net = CometSparkNexLM(
@@ -513,18 +527,30 @@ class CometSparkV05LM:
     def from_pretrained(cls, path: str) -> "CometSparkV05LM":
         """从目录或单文件加载完整模型。
 
-        目录模式（HuggingFace 风格）：
+        支持三种输入：
+
+        1. **``.vn`` 单文件**（Part5K1.1 默认格式）：ZIP 容器，通过
+           :class:`verse_torch.vn_format.VNFileReader` 读取（支持 mmap 零拷贝）。
+        2. **目录**（HuggingFace 风格）：
             path/
               config.yml    ← CometSparkV05Config（model 段）
-              model.pt      ← state_dict (pickle)
-
-        单文件模式：
-            path.pt → {"arch": "versenex", "config": dict, "state_dict": dict}
+              model.vn      ← 优先（VMPC 性能格式）
+              model.pt      ← 兼容回退（pickle state_dict）
+        3. **``.pt`` 单文件**：``{"arch": "versenex", "config": dict, "state_dict": dict}``
         """
+        # 1. .vn 单文件（VMPC V2 默认格式）
+        if path.lower().endswith(".vn"):
+            return cls.load_vn(path)
+
+        # 2. 目录模式（HuggingFace 风格）
         if os.path.isdir(path):
             config = CometSparkV05Config.from_pretrained(path)
             model = cls(config)
+            # 优先 .vn，回退 .pt
+            model_vn = os.path.join(path, "model.vn")
             model_pt = os.path.join(path, "model.pt")
+            if os.path.exists(model_vn):
+                return cls.load_vn(model_vn)
             if os.path.exists(model_pt):
                 with open(model_pt, "rb") as f:
                     sd = pickle.load(f)
@@ -533,13 +559,14 @@ class CometSparkV05LM:
                 model.load_state_dict(sd, strict=False)
             return model
 
-        # 单文件模式
+        # 3. .pt 单文件（pickle payload）
         with open(path, "rb") as f:
             payload = pickle.load(f)
-        cfg_dict = payload["config"]
+        # 修复 KeyError: 'config' —— 用 .get 容错，兼容纯 state_dict 文件
+        cfg_dict = payload.get("config", {}) if isinstance(payload, dict) else {}
         config = CometSparkV05Config.from_dict(cfg_dict)
         model = cls(config)
-        sd = payload["state_dict"] if "state_dict" in payload else payload
+        sd = payload["state_dict"] if isinstance(payload, dict) and "state_dict" in payload else payload
         model.load_state_dict(sd, strict=False)
         return model
 

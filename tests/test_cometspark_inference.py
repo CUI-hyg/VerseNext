@@ -28,7 +28,7 @@ import pickle
 import numpy as np
 import pytest
 
-# 让 tests/ 目录能 import verse_infra.verse_inference / spark.model
+# 让 tests/ 目录能 import verse_infra.verse_inference / spark.src
 from pathlib import Path as _Path
 _REPO_ROOT = _Path(__file__).resolve().parent.parent
 for _pkg in ("verse_infra", "verse_torch", "verse_nex"):
@@ -51,7 +51,7 @@ def cometspark_pt_path():
     Part4K1 Task 8.9: 原 fixture 依赖 ``data/demo/checkpoints/cometspark.pt``，
     现改为用 ``CometSparkV05Small()`` 构造小模型并 ``save()`` 到临时文件。
     """
-    from spark.model.model import CometSparkV05Small
+    from spark.src.base_model import CometSparkV05Small
 
     # 构造小模型并保存为 pickle 单文件
     tmpdir = tempfile.mkdtemp(prefix="cometspark_v05_test_")

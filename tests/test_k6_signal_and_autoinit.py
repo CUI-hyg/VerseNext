@@ -542,8 +542,8 @@ class TestIsTestConfig:
         assert _is_test_config({}, {}) is False
 
     def test_cometspark_small_yml_is_test(self):
-        """cometspark_v05_small.yml 判定为测试配置。"""
-        # 模拟 spark/config/cometspark_v05_small.yml 的 model 段
+        """cometspark_small.yml 判定为测试配置。"""
+        # 模拟 spark/small/config/cometspark_small.yml 的 model 段
         small_cfg = {
             "vocab_size": 256,
             "n_layer": 2,

@@ -1,6 +1,6 @@
-"""CometSpark Mate 模型配置（Part5K1 Task 9.4）。
+"""CometSpark Mate 模型配置（Part5K1 Task 9.4 / Part5K1.1 VMPC V2.0）。
 
-基于 :class:`spark.model.config.CometSparkV05Config` 派生，新增 VMPC-mate 相关字段。
+基于 :class:`spark.model.config.CometSparkV05Config` 派生，新增 VMPC V2.0 相关字段。
 本配置类只做"配置承载 + 持久化"，真正的模型构建由
 ``spark/mate/model/model.py`` 的 :class:`CometSparkMateLM` 完成（基于
 ``verse_nex.CometSparkNexLM``，不重造底层 ``VerseNexBlock``）。
@@ -10,11 +10,14 @@
 - ``arch`` 固定为 ``"versenex"``（继承自 V05Config，自动映射旧值）。
 - 0.2zB 目标（旗舰）：默认值与 V05 1B 配置一致
   （``vocab_size=248320, n_embd=1024, n_layer=20``），通过 VMPC 压缩到 0.2zB。
-- 新增 VMPC-mate 字段：``vmpc_profile`` / ``vmpc_prune_sparsity`` /
-  ``vmpc_quantize_dtype`` / ``vmpc_use_lora`` / ``vmpc_distill``，
-  从 YAML 的 ``vmpc:`` 段读取（也兼容 ``model:`` 段内联写法）。
+- **Part5K1.1 VMPC V2.0 配置融合**：
+  - ``use_vmpc`` 统一开关（默认 ``True``），管理是否使用 VMPC V2.0
+  - 参数分为 ``vmpc_legacy``（传统技术直通，use_vmpc=False 时生效）与
+    ``vmpc_v2_config``（V2 专属参数，含 VSC 配置）
+  - ``use_vmpc=True`` 时强制使用 ``*.vn`` 格式文件
+  - 旧字段（vmpc_profile 等）保留为 legacy 兼容
 - 新增 ``checkpoint_save_dir`` 字段，从 YAML 的 ``checkpoint:`` 段读取
-  （Task 10 用，默认 ``mf_mate``）。
+  （默认 ``mf_mate``）。
 - 保留 from_yaml / to_yaml / from_pretrained / save_pretrained / to_dict / from_dict。
 """
 
@@ -25,7 +28,8 @@ from dataclasses import dataclass, asdict
 from typing import Any
 
 # 复用 V05Config 的基类 + YAML 工具函数（避免重复造轮子）
-from spark.model.config import (
+# Part5K1.1：基类已从 spark.model.config 迁移到 spark.src.base_config
+from spark.src.base_config import (
     CometSparkV05Config,
     load_full_config,
     _dump_yaml,
@@ -37,11 +41,20 @@ from spark.model.config import (
 # ---------------------------------------------------------------------------
 
 _VMPC_FIELD_MAP = {
+    "use_vmpc": "use_vmpc",
     "profile": "vmpc_profile",
     "prune_sparsity": "vmpc_prune_sparsity",
     "quantize_dtype": "vmpc_quantize_dtype",
     "use_lora": "vmpc_use_lora",
     "distill": "vmpc_distill",
+    # Part5K1.1: V2.0 专属参数（VSC 配置）
+    "target_ratio": "vmpc_target_ratio",
+    "quantize_bits": "vmpc_quantize_bits",
+    "storage_weight": "vmpc_storage_weight",
+    "compute_weight": "vmpc_compute_weight",
+    "time_weight": "vmpc_time_weight",
+    "force_vn_format": "vmpc_force_vn_format",
+    "enable_compensation": "vmpc_enable_compensation",
 }
 
 
@@ -92,12 +105,22 @@ class CometSparkMateConfig(CometSparkV05Config):
     # mate 用中等 init_std，保持稳定收敛
     init_std: float = 0.02
 
-    # VMPC-mate 字段
+    # VMPC-mate legacy 字段（use_vmpc=False 时生效，传给 compress_pipeline）
     vmpc_profile: str = "mate"
     vmpc_prune_sparsity: float = 0.3
     vmpc_quantize_dtype: str = "int4"
     vmpc_use_lora: bool = True
     vmpc_distill: bool = True
+
+    # Part5K1.1: VMPC V2.0 统一开关 + V2 专属参数（use_vmpc=True 时生效，走 VSC 引擎）
+    use_vmpc: bool = True  # 默认开启 VMPC V2.0（VSC 引擎 + 强制 .vn 格式）
+    vmpc_target_ratio: float = 0.20
+    vmpc_quantize_bits: int = 4
+    vmpc_storage_weight: float = 0.3
+    vmpc_compute_weight: float = 0.4
+    vmpc_time_weight: float = 0.3
+    vmpc_force_vn_format: bool = True
+    vmpc_enable_compensation: bool = True
 
     # checkpoint 目录（Task 10 用）
     checkpoint_save_dir: str = "mf_mate"
@@ -140,11 +163,22 @@ class CometSparkMateConfig(CometSparkV05Config):
 
         # 提取 vmpc 字段到独立段
         vmpc_seg = {
+            # Part5K1.1: VMPC V2.0 统一开关（默认开启）
+            "use_vmpc": full.pop("use_vmpc", True),
+            # legacy 字段（兼容）
             "profile": full.pop("vmpc_profile", "mate"),
             "prune_sparsity": full.pop("vmpc_prune_sparsity", 0.3),
             "quantize_dtype": full.pop("vmpc_quantize_dtype", "int4"),
             "use_lora": full.pop("vmpc_use_lora", True),
             "distill": full.pop("vmpc_distill", True),
+            # Part5K1.1: V2.0 专属参数（VSC 配置）
+            "target_ratio": full.pop("vmpc_target_ratio", 0.20),
+            "quantize_bits": full.pop("vmpc_quantize_bits", 4),
+            "storage_weight": full.pop("vmpc_storage_weight", 0.3),
+            "compute_weight": full.pop("vmpc_compute_weight", 0.4),
+            "time_weight": full.pop("vmpc_time_weight", 0.3),
+            "force_vn_format": full.pop("vmpc_force_vn_format", True),
+            "enable_compensation": full.pop("vmpc_enable_compensation", True),
         }
         # 提取 checkpoint 字段到独立段
         ckpt_seg = {"save_dir": full.pop("checkpoint_save_dir", "mf_mate")}
