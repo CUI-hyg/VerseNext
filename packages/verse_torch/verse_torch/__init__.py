@@ -223,8 +223,12 @@ from .scoring import (
 )
 # Part4K2 Task 1: .vn 文件格式（safetensors 性能优化版）
 # Part5K1.1: VNCacheManager 多空间缓存
+# Part5K1.3 Task 3: .vn v2 格式（training_state / optimizer_state / extra_state）
 from .vn_format import (
     VN_FORMAT_VERSION,
+    VN_ENTRY_TRAINING_STATE,
+    VN_ENTRY_OPTIMIZER_STATE,
+    VN_ENTRY_EXTRA_STATE,
     VNFileReader,
     VNFileWriter,
     VNCacheManager,
@@ -419,8 +423,11 @@ __all__ = [
     "char_f1",
     "bleu",
     "rouge_l",
-    # vn_format（Part4K2 Task 1 / Part5K1.1 多空间缓存）
+    # vn_format（Part4K2 Task 1 / Part5K1.1 多空间缓存 / Part5K1.3 Task 3 v2）
     "VN_FORMAT_VERSION",
+    "VN_ENTRY_TRAINING_STATE",
+    "VN_ENTRY_OPTIMIZER_STATE",
+    "VN_ENTRY_EXTRA_STATE",
     "VNFileReader",
     "VNFileWriter",
     "VNCacheManager",

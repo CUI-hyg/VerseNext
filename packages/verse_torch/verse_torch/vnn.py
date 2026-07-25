@@ -16,6 +16,7 @@ Part5K1 BREAKING：本模块由 ``verse_torch.nn`` 重命名为 ``verse_torch.vn
 from __future__ import annotations
 
 import warnings
+from collections import deque
 
 import numpy as np
 
@@ -206,27 +207,52 @@ class Module:
             p.grad = None
 
     def state_dict(self) -> dict:
-        """返回参数字典：{name: Tensor}。"""
+        """返回参数字典：{name: Tensor}（迭代 BFS，避免深层模块递归爆栈）。
+
+        Part5K1.3 Task 1.3: 子模块遍历从递归 DFS 改为迭代 BFS（显式队列），
+        行为等价：返回的 state_dict 键值与原递归实现完全一致。
+        """
         sd = {}
-        for name, p in self._parameters.items():
-            sd[name] = p.data.copy()
-        for mname, m in self._modules.items():
-            m_sd = m.state_dict()
-            for k, v in m_sd.items():
-                sd[f"{mname}.{k}"] = v
+        # BFS 队列：(module, prefix)，prefix 为该 module 的键前缀
+        queue = deque([(self, "")])
+        while queue:
+            module, prefix = queue.popleft()
+            for name, p in module._parameters.items():
+                key = f"{prefix}.{name}" if prefix else name
+                sd[key] = p.data.copy()
+            for mname, m in module._modules.items():
+                child_prefix = f"{prefix}.{mname}" if prefix else mname
+                queue.append((m, child_prefix))
         return sd
 
     def load_state_dict(self, sd: dict, strict: bool = True):
-        """加载参数。"""
-        own_sd = dict(self.named_parameters_dict())
+        """加载参数（迭代 BFS，避免深层模块递归爆栈）。
+
+        Part5K1.3 Task 1.3: 子模块遍历从递归 DFS 改为迭代 BFS（显式队列），
+        行为等价：仅更新 requires_grad=True 的参数（与原实现一致）。
+        """
+        # 迭代 BFS 收集所有 requires_grad 参数 {name: Tensor}
+        own_params = {}
+        queue = deque([(self, "")])
+        while queue:
+            module, prefix = queue.popleft()
+            for name, p in module._parameters.items():
+                if p.requires_grad:
+                    key = f"{prefix}.{name}" if prefix else name
+                    own_params[key] = p
+            for mname, m in module._modules.items():
+                child_prefix = f"{prefix}.{mname}" if prefix else mname
+                queue.append((m, child_prefix))
         if strict:
-            missing = set(own_sd.keys()) - set(sd.keys())
-            extra = set(sd.keys()) - set(own_sd.keys())
+            own_keys = set(own_params.keys())
+            sd_keys = set(sd.keys())
+            missing = own_keys - sd_keys
+            extra = sd_keys - own_keys
             if missing:
                 raise KeyError(f"Missing keys: {missing}")
             if extra:
                 raise KeyError(f"Unexpected keys: {extra}")
-        for name, p in self.named_parameters_with_module():
+        for name, p in own_params.items():
             if name in sd:
                 # 直接替换 data
                 p.data = np.asarray(sd[name], dtype=p.data.dtype)

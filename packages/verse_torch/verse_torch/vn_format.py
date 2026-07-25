@@ -1,11 +1,15 @@
 """.vn 文件格式：基于 safetensors 的性能优化模型容器（Part4K2 Task 1）。
 
+Part5K1.3 Task 3 升级到 v2：支持训练状态 / 优化器状态 / 任意 Python 对象，
+用于断点续训；保持 v1 向后兼容（v1 文件读取新方法返回 None）。
+
 设计目标
 --------
 - **性能**：safetensors 可用时支持 mmap 零拷贝读取，避免 pickle 反序列化开销。
 - **优雅降级**：safetensors 不可用时自动降级为 numpy .npz（纯标准库 + numpy）。
 - **无损互转**：.vn ↔ .pt 权重数值完全一致。
 - **自描述**：meta.json 记录格式版本、架构、权重格式、压缩信息、创建时间。
+- **断点续训（v2）**：可选承载 training_state / optimizer_state / extra_state。
 
 .vn 文件结构
 ------------
@@ -16,17 +20,26 @@
 - ``chat_template.jinja``       —— 聊天模板（可选）
 - ``tokenizer.json``            —— tokenizer（可选）
 - ``meta.json``                 —— 元数据
+- ``training_state.json``       —— 训练状态（v2，可选；step/epoch/best_val_loss 等）
+- ``optimizer_state.pkl``       —— 优化器状态（v2，可选；AdamW exp_avg/exp_avg_sq 等）
+- ``extra_state.pkl``           —— 额外状态（v2，可选；用户自定义任意 Python 对象）
 
-meta.json 结构::
+meta.json 结构（v2）::
 
     {
-        "vn_format_version": 1,
+        "vn_format_version": 2,
         "arch": "versenex",
         "weight_format": "safetensors" | "npz",
         "compression_info": {...} | null,
         "created_at": "ISO8601 时间戳",
-        "weight_count": 12
+        "weight_count": 12,
+        "has_training_state": bool,    # v2 新增，默认 false
+        "has_optimizer_state": bool,   # v2 新增，默认 false
+        "has_extra_state": bool        # v2 新增，默认 false
     }
+
+v1 文件的 meta.json 不含 ``vn_format_version`` 字段（读取时默认 1），
+也不含 ``has_*`` 字段（读取时默认 False / None）。
 
 智能压缩存储
 ------------
@@ -38,9 +51,11 @@ meta.json 结构::
 
 安全性
 ------
-- 读取时校验 ``meta.json`` 的 ``vn_format_version``，仅支持版本 1。
+- 读取时校验 ``meta.json`` 的 ``vn_format_version``，支持 1（v1）与 2（v2）。
 - npz 路径用 ``np.lib.format`` 显式 ``allow_pickle=False``，杜绝 pickle 反序列化攻击。
 - safetensors 本身即 pickle-free。
+- v2 的 ``optimizer_state.pkl`` / ``extra_state.pkl`` 使用 pickle，
+  **仅用于可信来源的断点续训**（与 PyTorch ``torch.save`` 同等信任级别）。
 """
 
 from __future__ import annotations
@@ -48,6 +63,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import pickle
 import tempfile
 import zipfile
 from datetime import datetime
@@ -80,7 +96,12 @@ except Exception:  # pragma: no cover
 # 常量
 # ---------------------------------------------------------------------------
 
-VN_FORMAT_VERSION = 1
+VN_FORMAT_VERSION = 2
+
+# Part5K1.3 Task 3.1: v2 新增条目名
+VN_ENTRY_TRAINING_STATE = "training_state.json"
+VN_ENTRY_OPTIMIZER_STATE = "optimizer_state.pkl"
+VN_ENTRY_EXTRA_STATE = "extra_state.pkl"
 
 _META_NAME = "meta.json"
 _CONFIG_NAME = "config.yml"
@@ -93,6 +114,70 @@ _WEIGHTS_NPZ_NAME = "model.npz"
 def has_safetensors() -> bool:
     """返回当前环境是否可用 safetensors。"""
     return _HAS_SAFETENSORS
+
+
+# ---------------------------------------------------------------------------
+# Part5K1.3 Task 3.2: _VNEntry 抽象 —— 统一管理 ZIP 内条目
+# ---------------------------------------------------------------------------
+
+
+class _VNEntry:
+    """ZIP 内单条目的写入/读取辅助（Part5K1.3 Task 3.2）。
+
+    统一管理 JSON / pickle 序列化的 ZIP 条目，减少 :class:`VNFileWriter` /
+    :class:`VNFileReader` 中重复的 ``writestr`` / ``open`` 模板代码。
+
+    - ``binary=False``：JSON 序列化（dict / list / 基础类型），utf-8 编码
+    - ``binary=True``：pickle 序列化（任意 Python 对象，protocol=4）
+
+    weights 与 config 走特殊路径（safetensors / npz / yaml），不通过此抽象。
+
+    Args:
+        name: ZIP 内条目名（如 ``"training_state.json"``）
+        binary: True 用 pickle（承载任意 Python 对象），False 用 JSON
+    """
+
+    def __init__(self, name: str, binary: bool = False):
+        self.name = name
+        self.binary = binary
+
+    def serialize(self, data: Any) -> bytes:
+        """把 data 序列化为 bytes。"""
+        if self.binary:
+            return pickle.dumps(data, protocol=4)
+        return json.dumps(
+            data, ensure_ascii=False, indent=2, default=str
+        ).encode("utf-8")
+
+    def deserialize(self, raw: bytes) -> Any:
+        """从 bytes 反序列化为 Python 对象。"""
+        if self.binary:
+            return pickle.loads(raw)
+        return json.loads(raw.decode("utf-8"))
+
+    def write(self, zf: zipfile.ZipFile, data: Any) -> None:
+        """把 data 序列化后写入 ZIP 条目。"""
+        zf.writestr(self.name, self.serialize(data))
+
+    def read(self, zf: zipfile.ZipFile) -> Any:
+        """从 ZIP 读取并反序列化条目。"""
+        with zf.open(self.name) as f:
+            return self.deserialize(f.read())
+
+    def exists(self, zf: zipfile.ZipFile) -> bool:
+        """判断条目是否存在于 ZIP。"""
+        try:
+            return self.name in zf.namelist()
+        except Exception:
+            return False
+
+
+# 全局 entry 实例（统一管理 ZIP 条目，减少重复模板代码）
+_META_ENTRY = _VNEntry(_META_NAME, binary=False)
+_TOKENIZER_ENTRY = _VNEntry(_TOKENIZER_NAME, binary=False)
+_TRAINING_STATE_ENTRY = _VNEntry(VN_ENTRY_TRAINING_STATE, binary=False)
+_OPTIMIZER_STATE_ENTRY = _VNEntry(VN_ENTRY_OPTIMIZER_STATE, binary=True)
+_EXTRA_STATE_ENTRY = _VNEntry(VN_ENTRY_EXTRA_STATE, binary=True)
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +303,10 @@ class VNFileWriter:
         self._weight_count: int = 0
         self._collected_compression_info: Optional[dict] = None
         self._written: set = set()
+        # Part5K1.3 Task 3.3-3.5: 训练/优化器/额外状态写入标志（close 时写入 meta）
+        self._has_training_state: bool = False
+        self._has_optimizer_state: bool = False
+        self._has_extra_state: bool = False
 
         os.makedirs(os.path.dirname(os.path.abspath(self.path)) or ".", exist_ok=True)
         # ZIP_DEFLATED 提供较好压缩比；权重本身已是二进制，主要压缩 config/meta
@@ -314,15 +403,74 @@ class VNFileWriter:
             with open(tokenizer, "rb") as f:
                 self._zf.writestr(_TOKENIZER_NAME, f.read())
         elif isinstance(tokenizer, dict):
-            self._zf.writestr(
-                _TOKENIZER_NAME,
-                json.dumps(tokenizer, ensure_ascii=False, indent=2, default=str),
-            )
+            _TOKENIZER_ENTRY.write(self._zf, tokenizer)
         else:
             raise TypeError(
                 f"tokenizer 必须是路径(str/PathLike)或 dict，得到 {type(tokenizer)}"
             )
         self._written.add(_TOKENIZER_NAME)
+
+    # ------------------------------------------------------------------
+    # Part5K1.3 Task 3.3-3.5: 训练/优化器/额外状态写入（v2 新增）
+    # ------------------------------------------------------------------
+
+    def write_training_state(self, state: dict) -> None:
+        """写入训练状态到 ``training_state.json``（Part5K1.3 Task 3.3）。
+
+        用于断点续训：记录当前训练进度，便于后续恢复。JSON-able dict。
+
+        Args:
+            state: JSON-able dict，建议包含字段：
+                - ``step``: 当前训练步数（int）
+                - ``epoch``: 当前 epoch（int）
+                - ``best_val_loss``: 历史最佳验证 loss（float）
+                - ``patience_count``: early stopping 计数（int）
+                - ``rng_state_hex``: 随机数生成器状态（hex 字符串）
+                - ``config_snapshot_hash``: 配置快照哈希（用于校验一致性）
+        """
+        if VN_ENTRY_TRAINING_STATE in self._written:
+            raise RuntimeError("training_state 已写入")
+        if not isinstance(state, dict):
+            raise TypeError(
+                f"training_state 必须是 dict，得到 {type(state)}"
+            )
+        _TRAINING_STATE_ENTRY.write(self._zf, state)
+        self._written.add(VN_ENTRY_TRAINING_STATE)
+        self._has_training_state = True
+
+    def write_optimizer_state(self, state: dict) -> None:
+        """写入优化器状态到 ``optimizer_state.pkl``（Part5K1.3 Task 3.4）。
+
+        承载任意 Python 对象（pickle 序列化），用于断点续训恢复 optimizer。
+        典型内容：AdamW 的 ``exp_avg`` / ``exp_avg_sq``（numpy 数组）、
+        ``step``（int）、scheduler state（嵌套 dict）等。
+
+        Args:
+            state: 任意 dict（值可以是 numpy 数组 / 嵌套 dict / 自定义对象等）
+        """
+        if VN_ENTRY_OPTIMIZER_STATE in self._written:
+            raise RuntimeError("optimizer_state 已写入")
+        if not isinstance(state, dict):
+            raise TypeError(
+                f"optimizer_state 必须是 dict，得到 {type(state)}"
+            )
+        _OPTIMIZER_STATE_ENTRY.write(self._zf, state)
+        self._written.add(VN_ENTRY_OPTIMIZER_STATE)
+        self._has_optimizer_state = True
+
+    def write_extra_state(self, state: Any) -> None:
+        """写入额外状态到 ``extra_state.pkl``（Part5K1.3 Task 3.5）。
+
+        承载用户自定义的任意 Python 对象（pickle 序列化）。
+
+        Args:
+            state: 任意 Python 对象（dict / list / 自定义类实例等）
+        """
+        if VN_ENTRY_EXTRA_STATE in self._written:
+            raise RuntimeError("extra_state 已写入")
+        _EXTRA_STATE_ENTRY.write(self._zf, state)
+        self._written.add(VN_ENTRY_EXTRA_STATE)
+        self._has_extra_state = True
 
     # ------------------------------------------------------------------
     # 完成
@@ -339,12 +487,13 @@ class VNFileWriter:
             "compression_info": self._collected_compression_info,
             "created_at": datetime.now().isoformat(timespec="seconds"),
             "weight_count": self._weight_count,
+            # Part5K1.3 Task 3.6: v2 新增字段（默认 False，未调用对应 write 方法时）
+            "has_training_state": self._has_training_state,
+            "has_optimizer_state": self._has_optimizer_state,
+            "has_extra_state": self._has_extra_state,
         }
-        self._zf.writestr(
-            _META_NAME,
-            json.dumps(meta, ensure_ascii=False, indent=2, default=str),
-        )
-        # config.yml
+        _META_ENTRY.write(self._zf, meta)
+        # config.yml 走 yaml 路径，不用 _VNEntry
         self._zf.writestr(_CONFIG_NAME, _dump_yaml_text(self.config))
         self._zf.close()
         self._zf = None
@@ -396,6 +545,8 @@ class VNFileReader:
         self._zf = zipfile.ZipFile(self.path, "r")
         self._names = set(self._zf.namelist())
         self._meta: Optional[dict] = None
+        # Part5K1.3 Task 3.7: v1/v2 自动识别（默认 1，read_meta 后更新）
+        self.vn_format_version: int = 1
         # 权重临时文件（safetensors mmap / npz 落盘时使用），close 时清理
         self._weight_tmp_path: Optional[str] = None
 
@@ -404,18 +555,22 @@ class VNFileReader:
     # ------------------------------------------------------------------
 
     def read_meta(self) -> dict:
-        """读取并校验 meta.json。"""
+        """读取并校验 meta.json。
+
+        Part5K1.3 Task 3.7：自动识别 v1/v2（基于 ``vn_format_version`` 字段）。
+        v1 文件无此字段，默认 1；v2 文件为 2。其他版本抛 ValueError。
+        """
         if self._meta is not None:
             return self._meta
-        if _META_NAME not in self._names:
+        if not _META_ENTRY.exists(self._zf):
             raise ValueError(f".vn 文件缺少 {_META_NAME}：{self.path}")
-        with self._zf.open(_META_NAME) as f:
-            meta = json.loads(f.read().decode("utf-8"))
-        version = meta.get("vn_format_version")
-        if version != VN_FORMAT_VERSION:
+        meta = _META_ENTRY.read(self._zf)
+        version = meta.get("vn_format_version", 1)
+        if version not in (1, 2):
             raise ValueError(
-                f"不支持的 .vn 格式版本：期望 {VN_FORMAT_VERSION}，得到 {version}"
+                f"不支持的 .vn 格式版本：期望 1 或 2，得到 {version}"
             )
+        self.vn_format_version = version
         self._meta = meta
         return meta
 
@@ -520,10 +675,76 @@ class VNFileReader:
 
     def read_tokenizer(self) -> Optional[dict]:
         """读取 tokenizer.json 为 dict；不存在则返回 None。"""
-        if _TOKENIZER_NAME not in self._names:
+        if not _TOKENIZER_ENTRY.exists(self._zf):
             return None
-        with self._zf.open(_TOKENIZER_NAME) as f:
-            return json.loads(f.read().decode("utf-8"))
+        return _TOKENIZER_ENTRY.read(self._zf)
+
+    # ------------------------------------------------------------------
+    # Part5K1.3 Task 3.8: 训练/优化器/额外状态读取（v2 新增）
+    # ------------------------------------------------------------------
+
+    def read_training_state(self) -> Optional[dict]:
+        """读取 ``training_state.json``；不存在则返回 None（Part5K1.3 Task 3.8）。
+
+        返回 None 的几种情况：
+        - v1 文件（``vn_format_version < 2``）
+        - v2 文件但 ``has_training_state=False``（未调用 write_training_state）
+        - v2 文件且 ``has_training_state=True`` 但 ZIP 内条目缺失
+          （FileNotFoundError / KeyError）
+        """
+        meta = self.read_meta()
+        if meta.get("vn_format_version", 1) < 2:
+            return None
+        if not meta.get("has_training_state", False):
+            return None
+        if not _TRAINING_STATE_ENTRY.exists(self._zf):
+            return None
+        try:
+            return _TRAINING_STATE_ENTRY.read(self._zf)
+        except (FileNotFoundError, KeyError):
+            return None
+
+    def read_optimizer_state(self) -> Optional[dict]:
+        """读取 ``optimizer_state.pkl``；不存在则返回 None（Part5K1.3 Task 3.8）。
+
+        返回 None 的几种情况：
+        - v1 文件（``vn_format_version < 2``）
+        - v2 文件但 ``has_optimizer_state=False``（未调用 write_optimizer_state）
+        - v2 文件且 ``has_optimizer_state=True`` 但 ZIP 内条目缺失
+          （FileNotFoundError / KeyError）
+        """
+        meta = self.read_meta()
+        if meta.get("vn_format_version", 1) < 2:
+            return None
+        if not meta.get("has_optimizer_state", False):
+            return None
+        if not _OPTIMIZER_STATE_ENTRY.exists(self._zf):
+            return None
+        try:
+            return _OPTIMIZER_STATE_ENTRY.read(self._zf)
+        except (FileNotFoundError, KeyError):
+            return None
+
+    def read_extra_state(self) -> Optional[Any]:
+        """读取 ``extra_state.pkl``；不存在则返回 None（Part5K1.3 Task 3.8）。
+
+        返回 None 的几种情况：
+        - v1 文件（``vn_format_version < 2``）
+        - v2 文件但 ``has_extra_state=False``（未调用 write_extra_state）
+        - v2 文件且 ``has_extra_state=True`` 但 ZIP 内条目缺失
+          （FileNotFoundError / KeyError）
+        """
+        meta = self.read_meta()
+        if meta.get("vn_format_version", 1) < 2:
+            return None
+        if not meta.get("has_extra_state", False):
+            return None
+        if not _EXTRA_STATE_ENTRY.exists(self._zf):
+            return None
+        try:
+            return _EXTRA_STATE_ENTRY.read(self._zf)
+        except (FileNotFoundError, KeyError):
+            return None
 
     # ------------------------------------------------------------------
     # 关闭
@@ -972,6 +1193,9 @@ class VNCacheManager:
 
 __all__ = [
     "VN_FORMAT_VERSION",
+    "VN_ENTRY_TRAINING_STATE",
+    "VN_ENTRY_OPTIMIZER_STATE",
+    "VN_ENTRY_EXTRA_STATE",
     "VNFileWriter",
     "VNFileReader",
     "VNCacheManager",

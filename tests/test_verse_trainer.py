@@ -813,8 +813,9 @@ class TestParallelTrainerSafe:
         assert "train_loss" in history
         assert "val_loss" in history
         assert trainer.best_val_loss < float("inf")
-        # resume.pt 应被保存
-        assert os.path.exists(os.path.join(ckpt_dir, "resume.pt"))
+        # Part5K1.3 Task 6.6: ParallelTrainerSafe._save_resume_state 改用 .vn
+        # （via ResumeManager.save），resume.pt 不再写出，应检查 resume.vn
+        assert os.path.exists(os.path.join(ckpt_dir, "resume.vn"))
 
 
 # ===========================================================================

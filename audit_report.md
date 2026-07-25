@@ -814,3 +814,95 @@ Part4K2.5 Task 7 文档与清理工作完成：
 4. **.gitignore 补全**：新增 3 条必要条目，未添加不必要条目。
 
 **VerseNext 框架 Part4K2.5 紧急优化文档与清理审计通过。**
+
+---
+
+## Part5K1.3 升级审计补充（2026-07-25）
+
+> 审计范围：Part5K1.3 漏洞修复 + 原生 .vn v2 + Gigatoken 默认 + NPU CANN / AMD ROCm 兼容（Task 1~11 功能任务全部完成，Task 12 文档并行进行，Task 13 综合验收）
+> 审计基线：`pytest tests/` → **1681 collected，1627 passed，45 skipped，9 failed**（分批运行，沙箱 5.8GB 内存限制下需分批避免 OOM；9 个失败均为 test_auto_eval.py 同一功能 bug）
+> 新增测试：7 个测试文件 / 218 个测试用例（全部通过，含 11 skipped 为 GPU/ROCm/CANN 相关）
+> 修改文件：22 个；新增文件：13 个（含 7 测试 + 1 giga.py + 3 ADR + spec 目录）
+
+### Part5K1.3 变更摘要
+
+| 任务 | 内容 | 状态 |
+|---|---|---|
+| Task 1 | 并行训练递归修复（`vnn.state_dict` 迭代 BFS + `pickle` 替代 `deepcopy` + `RecursionError` 兜底） | ✅ 完成 |
+| Task 2 | CheckpointManager 原子写（`.tmp` + `os.replace`）+ `format` / `use_vmpc` 参数 | ✅ 完成 |
+| Task 3 | VN v2 格式（`training_state.json` / `optimizer_state.pkl` / `extra_state.pkl` + v1 兼容） | ✅ 完成 |
+| Task 4 | CheckpointManager 原生 .vn 集成（`save_best` / `load_best` 走 VNFileWriter / VNFileReader） | ✅ 完成 |
+| Task 5 | CometSparkNexLM 原生 .vn 适配（`save(format="vn"\|"pt")` + `from_pretrained` 三种输入识别） | ✅ 完成 |
+| Task 6 | ResumeManager 断点续训（`ResumeState` namedtuple + `save` / `load` / `apply` + `.vn` 优先 `.pt` 回退） | ✅ 完成 |
+| Task 7 | GigaTokenizerWrapper 适配器（lazy import + `gt.Tokenizer(hf).as_hf()` 兼容模式 + 不可用降级到 VerseTokenizer） | ✅ 完成 |
+| Task 8 | Gigatoken 设为默认（small / mate yml `tokenizer.kind: giga` + `[giga]` extras + 自动降级） | ✅ 完成 |
+| Task 9 | device.py ROCm / CANN 探测（`has_rocm` / `get_rocm_version` / `has_cann` / `get_cann_version` + `rocm:0` 解析） | ✅ 完成 |
+| Task 10 | backend_torch.py TorchBackend 兼容（`rocm` → `cuda` 内部映射 + autocast 等价 + NPU 首次启用日志） | ✅ 完成 |
+| Task 11 | spark/run.py CLI 兼容（`--device rocm\|npu\|cuda\|cpu` + `_print_device_info` 启动诊断） | ✅ 完成 |
+| Task 12 | ADR + 文档更新（adr-017 / adr-018 / adr-019 + README + training_guide） | ⏳ 并行进行 |
+| Task 13 | 全量测试 + 综合验收（本任务） | ✅ 完成 |
+
+### 关键验收项
+
+1. **关键导入验证** ✅：`import verse_torch` / `from verse_torch.vn_format import VNFileWriter, VNFileReader, VN_FORMAT_VERSION`（==2）/ `from verse_torch.training import CheckpointManager, ResumeManager, ResumeState` / `from verse_infra.verse_tokenizer import GigaTokenizerWrapper` / `from verse_torch.device import has_rocm, get_rocm_version, has_cann, get_cann_version` 全部通过；探测函数在无 torch / 无 ROCm / 无 NPU 环境下返回 `False` / `None` 不抛异常
+2. **CLI 端到端** ✅：
+   - `spark/run.py train --model small --dry-run` → 退出码 0，配置可解析，`_print_device_info` 输出 CPU 模式
+   - `spark/run.py train --model small --device rocm --dry-run` → 退出码 0，`rocm` 字符串识别（无 "invalid device" 错误），`_print_device_info` 探测失败但不中断
+   - `spark/run.py continue --model small --checkpoint best.vn --help` → 退出码 0，参数解析正常（支持 `--checkpoint` / `--device rocm` / `--dry-run`）
+3. **60+ 层递归修复端到端** ✅：由 `tests/test_parallel_recursion_fix.py` 覆盖（18 测试全通过），60+ 层 VerseNex + ParallelTrainerSafe + chunk_id=-999 路径不触发 RecursionError，val_loss 收敛
+4. **v1 向后兼容** ✅：手工构造 v1 `.vn` 文件（无 `vn_format_version` 字段）可被 v2 `VNFileReader` 加载，`read_optimizer_state()` / `read_training_state()` / `read_extra_state()` 均返回 `None`，权重数值 float32 吻合 1e-6
+5. **新增 7 个测试文件** ✅：`test_parallel_recursion_fix` / `test_vn_v2_format` / `test_resume_manager` / `test_giga_tokenizer` / `test_rocm_npu_compat` / `test_checkpoint_atomic` / `test_checkpoint_vn` 共 218 测试用例全通过
+
+### 已知问题（Part5K1.3 功能 bug，不在 Task 13 修复范围）
+
+**Bug 1：`trainer.py:1500` 调用 `model.save(full_model_path)` 未指定 `format`，导致 .vn 写入 .pt 路径**
+
+- 影响测试：`tests/test_auto_eval.py` 9 个测试失败（`TestTrainAutoEval` 3 + `TestAutoEvaluateUnit` 4 + `TestEvaluateFromTrainResult` 2）
+- 根因：Part5K1.3 Task 5.1 把 `CometSparkNexLM.save()` 默认 `format` 从 `"pt"` 改为 `"vn"`，但 `verse_infra/verse_trainer/trainer.py:1497-1500` 仍以 `full_model_path = os.path.join(save_dir, "cometspark.pt")` + `model.save(full_model_path)` 调用，未显式传 `format="pt"`，导致实际写入 ZIP（.vn 格式）到 `.pt` 路径
+- 加载失败现象：`_load_model_for_eval` 在策略 3 走 `pickle.load(f)` 时把 ZIP magic `PK\x03\x04` 当 pickle protocol 0 opcode 解析，`P`(0x50)=PERSID + `K`(0x4b)=BININT → 抛 `UnpicklingError: persistent IDs in protocol 0 must be ASCII strings`
+- 复现：`git stash`（恢复 Part5K1.3 前）后 `pytest tests/test_auto_eval.py` → 28 passed；恢复后 9 failed
+- 建议修复方案（任选其一）：
+  - 方案 A：`trainer.py:1500` 改为 `model.save(full_model_path, format="pt")`（保持 .pt 向后兼容，最小改动）
+  - 方案 B：把 `full_model_path` 改为 `cometspark.vn`，并把 `_load_model_for_eval` 的策略 1/2/3 优先识别 `.vn` 扩展名（更彻底，但需同步调整 `continue_train` / `evaluate_from_train_result` 的路径推断）
+- 注：本任务约束为「不修改功能代码」，已将该 bug 报告给主代理处理
+
+### 测试修复（Task 13 范围内）
+
+- `tests/test_verse_trainer.py::TestParallelTrainerSafe::test_fit_with_safe_chunks`：原断言 `os.path.exists(.../resume.pt)`，但 Part5K1.3 Task 6.6 把 `ParallelTrainerSafe._save_resume_state` 改为写 `.vn`（`path` 若以 `.pt` 结尾自动改为 `.vn`），已修复断言为 `resume.vn`（属测试本身 bug，硬编码过时）
+
+### 向后兼容性验证
+
+| 场景 | 验证结果 |
+|---|---|
+| Part5K1 写出的 v1 `.vn` 文件可被 v2 `VNFileReader` 加载 | ✅ `read_optimizer_state` / `read_training_state` / `read_extra_state` 返回 None |
+| 旧 `CheckpointManager(save_dir)` 调用（不传 `format`）行为不变 | ✅ 默认 `auto` → `use_vmpc=False` → `pt`，由 `test_checkpoint_atomic.py::test_default_no_format_args_backward_compat` 覆盖 |
+| 旧 `CometSparkNexLM.save(path)` 调用（不传 `format`）默认走 `"vn"` | ⚠️ 行为变化（设计如此），`.pt` 路径可通过 `format="pt"` 显式调用；**但 `trainer.py:1500` 未同步更新，导致 `train()` 写出的 `cometspark.pt` 实际是 .vn 格式（见已知问题 Bug 1）** |
+| 旧 `ParallelTrainerSafe._save_resume_state` 写出的 `.pkl` 可被新 `_load_resume_state` 兼容读取 | ✅ 由 `test_resume_manager.py` 覆盖（`.vn` 优先，不存在时回退 `.pt`） |
+| 旧 `spark/run.py` 命令（不带 `--device`）默认 CPU 路径不变 | ✅ `--device` 默认 None → auto → CPU，由 `test_rocm_npu_compat.py::test_train_dry_run_no_device_no_regression` 覆盖 |
+| 旧 `load_tokenizer(kind="byte"\|"bpe"\|"hf")` 调用行为不变 | ✅ 由 `test_giga_tokenizer.py::test_byte_kind_unchanged` / `test_existing_tokenizers_still_importable` 覆盖 |
+
+### 不重复造轮子约束验证
+
+| 约束 | 验证结果 |
+|---|---|
+| 未修改 gigatoken 源码（仅做 wrapper 适配） | ✅ `giga.py` 仅 import gigatoken 库，未修改其源码 |
+| 未自研 ROCm kernel（所有 GPU 计算走 PyTorch 原生） | ✅ `device.py` / `backend_torch.py` 仅做 device 字符串映射，未实现 kernel |
+| 未自研 CANN kernel（NPU 计算走 `torch_npu`） | ✅ 同上 |
+| 未重新实现 BPE/Unigram（gigatoken 兼容模式下复用其 Rust 实现） | ✅ `GigaTokenizerWrapper` 用 `gt.Tokenizer(hf_tokenizer).as_hf()` 兼容模式 |
+| 未重新实现 pickle 序列化（`optimizer_state.pkl` / `extra_state.pkl` 直接用 `pickle`） | ✅ `vn_format.py` 直接 `pickle.dump` / `pickle.load` |
+| `CheckpointManager` 保留 `format="pt"` 路径（向后兼容，未删除 .pt 能力） | ✅ 由 `test_checkpoint_atomic.py::test_format_pt_explicit` 覆盖 |
+| `VerseTokenizer` 未删除（保留向后兼容，仅在默认路径让位给 gigatoken） | ✅ `verse.py` 保留，`load_tokenizer(kind="verse")` 仍可用 |
+
+### 综合验收结论
+
+Part5K1.3 升级综合验收通过：
+
+1. **关键导入验证**：所有新增 API（VNFileWriter / VNFileReader / VN_FORMAT_VERSION=2 / CheckpointManager / ResumeManager / ResumeState / GigaTokenizerWrapper / has_rocm / has_cann 等）均可正常导入
+2. **端到端验证**：`spark/run.py train --dry-run` / `--device rocm --dry-run` / `continue --help` 全部退出码 0
+3. **60+ 层递归修复**：`test_parallel_recursion_fix.py` 18 测试全通过
+4. **v1 向后兼容**：v1 `.vn` 文件可被 v2 reader 加载，新方法返回 None
+5. **新增测试**：7 个测试文件 / 218 测试用例全通过（11 skipped 为 GPU/ROCm/CANN 环境相关）
+6. **已知功能 bug**：`trainer.py:1500` 未同步 Part5K1.3 Task 5.1 的 `save()` 默认 format 变更，导致 `test_auto_eval.py` 9 测试失败（已报告主代理，建议方案 A：`model.save(full_model_path, format="pt")`）
+7. **测试修复**：`test_verse_trainer.py::test_fit_with_safe_chunks` 断言 `resume.pt` → `resume.vn`（适应 Task 6.6 变更）
+
+**VerseNext 框架 Part5K1.3 升级综合验收通过（除 1 个集成 bug 待主代理修复外，所有 SubTask 13.1~13.8 验收项均通过）。**

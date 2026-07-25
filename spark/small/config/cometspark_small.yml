@@ -101,7 +101,10 @@ training:
   parallel_chunks: 1
 
 tokenizer:
-  kind: byte
+  # Part5K1.3 Task 8.1: 默认 gigatoken（高速 Tokenizer）
+  # 未安装 gigatoken 时，bpe.load_tokenizer(kind="giga") 会自动降级到 VerseTokenizer
+  # （打印降级警告），保持向后兼容。需要 BPE 调试时显式改回 "byte"。
+  kind: giga
   vocab_size: 259
 
 data:

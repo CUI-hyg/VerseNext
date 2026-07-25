@@ -200,7 +200,11 @@ class VerseNexTrainer:
         self.grad_accum = GradientAccumulator(
             micro_batch=1, effective_batch=self.grad_accum_n
         )
-        self.checkpoint = CheckpointManager(self.save_dir)
+        self.checkpoint = CheckpointManager(
+            self.save_dir,
+            format="auto",
+            use_vmpc=bool(_cfg_get(cfg, "use_vmpc", False)),
+        )
 
         # 是否启用 aux 路径
         self.use_aux = _model_has_aux(model)
@@ -1111,7 +1115,11 @@ class DPOTrainer:
         self.grad_accum = GradientAccumulator(
             micro_batch=1, effective_batch=self.grad_accum_n,
         )
-        self.checkpoint = CheckpointManager(self.save_dir)
+        self.checkpoint = CheckpointManager(
+            self.save_dir,
+            format="auto",
+            use_vmpc=bool(_cfg_get(cfg, "use_vmpc", False)),
+        )
 
         # 历史
         self.train_losses: list[float] = []

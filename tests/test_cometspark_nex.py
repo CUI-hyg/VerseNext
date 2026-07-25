@@ -288,7 +288,12 @@ def test_generate_appends_eos_when_specified():
 
 
 def test_save_load_single_file():
-    """save → load 单文件 roundtrip。"""
+    """save → load 单文件 roundtrip（.pt pickle 路径）。
+
+    Part5K1.3 Task 5.6：``save`` 默认 format 改为 ``"vn"`` 后，本测试显式指定
+    ``format="pt"`` 以覆盖 pickle 路径的 roundtrip（``load`` 方法仅支持 .pt）。
+    .vn 路径的 roundtrip 由 ``test_save_vn_from_pretrained_roundtrip`` 覆盖。
+    """
     model = _tiny_model()
     model.eval()
     idx = np.array([[1, 2, 3]], dtype=np.int64)
@@ -297,7 +302,7 @@ def test_save_load_single_file():
 
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "model.pt")
-        model.save(path)
+        model.save(path, format="pt")
         # 新模型 load
         model2 = _tiny_model()
         model2.load(path)

@@ -64,6 +64,7 @@ __all__ = [
     "BaseTokenizer", "BPETokenizer", "CharTokenizer", "ByteTokenizer",
     "WordPieceTokenizer", "SentencePieceUnigramTokenizer", "VerseTokenizer",
     "QwenTokenizer", "load_tokenizer", "NexTokenizerWrapper",
+    "GigaTokenizerWrapper",  # Part5K1.3 Task 7: gigatoken 包装器
     "nfkc_normalize", "pre_tokenize", "trim_to_utf8_boundary",
     "render_chat", "render_prompt", "split_prompt_completion",
     "SpecialTokens", "QWEN_IM_START", "QWEN_IM_END", "QWEN_ENDOFTEXT",
