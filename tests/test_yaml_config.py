@@ -5,7 +5,7 @@
 2. 多行字符串 ``|``（literal）与 ``>``（folded）正确解析
 3. 引号转义（含 ``:`` 的值用引号包裹后正确解析为 str）
 4. 数值类型 int / float / bool / None 正确解析
-5. 向后兼容：现有 ``spark/config/cometspark_v05_small.yml`` 仍能正确加载
+5. 向后兼容：现有 ``spark/small/config/cometspark_small.yml`` 仍能正确加载
 6. ``save_full_config`` + ``load_full_config`` 往返一致（含 list / 中文）
 7. 无 PyYAML 时 fallback 路径仍可解析标量子集（不失败）
 
@@ -32,8 +32,8 @@ for _pkg in ("verse_torch", "verse_nex", "verse_infra"):
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from spark.model import config as cfg_module  # noqa: E402
-from spark.model.config import load_full_config, save_full_config, CometSparkV05Config as CometSparkConfig  # noqa: E402
+from spark.src import base_config as cfg_module  # noqa: E402
+from spark.src.base_config import load_full_config, save_full_config, CometSparkV05Config as CometSparkConfig  # noqa: E402
 
 _HAS_YAML = cfg_module._HAS_YAML
 
@@ -80,8 +80,8 @@ training:
 """
 
 
-# Part4K1 Task 8.9: 使用 spark/config/cometspark_v05_small.yml 替代 data/demo/config/config.yml
-_CONFIG_YML = _SPARK_DIR / "config" / "cometspark_v05_small.yml"
+# Part5K1.1：旧 spark/config/ 已删除，使用 spark/small/config/cometspark_small.yml
+_CONFIG_YML = _SPARK_DIR / "small" / "config" / "cometspark_small.yml"
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +207,7 @@ def test_scalar_types_always_supported():
 # ---------------------------------------------------------------------------
 
 def test_existing_config_yml_loads():
-    """现有 ``spark/config/cometspark_v05_small.yml`` 在两种模式下均应成功加载，且 model 段字段类型正确。"""
+    """现有 ``spark/small/config/cometspark_small.yml`` 在两种模式下均应成功加载，且 model 段字段类型正确。"""
     cfg = load_full_config(str(_CONFIG_YML))
     assert "model" in cfg
     assert "training" in cfg

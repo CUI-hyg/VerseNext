@@ -56,9 +56,27 @@ from . import training
 from . import quantize
 from . import parallel
 from . import compress
-# Part5K1 Task 3：VMPC（VerseNext Model Parameters Compression）V1.5 门面
+# Part5K1.1：VMPC V2.0 门面（VN + 传统技术 + VSC）+ VSC 引擎
 from . import vmpc
-from .vmpc import VMPCRegularizer, vmpc_compress
+from . import vsc
+from .vmpc import (
+    VMPCRegularizer,
+    vmpc_compress,
+    VMPCConfig,
+    VMPCV2,
+    VMPCStats,
+    VMPC_PROFILE_SMALL,
+    VMPC_PROFILE_MATE,
+)
+from .vsc import (
+    VSCProfile,
+    VSCPlan,
+    VSCEngine,
+    VSCStats,
+    vsc_profile,
+    vsc_plan,
+    vsc_compress,
+)
 from .parallel import (
     parallel_matmul,
     ParallelLinear,
@@ -204,10 +222,12 @@ from .scoring import (
     rouge_l,
 )
 # Part4K2 Task 1: .vn 文件格式（safetensors 性能优化版）
+# Part5K1.1: VNCacheManager 多空间缓存
 from .vn_format import (
     VN_FORMAT_VERSION,
     VNFileReader,
     VNFileWriter,
+    VNCacheManager,
     pt_to_vn,
     vn_to_pt,
     convert_format,
@@ -374,10 +394,24 @@ __all__ = [
     "compress_count_parameters",
     "count_nonzero_params",
     "compute_compressed_bits",
-    # vmpc（Part5K1 Task 3：VMPC V1.5 门面）
+    # vmpc（Part5K1.1：VMPC V2.0 门面 = VN + 传统技术 + VSC）
     "vmpc",
     "VMPCRegularizer",
     "vmpc_compress",
+    "VMPCConfig",
+    "VMPCV2",
+    "VMPCStats",
+    "VMPC_PROFILE_SMALL",
+    "VMPC_PROFILE_MATE",
+    # vsc（Part5K1.1：VSC 空间压缩引擎）
+    "vsc",
+    "VSCProfile",
+    "VSCPlan",
+    "VSCEngine",
+    "VSCStats",
+    "vsc_profile",
+    "vsc_plan",
+    "vsc_compress",
     # scoring 函数/类
     "ScoringEvaluator",
     "exact_match",
@@ -385,10 +419,11 @@ __all__ = [
     "char_f1",
     "bleu",
     "rouge_l",
-    # vn_format（Part4K2 Task 1）
+    # vn_format（Part4K2 Task 1 / Part5K1.1 多空间缓存）
     "VN_FORMAT_VERSION",
     "VNFileReader",
     "VNFileWriter",
+    "VNCacheManager",
     "pt_to_vn",
     "vn_to_pt",
     "convert_format",

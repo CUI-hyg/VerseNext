@@ -507,7 +507,7 @@ class TestDualModelDifferences:
 
     def test_both_inherit_from_v05_lm(self):
         """Small 和 Mate 都继承自 CometSparkV05LM（基于 CometSparkNexLM）。"""
-        from spark.model.model import CometSparkV05LM
+        from spark.src.base_model import CometSparkV05LM
         from spark.small.model import CometSparkSmallLM
         from spark.mate.model import CometSparkMateLM
 

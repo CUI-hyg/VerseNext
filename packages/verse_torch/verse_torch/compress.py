@@ -282,19 +282,19 @@ class LoRALinear(nn.Module):
 
 
 class KnowledgeDistiller:
-    """知识蒸馏器（VMPC V1.5）：大模型 → 小模型能力转移（以小博大）。
+    """知识蒸馏器（V1.5（legacy））：大模型 → 小模型能力转移（以小博大）。
 
-    VMPC V1.3 损失 = alpha * T^2 * KL(teacher/T || student/T)     # 软标签蒸馏
+    V1.3（legacy） 损失 = alpha * T^2 * KL(teacher/T || student/T)     # 软标签蒸馏
               + (1 - alpha) * CE(student, labels)            # 硬标签蒸馏
               + feature_loss_weight * MSE(student_feat, teacher_feat)  # 中间层特征匹配
 
-    VMPC V1.5 增强点（在 VMPC V1.3 基础上）：
+    V1.5（legacy） 增强点（在 V1.3（legacy） 基础上）：
     - **对比蒸馏**（contrastive distillation）：基于 margin ranking loss，
       确保 student 与 teacher 的 top-k token 排序一致（``distill_contrastive`` +
       ``contrastive_loss_weight``）。优化推理命中率与质量，避免过拟合。
     - 推理侧配合 ``logit_calibration``（在 CometSparkNexLM.generate 中应用）。
 
-    VMPC V1.3 增强点：
+    V1.3（legacy） 增强点：
     - **中间层特征蒸馏**（feature-level distillation）：匹配 teacher / student 的
       中间层输出，使小模型学到等效能力（``distill_layers`` + ``feature_loss_weight``）。
     - **自适应温度调度**（temperature annealing）：训练过程中温度从高到低渐变，
@@ -310,7 +310,7 @@ class KnowledgeDistiller:
             目前仅作元数据记录，真正的特征提取通过 ``feature_extractor`` 回调完成。
         feature_loss_weight: 中间层特征匹配损失权重（默认 0.3）
         T: ``temperature`` 的旧参数别名（向后兼容 V1.0）；优先级低于 ``temperature``
-        distill_contrastive: 是否启用对比蒸馏（VMPC V1.5，默认 False）
+        distill_contrastive: 是否启用对比蒸馏（V1.5（legacy），默认 False）
         contrastive_loss_weight: 对比蒸馏损失权重（默认 0.5）
         contrastive_margin: 对比蒸馏 margin（默认 0.5）
         contrastive_top_k: 对比蒸馏 top-k 候选数量（默认 10）
@@ -332,7 +332,7 @@ class KnowledgeDistiller:
         self.alpha = float(alpha)
         self.distill_layers = list(distill_layers) if distill_layers else None
         self.feature_loss_weight = float(feature_loss_weight)
-        # VMPC V1.5 对比蒸馏配置
+        # V1.5（legacy） 对比蒸馏配置
         self.distill_contrastive = bool(distill_contrastive)
         self.contrastive_loss_weight = float(contrastive_loss_weight)
         self.contrastive_margin = float(contrastive_margin)
@@ -365,12 +365,12 @@ class KnowledgeDistiller:
                      distill_contrastive: bool = None,
                      contrastive_margin: float = None,
                      contrastive_top_k: int = None) -> Tensor:
-        """VMPC V1.5 联合损失计算。
+        """V1.5（legacy） 联合损失计算。
 
         Loss = alpha * T^2 * KL(teacher/T || student/T)              # 软标签蒸馏
              + (1 - alpha) * CE(student, labels)                     # 硬标签蒸馏
              + feature_loss_weight * MSE(student_feat, teacher_feat) # 中间层特征匹配
-             + contrastive_loss_weight * contrastive_loss(...)       # VMPC V1.5 对比蒸馏
+             + contrastive_loss_weight * contrastive_loss(...)       # V1.5（legacy） 对比蒸馏
 
         Args:
             student_logits: 学生模型 logits（可微）
@@ -399,11 +399,11 @@ class KnowledgeDistiller:
         else:
             # 无硬标签时，soft loss 全权
             total = self.alpha * soft_loss
-        # feature matching loss（VMPC V1.3 新增）
+        # feature matching loss（V1.3（legacy） 新增）
         feat_loss = self._feature_loss(student_features, teacher_features)
         if feat_loss is not None:
             total = total + self.feature_loss_weight * feat_loss
-        # contrastive distillation loss（VMPC V1.5 新增）
+        # contrastive distillation loss（V1.5（legacy） 新增）
         use_contrastive = (self.distill_contrastive if distill_contrastive is None
                            else bool(distill_contrastive))
         if use_contrastive:
@@ -420,7 +420,7 @@ class KnowledgeDistiller:
 
     def contrastive_loss(self, student_logits: Tensor, teacher_logits: Tensor,
                          margin: float = 0.5, top_k: int = 10) -> Tensor:
-        """对比蒸馏损失（VMPC V1.5）：margin ranking loss 确保 student 与 teacher
+        """对比蒸馏损失（V1.5（legacy））：margin ranking loss 确保 student 与 teacher
         的 top-k token 排序一致。
 
         思路：
@@ -561,11 +561,11 @@ class KnowledgeDistiller:
                 max_steps=None, eval_fn=None, eval_every: int = 0,
                 feature_extractor=None, anneal_temperature: bool = True,
                 distill_contrastive: bool = None):
-        """端到端蒸馏训练（VMPC V1.5）。
+        """端到端蒸馏训练（V1.5（legacy））。
 
         Args:
             train_loader: 可迭代对象，每次返回 ``(x, y)`` 或 ``(x, y, *rest)``
-            epochs: 训练轮数（VMPC V1.3 默认 3）
+            epochs: 训练轮数（V1.3（legacy） 默认 3）
             lr: 学习率（``optimizer=None`` 时内部创建 AdamW）
             optimizer: 可选优化器（向后兼容 V1.0：旧调用 ``distill(loader, optimizer,
                 max_steps=...)`` 会把 optimizer 作为第 2 个位置参数传入）
@@ -576,7 +576,7 @@ class KnowledgeDistiller:
                 传入时启用中间层特征蒸馏，否则仅做 logit 级蒸馏
             anneal_temperature: 是否启用自适应温度调度（从 ``temperature`` 线性
                 退火到 ``_T_min``）
-            distill_contrastive: 是否启用对比蒸馏（VMPC V1.5）；
+            distill_contrastive: 是否启用对比蒸馏（V1.5（legacy））；
                 ``None`` 时使用 ``self.distill_contrastive`` 默认值
 
         Returns:
@@ -655,7 +655,7 @@ class QLinear(nn.Module):
     内部持有 ``QuantizedLinear``（推理专用，无可训练参数）。
     forward 时调用 QuantizedLinear.forward，保证返回 Tensor。
 
-    VMPC V1.5 新增：``outlier_aware`` 模式。开启后，识别权重中的 outlier 输出通道
+    V1.5（legacy） 新增：``outlier_aware`` 模式。开启后，识别权重中的 outlier 输出通道
     （行 |w|_mean 超过 ``mean + threshold * std``），并对这些通道用 fp32
     residual 修正反量化误差，提升对大权重通道的精度，进而提升推理命中率。
 
@@ -663,7 +663,7 @@ class QLinear(nn.Module):
         linear: 原 ``nn.Linear``，用于初始化量化器与（可选）outlier 检测
         qtype: 量化类型，``"int4"`` / ``"int8"`` / ``"ternary"``
         cache_fp32: 是否在 load-time 缓存反量化 fp32 权重（见 ``QuantizedLinear``）
-        outlier_aware: 是否启用 outlier-aware 反量化（VMPC V1.5，默认 False）
+        outlier_aware: 是否启用 outlier-aware 反量化（V1.5（legacy），默认 False）
         outlier_threshold: outlier 检测阈值（默认 3.0，即 ``mean + 3*std``）
     """
 
@@ -677,7 +677,7 @@ class QLinear(nn.Module):
         self.qtype = qtype
         # QuantizedLinear 不是 nn.Module，存到 __dict__（Module.__setattr__ 走 else 分支）
         self._qlin = QuantizedLinear(linear, qtype=qtype, cache_fp32=cache_fp32)
-        # VMPC V1.5 outlier-aware 反量化配置
+        # V1.5（legacy） outlier-aware 反量化配置
         self.outlier_aware = bool(outlier_aware)
         self.outlier_threshold = float(outlier_threshold)
         # 预计算 outlier residual（仅当 outlier_aware=True 时填充）
@@ -740,7 +740,7 @@ class QLinear(nn.Module):
         out = self._qlin(x)
         if not isinstance(out, Tensor):
             out = Tensor(out, requires_grad=False)
-        # VMPC V1.5 outlier-aware 修正：对 outlier 通道叠加 fp32 residual
+        # V1.5（legacy） outlier-aware 修正：对 outlier 通道叠加 fp32 residual
         if self.outlier_aware and self._outlier_residual is not None:
             x_np = x.data if isinstance(x, Tensor) else np.asarray(x)
             x_np = x_np.astype(np.float32, copy=False)
@@ -811,7 +811,7 @@ def _quantize_module(model, qtype: str = "int4", outlier_aware: bool = False,
     Args:
         model: 待量化模型
         qtype: 量化类型
-        outlier_aware: 是否启用 outlier-aware 反量化（VMPC V1.5，默认 False）
+        outlier_aware: 是否启用 outlier-aware 反量化（V1.5（legacy），默认 False）
         outlier_threshold: outlier 检测阈值（默认 3.0）
     """
     for name, child in list(model._modules.items()):
@@ -859,7 +859,7 @@ def quantize_only(model, dtype: str = "int4",
     Args:
         model: nn.Module 模型
         dtype: 量化类型，"int4" / "int8" / "ternary"
-        outlier_aware: 是否启用 outlier-aware 反量化（VMPC V1.5，默认 False）
+        outlier_aware: 是否启用 outlier-aware 反量化（V1.5（legacy），默认 False）
         outlier_threshold: outlier 检测阈值（默认 3.0）
 
     Returns:
@@ -947,7 +947,11 @@ def compress_pipeline(model, config=None, return_stats: bool = False,
                       sparsity: float = 0.3, qtype: str = "int4",
                       lora_r: int = 8, lora_alpha: float = 16.0,
                       use_lora: bool = False):
-    """一键压缩管线，支持任意组合 prune/quantize/lora/ternary/distill。
+    """传统压缩管线（legacy）：支持任意组合 prune/quantize/lora/ternary/distill。
+
+    Part5K1.1 起此函数定位为 **VMPC V2.0 的 legacy 后端**（``use_vmpc=False`` 时调用）。
+    VMPC V2.0（``use_vmpc=True``）走 :class:`verse_torch.vmpc.VMPCV2` + VSC 引擎，
+    **不再使用此函数**。详见 [ADR-013](docs/architecture/adr-013-vmpc-naming-v15.md)。
 
     支持两种调用方式：
 
@@ -966,12 +970,12 @@ def compress_pipeline(model, config=None, return_stats: bool = False,
             "distill":   {"teacher": teacher_model, "epochs": 10, "lr": 1e-4}
         }
 
-    VMPC V1.3 新增：``config`` 顶层可放 ``"teacher_model"`` / ``"teacher"`` 作为蒸馏
+    V1.3 新增：``config`` 顶层可放 ``"teacher_model"`` / ``"teacher"`` 作为蒸馏
     教师的便捷入口（等价于 ``config["distill"]["teacher"]``），并可选 ``"train_loader"``。
     当 ``teacher_model`` 存在但无 ``train_loader`` 时，仅冻结 teacher、为学生做好准备
     （不实际训练）；有 ``train_loader`` 时执行端到端蒸馏。
 
-    VMPC V1.5 新增（默认版本）：在 VMPC V1.3 流程基础上增加 ``contrastive_distill`` 与
+    V1.5 新增（默认版本）：在 V1.3 流程基础上增加 ``contrastive_distill`` 与
     ``logit_calibration`` 两个步骤。可通过 ``config`` 顶层 ``"distill_contrastive"`` /
     ``"logit_calibration"`` 字段控制（默认 True）。outlier-aware 反量化通过
     ``config["quantize"]["outlier_aware"]`` 开启。
@@ -990,7 +994,7 @@ def compress_pipeline(model, config=None, return_stats: bool = False,
         config: dict，新 API 的压缩配置；若为 None 则走旧 API
         return_stats: 新 API 下是否返回 (compressed_model, stats) 元组
             （旧 API 始终返回 stats dict，此参数被忽略）
-        version: 压缩管线版本。``"1.5"``（默认，VMPC V1.5：VMPC V1.3 + contrastive_distill
+        version: 压缩管线版本。``"1.5"``（默认，V1.5：V1.3 + contrastive_distill
             + logit_calibration）；``"1.3"`` 走 v13 流程（prune → quantize →
             distill → lora，含压缩报告）；``"1.0"`` / ``"1.2"`` 走旧 v2 流程
             （prune → quantize → lora → ternary → distill）。仅对 dict 配置生效。
@@ -1300,7 +1304,7 @@ def _compress_pipeline_v2(model, config: dict, return_stats: bool = False):
 
 
 # ---------------------------------------------------------------------------
-# Task 6 (VMPC V1.3): compress_pipeline v1.3 —— 以小博大
+# Task 6 (V1.3（legacy）): compress_pipeline v1.3 —— 以小博大
 # ---------------------------------------------------------------------------
 
 
@@ -1318,7 +1322,7 @@ def _resolve_teacher(config: dict):
 
 
 def _compress_pipeline_v13(model, config: dict, return_stats: bool = False):
-    """VMPC V1.3 压缩流水线：prune → quantize → distill → lora（以小博大）。
+    """V1.3（legacy） 压缩流水线：prune → quantize → distill → lora（以小博大）。
 
     相对 v2 的变化：
     - **流程重排**：蒸馏在量化之后、LoRA 包装之前进行（先量化减存储、再蒸馏
@@ -1328,9 +1332,9 @@ def _compress_pipeline_v13(model, config: dict, return_stats: bool = False):
     - **吞吐率优化**：量化后 QLinear 内部使用 fused matmul（``matmul_int4``）。
     - **压缩报告**：stats 内嵌 ``compression_report`` 字段。
 
-    输出 stats 与 v2 完全兼容（同名同义键），并追加 VMPC V1.3 专属字段。
-    ``config["quantize"]["outlier_aware"]`` 可开启 VMPC V1.5 引入的 outlier-aware
-    反量化（仅影响 QLinear.forward 行为，不改变 VMPC V1.3 流程主体）。
+    输出 stats 与 v2 完全兼容（同名同义键），并追加 V1.3（legacy） 专属字段。
+    ``config["quantize"]["outlier_aware"]`` 可开启 V1.5（legacy） 引入的 outlier-aware
+    反量化（仅影响 QLinear.forward 行为，不改变 V1.3（legacy） 流程主体）。
     """
     # 记录原始参数量与 bit 数（压缩前）
     original_params = count_parameters(model)
@@ -1385,7 +1389,7 @@ def _compress_pipeline_v13(model, config: dict, return_stats: bool = False):
             qtype_applied = "int8"
         else:
             raise ValueError(f"quantize.bits 仅支持 4 或 8，得到 {bits}")
-        # VMPC V1.5 引入的 outlier_aware 反量化参数（VMPC V1.3 流程内 opt-in 启用）
+        # V1.5（legacy） 引入的 outlier_aware 反量化参数（V1.3（legacy） 流程内 opt-in 启用）
         outlier_aware = bool(q_cfg.pop("outlier_aware", False))
         outlier_threshold = float(q_cfg.pop("outlier_threshold", 3.0))
         quantize_only(new_model, dtype=qtype_applied,
@@ -1397,7 +1401,7 @@ def _compress_pipeline_v13(model, config: dict, return_stats: bool = False):
             "bits": bits,
             "qtype": qtype_applied,
             "schema": schema,
-            "fused_matmul": True,  # VMPC V1.3：QuantizedLinear 内部走 fused 路径
+            "fused_matmul": True,  # V1.3（legacy）：QuantizedLinear 内部走 fused 路径
             "outlier_aware": outlier_aware,
         })
 
@@ -1415,7 +1419,7 @@ def _compress_pipeline_v13(model, config: dict, return_stats: bool = False):
         })
 
     # ------------------------------------------------------------------
-    # 3. distill（可选，VMPC V1.3 核心）：teacher → student 能力转移
+    # 3. distill（可选，V1.3（legacy） 核心）：teacher → student 能力转移
     #    若提供 train_loader 则端到端蒸馏；否则仅冻结 teacher 做准备
     # ------------------------------------------------------------------
     teacher, train_loader, d_cfg = _resolve_teacher(config)
@@ -1472,7 +1476,7 @@ def _compress_pipeline_v13(model, config: dict, return_stats: bool = False):
         })
 
     # ------------------------------------------------------------------
-    # 计算压缩后统计（与 v2 同构 + VMPC V1.3 压缩报告）
+    # 计算压缩后统计（与 v2 同构 + V1.3（legacy） 压缩报告）
     # ------------------------------------------------------------------
     compressed_bits = compute_compressed_bits(new_model)
     compressed_params = compressed_bits / 32
@@ -1509,7 +1513,7 @@ def _compress_pipeline_v13(model, config: dict, return_stats: bool = False):
         "bits": float(avg_bits),
         "qtype": qtype_applied if has_quantize else None,
         "steps": steps,
-        # VMPC V1.3 专属
+        # V1.3（legacy） 专属
         "version": "1.3",
         "vmpc_version": "1.3",
         "estimated_throughput_improvement": float(est_throughput),
@@ -1530,13 +1534,13 @@ def _compress_pipeline_v13(model, config: dict, return_stats: bool = False):
 
 
 # ---------------------------------------------------------------------------
-# Task 4 (VMPC V1.5): compress_pipeline v1.5 —— 命中与质量优化
+# Task 4 (V1.5（legacy）): compress_pipeline v1.5 —— 命中与质量优化
 # ---------------------------------------------------------------------------
 
 
 def _compute_logit_calib_factor(model_orig, model_compressed,
                                 sample_tokens=None) -> float:
-    """计算 logit 校准因子（VMPC V1.5）。
+    """计算 logit 校准因子（V1.5（legacy））。
 
     通过对同一份小批量输入做前向，比较原始模型与压缩模型 logits 的标准差，
     得到一个标量 ``calib_factor``，使压缩模型在 ``generate`` 中按
@@ -1577,9 +1581,12 @@ def _compute_logit_calib_factor(model_orig, model_compressed,
 
 
 def _compress_pipeline_v15(model, config: dict, return_stats: bool = False):
-    """VMPC V1.5 压缩流水线：VMPC V1.3 + contrastive_distill + logit_calibration。
+    """传统压缩管线 V1.5（legacy）：V1.3 + contrastive_distill + logit_calibration。
 
-    相对 VMPC V1.3 的增强：
+    Part5K1.1 起 VMPC V2.0 全面抛弃此路径，仅在 ``use_vmpc=False`` 时作为 legacy
+    后端使用。VMPC V2.0 走 :class:`verse_torch.vmpc.VMPCV2` + VSC 引擎。
+
+    相对 V1.3 的增强：
     - **contrastive_distill**：在 distill 步骤中启用对比蒸馏（margin ranking loss），
       确保 student 与 teacher 的 top-k token 排序一致，优化推理命中率与质量，
       避免过拟合。通过 ``config`` 顶层 ``"distill_contrastive"``（默认 True）或
@@ -1591,11 +1598,11 @@ def _compress_pipeline_v15(model, config: dict, return_stats: bool = False):
     - **outlier-aware quantize**：通过 ``config["quantize"]["outlier_aware"]``
       开启 outlier 通道 fp32 修正（默认 False）。
 
-    输出 stats 与 VMPC V1.3 完全兼容（同名同义键），并追加 VMPC V1.5 专属字段：
+    输出 stats 与 V1.3 完全兼容（同名同义键），并追加 V1.5 专属字段：
     ``"vmpc_version": "1.5"``、``"logit_calib_factor"``、``"contrastive_distill"``。
     """
     # ------------------------------------------------------------------
-    # 解析 VMPC V1.5 顶层开关
+    # 解析 V1.5 顶层开关（legacy 路径）
     # ------------------------------------------------------------------
     use_contrastive = bool(config.get("distill_contrastive", True))
     use_logit_calib = bool(config.get("logit_calibration", True))
@@ -1676,7 +1683,7 @@ def _compress_pipeline_v15(model, config: dict, return_stats: bool = False):
         })
 
     # ------------------------------------------------------------------
-    # 3. distill（可选）：VMPC V1.5 在 VMPC V1.3 基础上加入对比蒸馏
+    # 3. distill（可选）：V1.5（legacy） 在 V1.3（legacy） 基础上加入对比蒸馏
     # ------------------------------------------------------------------
     teacher, train_loader, d_cfg = _resolve_teacher(config)
     contrastive_actually_used = False
@@ -1693,7 +1700,7 @@ def _compress_pipeline_v15(model, config: dict, return_stats: bool = False):
         # distill 子配置可覆盖顶层 distill_contrastive 开关
         d_contrastive = d_cfg.get("distill_contrastive", use_contrastive)
         d_contrastive = bool(d_contrastive)
-        # VMPC V1.5 对比蒸馏超参
+        # V1.5（legacy） 对比蒸馏超参
         contrastive_loss_weight = float(d_cfg.get("contrastive_loss_weight", 0.5))
         contrastive_margin = float(d_cfg.get("contrastive_margin", 0.5))
         contrastive_top_k = int(d_cfg.get("contrastive_top_k", 10))
@@ -1751,7 +1758,7 @@ def _compress_pipeline_v15(model, config: dict, return_stats: bool = False):
         })
 
     # ------------------------------------------------------------------
-    # 5. logit_calibration（VMPC V1.5 核心）：计算校准因子并存到模型
+    # 5. logit_calibration（V1.5（legacy） 核心）：计算校准因子并存到模型
     # ------------------------------------------------------------------
     logit_calib_factor = 1.0
     if use_logit_calib:
@@ -1763,7 +1770,7 @@ def _compress_pipeline_v15(model, config: dict, return_stats: bool = False):
         })
 
     # ------------------------------------------------------------------
-    # 计算压缩后统计（与 VMPC V1.3 同构 + VMPC V1.5 专属字段）
+    # 计算压缩后统计（与 V1.3（legacy） 同构 + V1.5（legacy） 专属字段）
     # ------------------------------------------------------------------
     compressed_bits = compute_compressed_bits(new_model)
     compressed_params = compressed_bits / 32
@@ -1801,17 +1808,17 @@ def _compress_pipeline_v15(model, config: dict, return_stats: bool = False):
         "bits": float(avg_bits),
         "qtype": qtype_applied if has_quantize else None,
         "steps": steps,
-        # VMPC V1.3 兼容字段
+        # V1.3 兼容字段（legacy）
         "version": "1.5",
         "vmpc_version": "1.5",
         "estimated_throughput_improvement": float(est_throughput),
         "compression_report": report,
-        # VMPC V1.5 专属字段
+        # V1.5 专属字段（legacy）
         "logit_calib_factor": float(logit_calib_factor),
         "contrastive_distill": bool(contrastive_actually_used),
     }
 
-    # 设置 VMPC V1.5 元数据（供 CometSparkNexLM.generate 推理校准使用）
+    # 设置 V1.5 元数据（legacy 路径，供 CometSparkNexLM.generate 推理校准使用）
     try:
         object.__setattr__(new_model, "_vmpc_version", "1.5")
         object.__setattr__(new_model, "_vmpc_compressed", True)
@@ -1828,7 +1835,7 @@ def _compress_pipeline_v15(model, config: dict, return_stats: bool = False):
 
 
 def compression_report(model, compressed_model) -> dict:
-    """生成压缩报告（VMPC V1.5）。
+    """生成压缩报告（V1.5（legacy））。
 
     优先从 ``compressed_model`` 的 ``_vmpc_version`` 元数据推断版本号，
     若未设置则回退到 ``"1.3"``（向后兼容）。
@@ -1848,10 +1855,10 @@ def compression_report(model, compressed_model) -> dict:
               "bits_per_param": float,      # 平均 bit/param
               "estimated_throughput_improvement": float,
               "version": "1.3" | "1.5",     # 兼容字段（与 vmpc_version 同值）
-              "vmpc_version": "1.3" | "1.5",  # VMPC V1.5 新增：明确 VMPC 版本
-              # VMPC V1.5 专属字段（仅当 vmpc_version >= 1.5 时存在）
-              "logit_calib_factor": float,  # 仅 VMPC V1.5
-              "contrastive_distill": bool,  # 仅 VMPC V1.5
+              "vmpc_version": "1.3" | "1.5",  # V1.5 新增：明确版本（legacy）
+              # V1.5 专属字段（仅当 vmpc_version >= 1.5 时存在，legacy）
+              "logit_calib_factor": float,  # 仅 V1.5（legacy）
+              "contrastive_distill": bool,  # 仅 V1.5（legacy）
             }
     """
     orig_params = count_parameters(model)
@@ -1888,7 +1895,7 @@ def compression_report(model, compressed_model) -> dict:
         "version": vmpc_version,
         "vmpc_version": vmpc_version,
     }
-    # VMPC V1.5 专属字段：若模型有 logit_calib_factor / contrastive_distill 元数据则带上
+    # V1.5（legacy） 专属字段：若模型有 logit_calib_factor / contrastive_distill 元数据则带上
     if vmpc_version != "1.3":
         calib = getattr(compressed_model, "logit_calib_factor", None)
         if calib is not None:

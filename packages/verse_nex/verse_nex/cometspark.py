@@ -90,6 +90,10 @@ class VerseNexBlock(Module):
         top_k: 每个 token 选出的 Expert 数
         expert_hidden: Expert 隐藏层维度（None 自动）
         aux_loss_weight: MoD aux loss 权重
+        # MoD V1.2 路由稳定性（仅当 layer_kind=="mod" 时生效）
+        router_temperature: V1.2 路由温度（默认 1.0）
+        ema_decay: V1.2 aux loss EMA 衰减（默认 0=禁用）
+        entropy_weight: V1.2 熵正则权重（默认 0=禁用）
         # SwiGLU 专属（仅当 layer_kind=="trisparse" 时生效）
         mlp_hidden_multiple: SwiGLU 隐藏层倍数（默认 4）
         use_checkpoint: Part4K2 Task 5.2 激活检查点开关。
@@ -119,6 +123,10 @@ class VerseNexBlock(Module):
         expert_hidden: Optional[int] = None,
         aux_loss_weight: float = 0.01,
         dense_part_names: Optional[list] = None,
+        # MoD V1.2 路由稳定性
+        router_temperature: float = 1.0,
+        ema_decay: float = 0.0,
+        entropy_weight: float = 0.0,
         # SwiGLU
         mlp_hidden_multiple: int = 4,
         # Part4K2 Task 5.2: 激活检查点
@@ -169,6 +177,10 @@ class VerseNexBlock(Module):
                 dropout=dropout,
                 aux_loss_weight=aux_loss_weight,
                 dense_part_names=dense_part_names,
+                # V1.2 路由稳定性参数
+                router_temperature=router_temperature,
+                ema_decay=ema_decay,
+                entropy_weight=entropy_weight,
             )
 
     # ------------------------------------------------------------------

@@ -669,10 +669,312 @@ def convert_format(src_path: str, dst_path: str) -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# Part5K1.1: 多空间缓存（内存/硬盘按优先级混合缓存）
+# ---------------------------------------------------------------------------
+
+
+def _get_available_memory_bytes() -> int:
+    """估算当前可用内存（bytes）。
+
+    优先用 psutil；不可用时退化为 /proc/meminfo（Linux）；再不行返回保守默认。
+    """
+    try:
+        import psutil  # type: ignore
+        return int(psutil.virtual_memory().available)
+    except Exception:
+        pass
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    # 格式: "MemAvailable:  12345678 kB"
+                    return int(line.split()[1]) * 1024
+    except Exception:
+        pass
+    # 保守默认：假设 4GB 可用
+    return 4 * 1024 * 1024 * 1024
+
+
+def _get_available_disk_bytes(path: str = ".") -> int:
+    """估算指定路径所在磁盘的可用空间（bytes）。"""
+    try:
+        usage = os.statvfs(path)
+        return usage.f_bavail * usage.f_frsize
+    except Exception:
+        pass
+    # 保守默认：假设 10GB 可用
+    return 10 * 1024 * 1024 * 1024
+
+
+class VNCacheManager:
+    """.vn 文件多空间缓存管理器（Part5K1.1）。
+
+    按需自动在内存与硬盘中进行缓存：
+
+    - **内存充足 + 硬盘充足** → 混合缓存：优先级高的放内存，优先级低的放硬盘
+    - **内存不充足** → 主要放硬盘（mmap 懒加载）
+    - **硬盘不够** → 不处理（大规模训练前提是硬盘充足）
+
+    缓存策略：
+    1. 高优先级权重（如 embedding、head、频繁访问层）→ 内存 LRU 缓存
+    2. 低优先级权重（如深层 MLP）→ 硬盘 mmap 懒加载
+    3. 内存不足时自动驱逐低优先级项到硬盘
+
+    用法::
+
+        reader = VNFileReader("model.vn")
+        cache = VNCacheManager(reader, memory_budget_mb=512)
+        cache.set_priority("tok_emb.weight", priority="high")
+        weights = cache.get_weights()  # 按优先级混合缓存
+        cache.close()
+
+    Args:
+        reader: :class:`VNFileReader` 实例
+        memory_budget_mb: 内存缓存预算（MB），None 则自动检测可用内存的 50%
+        disk_cache_dir: 硬盘缓存目录；None 则用系统临时目录
+        default_priority: 默认优先级（"high" / "medium" / "low"）
+    """
+
+    PRIORITY_HIGH = "high"
+    PRIORITY_MEDIUM = "medium"
+    PRIORITY_LOW = "low"
+    _PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
+
+    def __init__(
+        self,
+        reader: "VNFileReader",
+        memory_budget_mb: Optional[float] = None,
+        disk_cache_dir: Optional[str] = None,
+        default_priority: str = "medium",
+    ):
+        self.reader = reader
+        self.default_priority = default_priority
+
+        # 内存预算：自动检测可用内存的 50%，或用户指定
+        if memory_budget_mb is not None:
+            self.memory_budget_bytes = int(memory_budget_mb * 1024 * 1024)
+        else:
+            avail = _get_available_memory_bytes()
+            self.memory_budget_bytes = int(avail * 0.5)
+
+        # 硬盘缓存目录
+        if disk_cache_dir is not None:
+            self.disk_cache_dir = disk_cache_dir
+            os.makedirs(self.disk_cache_dir, exist_ok=True)
+        else:
+            self.disk_cache_dir = tempfile.mkdtemp(prefix="vn_cache_")
+
+        # 权重优先级映射 {name: priority}
+        self._priorities: dict[str, str] = {}
+        # 内存缓存 {name: ndarray}（LRU）
+        self._mem_cache: dict[str, np.ndarray] = {}
+        # 内存缓存当前占用（bytes）
+        self._mem_used = 0
+        # 硬盘缓存路径 {name: path}（mmap 文件）
+        self._disk_cache: dict[str, str] = {}
+        # 访问计数（用于 LRU 驱逐）
+        self._access_count: dict[str, int] = {}
+        # 权重元信息 {name: {"shape": tuple, "dtype": str, "size": int}}
+        self._weight_meta: dict[str, dict] = {}
+
+    def set_priority(self, name: str, priority: str) -> None:
+        """设置单个权重的优先级。
+
+        Args:
+            name: 权重名
+            priority: "high" / "medium" / "low"
+        """
+        if priority not in self._PRIORITY_ORDER:
+            raise ValueError(f"priority 必须为 {list(self._PRIORITY_ORDER.keys())}")
+        self._priorities[name] = priority
+
+    def set_priorities(self, priorities: dict) -> None:
+        """批量设置权重优先级。"""
+        for name, pri in priorities.items():
+            self.set_priority(name, pri)
+
+    def _get_priority(self, name: str) -> str:
+        """获取权重优先级（含自动推断）。"""
+        if name in self._priorities:
+            return self._priorities[name]
+        # 自动推断：embedding/head → high，norm → medium，其余 → default
+        lower = name.lower()
+        if any(k in lower for k in ("emb", "head", "embed")):
+            return self.PRIORITY_HIGH
+        if "norm" in lower:
+            return self.PRIORITY_MEDIUM
+        return self.default_priority
+
+    def get_weights(self, mmap: bool = True) -> dict:
+        """获取所有权重，按优先级混合缓存。
+
+        Args:
+            mmap: 低优先级权重是否用 mmap（硬盘懒加载）
+
+        Returns:
+            ``{name: ndarray}`` 字典
+        """
+        # 先读取所有权重
+        all_weights = self.reader.read_weights(mmap=False)
+
+        # 记录元信息
+        for name, arr in all_weights.items():
+            self._weight_meta[name] = {
+                "shape": arr.shape,
+                "dtype": str(arr.dtype),
+                "size": arr.nbytes,
+            }
+
+        # 按优先级排序（high → medium → low）
+        sorted_names = sorted(
+            all_weights.keys(),
+            key=lambda n: self._PRIORITY_ORDER[self._get_priority(n)],
+        )
+
+        result = {}
+        for name in sorted_names:
+            arr = all_weights[name]
+            priority = self._get_priority(name)
+            size = arr.nbytes
+
+            if priority == self.PRIORITY_HIGH:
+                # 高优先级：尝试放内存
+                if self._try_mem_cache(name, arr):
+                    result[name] = self._mem_cache[name]
+                else:
+                    # 内存不足，降级到硬盘
+                    result[name] = self._cache_to_disk(name, arr)
+            elif priority == self.PRIORITY_MEDIUM:
+                # 中优先级：内存够就放，不够放硬盘
+                if self._mem_used + size <= self.memory_budget_bytes:
+                    if self._try_mem_cache(name, arr):
+                        result[name] = self._mem_cache[name]
+                    else:
+                        result[name] = self._cache_to_disk(name, arr)
+                else:
+                    result[name] = self._cache_to_disk(name, arr)
+            else:
+                # 低优先级：放硬盘（mmap 懒加载）
+                result[name] = self._cache_to_disk(name, arr)
+
+        return result
+
+    def get_weight(self, name: str) -> np.ndarray:
+        """获取单个权重（按需缓存）。"""
+        # 内存缓存命中
+        if name in self._mem_cache:
+            self._access_count[name] = self._access_count.get(name, 0) + 1
+            return self._mem_cache[name]
+        # 硬盘缓存命中
+        if name in self._disk_cache:
+            path = self._disk_cache[name]
+            return np.load(path, allow_pickle=False)
+        # 未缓存：从 reader 读取
+        all_weights = self.reader.read_weights(mmap=False)
+        if name not in all_weights:
+            raise KeyError(f"权重 {name} 不存在")
+        arr = all_weights[name]
+        priority = self._get_priority(name)
+        if priority == self.PRIORITY_HIGH and self._try_mem_cache(name, arr):
+            return self._mem_cache[name]
+        return self._cache_to_disk(name, arr)
+
+    def _try_mem_cache(self, name: str, arr: np.ndarray) -> bool:
+        """尝试将权重放入内存缓存。成功返回 True。"""
+        size = arr.nbytes
+        # 检查是否有足够空间
+        while self._mem_used + size > self.memory_budget_bytes and self._mem_cache:
+            # LRU 驱逐：移除访问最少且优先级最低的项
+            self._evict_one()
+        if self._mem_used + size <= self.memory_budget_bytes:
+            self._mem_cache[name] = arr
+            self._mem_used += size
+            self._access_count[name] = 0
+            return True
+        return False
+
+    def _evict_one(self) -> None:
+        """LRU 驱逐一个内存缓存项到硬盘。"""
+        if not self._mem_cache:
+            return
+        # 找到优先级最低且访问最少的项
+        evict_key = min(
+            self._mem_cache.keys(),
+            key=lambda k: (
+                self._PRIORITY_ORDER[self._get_priority(k)],
+                self._access_count.get(k, 0),
+            ),
+        )
+        arr = self._mem_cache.pop(evict_key)
+        self._mem_used -= arr.nbytes
+        # 驱逐到硬盘
+        self._cache_to_disk(evict_key, arr)
+
+    def _cache_to_disk(self, name: str, arr: np.ndarray) -> np.ndarray:
+        """将权重缓存到硬盘（.npy 文件），返回数组。"""
+        if name in self._disk_cache:
+            # 已缓存，直接读取
+            return np.load(self._disk_cache[name], allow_pickle=False)
+        path = os.path.join(self.disk_cache_dir, f"{name}.npy")
+        # 安全化文件名（替换路径分隔符）
+        safe_name = name.replace(".", "_").replace("/", "_")
+        path = os.path.join(self.disk_cache_dir, f"{safe_name}.npy")
+        np.save(path, arr)
+        self._disk_cache[name] = path
+        return arr
+
+    def cache_stats(self) -> dict:
+        """返回缓存统计信息。"""
+        mem_count = len(self._mem_cache)
+        disk_count = len(self._disk_cache)
+        total_count = len(self._weight_meta)
+        return {
+            "memory_budget_mb": round(self.memory_budget_bytes / 1024 / 1024, 2),
+            "memory_used_mb": round(self._mem_used / 1024 / 1024, 2),
+            "memory_usage_ratio": round(self._mem_used / max(self.memory_budget_bytes, 1), 4),
+            "mem_cached_count": mem_count,
+            "disk_cached_count": disk_count,
+            "total_weight_count": total_count,
+            "disk_cache_dir": self.disk_cache_dir,
+        }
+
+    def close(self) -> None:
+        """清理缓存（删除硬盘缓存文件）。"""
+        for path in self._disk_cache.values():
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception:
+                pass
+        # 尝试删除缓存目录
+        try:
+            if os.path.isdir(self.disk_cache_dir) and not os.listdir(self.disk_cache_dir):
+                os.rmdir(self.disk_cache_dir)
+        except Exception:
+            pass
+        self._mem_cache.clear()
+        self._disk_cache.clear()
+        self._mem_used = 0
+
+    def __enter__(self) -> "VNCacheManager":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
 __all__ = [
     "VN_FORMAT_VERSION",
     "VNFileWriter",
     "VNFileReader",
+    "VNCacheManager",
     "pt_to_vn",
     "vn_to_pt",
     "convert_format",

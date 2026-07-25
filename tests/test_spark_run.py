@@ -49,11 +49,10 @@ from spark.run import (
     cmd_compress,
     cmd_convert,
     cmd_download,
-    _resolve_config_path,
-    _setup_paths,
+    _select_model_level,
     _generated_to_ids,
-    _DEFAULT_CONFIG,
     _SMALL_CONFIG,
+    _MATE_CONFIG,
     _REPO_ROOT as RUN_REPO_ROOT,
 )
 
@@ -104,8 +103,8 @@ class TestArgParsing:
         assert args.prompt == "你好"
         assert args.temperature == 0.8
         assert args.max_tokens == 100
-        # 默认 checkpoint
-        assert args.checkpoint == "checkpoints/best.pt"
+        # Part5K1.1：checkpoint 默认 None，由 _resolve_checkpoint 自动查找
+        assert args.checkpoint is None
 
     def test_chat_args(self):
         """chat 子命令参数解析。"""
@@ -160,30 +159,44 @@ class TestArgParsing:
 
 
 class TestConfigResolution:
-    """配置文件路径解析。"""
+    """配置文件路径解析（Part5K1.1：使用 _select_model_level 替代 _resolve_config_path）。"""
 
-    def test_default_config_path(self):
-        """不指定 --config 时默认用 1B 配置。"""
-        path = _resolve_config_path(None, small=False)
-        assert path.endswith(_DEFAULT_CONFIG)
+    def test_mate_config_path(self):
+        """--model mate 用 mate 旗舰配置。"""
+        args = build_parser().parse_args(["train", "--model", "mate"])
+        path, _factory, level = _select_model_level(args)
+        assert level == "mate"
+        assert path.endswith(_MATE_CONFIG)
         assert os.path.exists(path)
 
     def test_small_config_path(self):
-        """--small 时用小配置。"""
-        path = _resolve_config_path(None, small=True)
+        """--model small 用 small 配置。"""
+        args = build_parser().parse_args(["train", "--model", "small"])
+        path, _factory, level = _select_model_level(args)
+        assert level == "small"
         assert path.endswith(_SMALL_CONFIG)
         assert os.path.exists(path)
 
+    def test_default_is_small(self):
+        """未指定 --model 时默认 small（Part5K1.1）。"""
+        args = build_parser().parse_args(["train"])
+        _path, _factory, level = _select_model_level(args)
+        assert level == "small"
+
     def test_custom_config_path(self):
-        """--config 显式指定。"""
+        """--config 显式指定路径。"""
         custom = os.path.join(str(_REPO_ROOT), _SMALL_CONFIG)
-        path = _resolve_config_path(custom, small=False)
+        args = build_parser().parse_args(["train", "--model", "small", "--config", custom])
+        path, _factory, _level = _select_model_level(args)
         assert path == custom
 
     def test_nonexistent_config_raises(self):
         """不存在的配置文件抛 FileNotFoundError。"""
+        args = build_parser().parse_args([
+            "train", "--model", "small", "--config", "/nonexistent/config.yml",
+        ])
         with pytest.raises(FileNotFoundError, match="配置文件不存在"):
-            _resolve_config_path("/nonexistent/config.yml")
+            _select_model_level(args)
 
     def test_train_small_selects_small_config(self):
         """train --small 选择小配置（通过 dry-run 验证）。"""
@@ -191,8 +204,8 @@ class TestConfigResolution:
         ret = cmd_train(args)
         assert ret == 0  # dry-run 总是返回 0
 
-    def test_train_default_selects_1b_config(self):
-        """train（无 --small）选择 1B 配置（通过 dry-run 验证）。"""
+    def test_train_default_selects_small_config(self):
+        """train（无 --model）默认选 small 配置（通过 dry-run 验证）。"""
         args = build_parser().parse_args(["train", "--dry-run"])
         ret = cmd_train(args)
         assert ret == 0
@@ -248,7 +261,7 @@ class TestDryRun:
 
     def test_compress_dry_run(self):
         """compress --dry-run 不加载模型。"""
-        with patch("spark.model.model.CometSparkV05LM") as mock_cls:
+        with patch("spark.src.base_model.CometSparkV05LM") as mock_cls:
             args = build_parser().parse_args([
                 "compress", "--checkpoint", "fake.pt", "--dry-run",
             ])
@@ -562,19 +575,19 @@ class TestChatCommand:
 
 
 class TestCompressCommand:
-    """compress 子命令 mock 验证。"""
+    """compress 子命令 mock 验证（Part5K1.1：VMPC V2.0 / Legacy 双路径）。"""
 
     @patch("verse_torch.compress.compress_pipeline")
-    @patch("spark.model.model.CometSparkV05LM")
-    def test_compress_calls_pipeline(self, mock_cls, mock_pipeline):
-        """compress 调用 compress_pipeline。"""
+    @patch("spark.small.model.CometSparkSmallLM")
+    def test_compress_legacy_calls_pipeline(self, mock_cls, mock_pipeline):
+        """compress --no-vmpc 走 legacy 路径调用 compress_pipeline。"""
         mock_model = MagicMock()
         mock_cls.from_pretrained.return_value = mock_model
         mock_model.config.arch = "versenex"
+        mock_model.config.use_vmpc = False  # legacy 模式
         mock_model.count_parameters.return_value = 100000
 
         mock_compressed_net = MagicMock()
-        mock_compressed_net.count_parameters.return_value = 50000
         # compress_pipeline 返回 (compressed_model, stats)
         mock_pipeline.return_value = (mock_compressed_net, {"ratio": 2.0})
 
@@ -589,14 +602,49 @@ class TestCompressCommand:
 
         try:
             args = build_parser().parse_args([
-                "compress", "--checkpoint", ckpt_path,
-                "--method", "prune", "--output", "out.pt", "--quiet",
+                "compress", "--checkpoint", ckpt_path, "--model", "small",
+                "--no-vmpc", "--method", "prune", "--output", "out.vn", "--quiet",
             ])
             ret = cmd_compress(args)
 
             assert ret == 0
             mock_pipeline.assert_called_once()
-            mock_new_model.save.assert_called_once_with("out.pt")
+            mock_new_model.save.assert_called_once_with("out.vn", format="vn")
+        finally:
+            os.unlink(ckpt_path)
+
+    @patch("spark.small.model.CometSparkSmallLM")
+    def test_compress_vmpc_calls_vmpc_compress(self, mock_cls):
+        """compress（默认）走 VMPC V2.0 路径调用 vmpc_compress_model。"""
+        mock_model = MagicMock()
+        mock_cls.from_pretrained.return_value = mock_model
+        mock_model.config.arch = "versenex"
+        mock_model.config.use_vmpc = True  # VMPC V2.0 模式
+        mock_model.config.vmpc_profile = "small"
+        mock_model.config.vmpc_target_ratio = 0.06
+        mock_model.config.vmpc_quantize_bits = 2
+        mock_model.count_parameters.return_value = 100000
+
+        # vmpc_compress_model 返回新的 mock model
+        mock_new_model = MagicMock()
+        mock_new_model.count_parameters.return_value = 5000
+        mock_model.vmpc_compress_model.return_value = mock_new_model
+
+        # 需要真实的 checkpoint 文件
+        with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as f:
+            ckpt_path = f.name
+
+        try:
+            args = build_parser().parse_args([
+                "compress", "--checkpoint", ckpt_path, "--model", "small",
+                "--output", "out.vn", "--quiet",
+            ])
+            ret = cmd_compress(args)
+
+            assert ret == 0
+            # 验证走了 VMPC V2.0 路径
+            mock_model.vmpc_compress_model.assert_called_once()
+            mock_new_model.save.assert_called_once_with("out.vn", format="vn")
         finally:
             os.unlink(ckpt_path)
 
@@ -725,11 +773,11 @@ class TestDownloadCommand:
 
 
 class TestPathBootstrap:
-    """路径自举正确性。"""
+    """路径自举正确性（Part5K1.1：路径设置在 spark.run 模块加载时完成）。"""
 
-    def test_setup_paths_adds_deps(self):
-        """_setup_paths 把 verse_torch/verse_nex/verse_infra 加入 sys.path。"""
-        _setup_paths()
+    def test_deps_in_path(self):
+        """verse_torch/verse_nex/verse_infra 已在 sys.path 中（模块加载时注入）。"""
+        # spark.run 导入时已自动设置路径，无需显式调用 _setup_paths
         for dep in ("verse_torch", "verse_nex", "verse_infra"):
             dep_path = os.path.join(str(RUN_REPO_ROOT), "packages", dep)
             assert dep_path in sys.path, f"{dep_path} 不在 sys.path 中"

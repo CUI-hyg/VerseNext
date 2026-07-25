@@ -23,7 +23,7 @@ for _sub in ("verse_torch", "verse_nex", "verse_infra"):
 if _WORKSPACE not in sys.path:
     sys.path.insert(0, _WORKSPACE)
 
-from spark.model.model import CometSparkV05Small, CometSparkV05LM
+from spark.src.base_model import CometSparkV05Small, CometSparkV05LM
 
 
 def main():

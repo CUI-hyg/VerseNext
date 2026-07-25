@@ -25,7 +25,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-# 让 tests/ 目录能 import verse_torch / spark.model
+# 让 tests/ 目录能 import verse_torch / spark.src
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "packages" / "verse_torch"))
 sys.path.insert(0, str(_REPO_ROOT / "packages" / "verse_nex"))
@@ -43,8 +43,8 @@ from verse_torch.compress import (
     LoRALinear,
 )
 # Part4K1 Task 8.9: 从 spark/model 导入（替代 data/demo/model）
-from spark.model.model import CometSparkV05LM, CometSparkV05Small
-from spark.model.config import CometSparkV05Config
+from spark.src.base_model import CometSparkV05LM, CometSparkV05Small
+from spark.src.base_config import CometSparkV05Config
 
 
 SEED = 42

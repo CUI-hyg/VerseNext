@@ -1,11 +1,12 @@
-"""CometSpark 顶层包（Part5K1 Task 9 双模型并行升级）。
+"""CometSpark 顶层包（Part5K1 Task 9 双模型并行升级 / Part5K1.1 目录优化）。
 
 提供：
 - :mod:`spark.small`：Small 模型（0.06zB 目标，VMPC-small 预设）。
 - :mod:`spark.mate`：Mate 模型（0.2zB 旗舰，VMPC-mate 预设）。
-- :mod:`spark.model`：旧 V05 模型（兼容保留，Task 11 清理）。
-- :mod:`spark.src`：训练 / 评估 / 数据 / 工具（委托 verse_infra.verse_trainer）。
-- :mod:`spark.config`：旧 YAML 配置文件目录（兼容保留，Task 11 清理）。
+- :mod:`spark.src`：基类 + 训练 / 评估 / 数据 / 工具（委托 verse_infra.verse_trainer）。
+  Part5K1.1：原 ``spark.model`` 下的基类配置与模型已迁移到 ``spark.src``：
+  - :mod:`spark.src.base_config`：``CometSparkV05Config`` + YAML 工具。
+  - :mod:`spark.src.base_model`：``CometSparkV05LM`` + 工厂函数。
 
 路径自举
 --------
@@ -43,8 +44,7 @@ __all__ = [
     # 双模型子包
     "small",
     "mate",
-    # 旧子包（兼容保留，Task 11 清理）
-    "model",
+    # 基类子包（Part5K1.1：原 spark.model 迁移到 spark.src）
     "src",
     # 双模型顶层导出
     "CometSparkSmallLM",

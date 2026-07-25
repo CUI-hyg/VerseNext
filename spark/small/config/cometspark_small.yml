@@ -56,13 +56,29 @@ model:
   device: cpu
   parallel_chunks: 1
 
-# VMPC-small 预设（Part5K1 Task 9.1）
+# VMPC V2.0 配置（Part5K1.1：use_vmpc 统一开关 + VSC 参数）
 vmpc:
+  # Part5K1.1: VMPC V2.0 统一开关（默认开启）
+  # use_vmpc=true 时：强制 *.vn 格式 + VSC 引擎压缩 + 训练/推理自动接入
+  # use_vmpc=false 时：走 legacy 模式（传统技术直通）
+  use_vmpc: true
+
+  # legacy 字段（use_vmpc=false 时生效，兼容旧配置）
   profile: small
   prune_sparsity: 0.5
   quantize_dtype: ternary
   use_lora: false
   distill: false
+
+  # Part5K1.1: V2.0 专属参数（VSC 三维空间压缩配置）
+  # 物理压缩占 40%（量化+剪枝），算法优化占 60%（路由稀疏+算子融合+训练补偿）
+  target_ratio: 0.06       # 压到原大小 6%（0.06zB 目标）
+  quantize_bits: 2         # ternary 量化（2bit/值）
+  storage_weight: 0.5      # 存储维度权重（小模型存储优先）
+  compute_weight: 0.3      # 算力维度权重
+  time_weight: 0.2         # 时间维度权重
+  force_vn_format: true    # use_vmpc=true 时强制 .vn 格式
+  enable_compensation: true # 启用训练补偿（恢复压缩损失的能力）
 
 training:
   batch_size: 8

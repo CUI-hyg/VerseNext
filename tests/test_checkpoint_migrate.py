@@ -61,16 +61,33 @@ class TestSaveFormatParameter:
         assert vn_path.stat().st_size > 0
 
     def test_save_pt_generates_pt_file(self, tmp_path):
-        """save(path, format='pt') 生成 .pt 文件。"""
+        """save(path, format='pt') 在 legacy 模式（use_vmpc=False）下生成 .pt 文件。
+
+        Part5K1.1：``use_vmpc=True``（默认）时强制 .vn，禁止 .pt；此处显式关闭
+        VMPC 以验证 legacy .pt 保存路径仍然可用。
+        """
         from spark.small.model import CometSparkSmall
 
         model = CometSparkSmall()
+        # Part5K1.1：legacy 模式才允许 .pt
+        model.config.use_vmpc = False
         out = str(tmp_path / "model_pt")  # 不带扩展名
         model.save(out, format="pt")
 
         pt_path = tmp_path / "model_pt.pt"
         assert pt_path.exists(), f".pt 文件未生成：{pt_path}"
         assert pt_path.stat().st_size > 0
+
+    def test_save_pt_blocked_when_vmpc_enabled(self, tmp_path):
+        """Part5K1.1：use_vmpc=True 时 save(format='pt') 抛 ValueError（强制 .vn）。"""
+        from spark.small.model import CometSparkSmall
+
+        model = CometSparkSmall()
+        # 默认 use_vmpc=True，保存 .pt 应被拦截
+        assert model.config.use_vmpc is True
+        out = str(tmp_path / "model_blocked")
+        with pytest.raises(ValueError, match="强制使用 .vn 格式"):
+            model.save(out, format="pt")
 
     def test_save_default_format_is_vn(self, tmp_path):
         """save(path) 不传 format，默认生成 .vn（检查文件扩展名）。"""
@@ -154,10 +171,16 @@ class TestSavePretrainedFormat:
         )
 
     def test_save_pretrained_pt_format(self, tmp_path):
-        """save_pretrained(dir, format='pt') 生成 model.pt + config.yml。"""
+        """save_pretrained(dir, format='pt') 在 legacy 模式下生成 model.pt + config.yml。
+
+        Part5K1.1：``use_vmpc=True``（默认）时强制 .vn，禁止 .pt；此处显式关闭
+        VMPC 以验证 legacy .pt 保存路径仍然可用。
+        """
         from spark.small.model import CometSparkSmall
 
         model = CometSparkSmall()
+        # Part5K1.1：legacy 模式才允许 .pt
+        model.config.use_vmpc = False
         out_dir = str(tmp_path / "pretrained_pt")
         model.save_pretrained(out_dir, format="pt")
 

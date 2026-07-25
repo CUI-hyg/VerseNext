@@ -39,8 +39,8 @@ from verse_torch.training import ParallelTrainer
 from verse_torch.compress import compress_mod_experts
 from verse_nex.moe import MoDLayer
 # Part4K1 Task 8.9: 从 spark/model 导入（替代 data/demo/model）
-from spark.model.model import CometSparkV05Small as CometSparkV02Small
-from spark.model.model import CometSparkV05Small as CometSparkSmall
+from spark.src.base_model import CometSparkV05Small as CometSparkV02Small
+from spark.src.base_model import CometSparkV05Small as CometSparkSmall
 
 
 # ---------------------------------------------------------------------------

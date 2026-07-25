@@ -505,7 +505,7 @@ class TestCometSparkV05SaveLoad:
 
     def test_save_load_roundtrip(self, tmp_path):
         """save → load roundtrip 后 state_dict 一致。"""
-        from spark.model.model import CometSparkV05Small
+        from spark.src.base_model import CometSparkV05Small
         model = CometSparkV05Small(vocab_size=32, n_embd=16, n_layer=1)
         sd_before = {k: v.copy() for k, v in model.state_dict().items()}
 
@@ -526,7 +526,7 @@ class TestCometSparkV05SaveLoad:
 
     def test_save_no_directory_component(self, tmp_path):
         """save 到无目录组件的文件名（如 'model.pt'）不报错。"""
-        from spark.model.model import CometSparkV05Small
+        from spark.src.base_model import CometSparkV05Small
         model = CometSparkV05Small(vocab_size=32, n_embd=16, n_layer=1)
         # 切换到临时目录
         original_cwd = os.getcwd()
@@ -539,7 +539,7 @@ class TestCometSparkV05SaveLoad:
 
     def test_save_creates_nested_dirs(self, tmp_path):
         """save 自动创建嵌套目录。"""
-        from spark.model.model import CometSparkV05Small
+        from spark.src.base_model import CometSparkV05Small
         model = CometSparkV05Small(vocab_size=32, n_embd=16, n_layer=1)
         nested_path = str(tmp_path / "a" / "b" / "c" / "model.pt")
         model.save(nested_path)

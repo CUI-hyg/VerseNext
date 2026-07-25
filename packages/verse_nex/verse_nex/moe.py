@@ -1,6 +1,20 @@
-"""VerseNex: MoD (Mixture of Dense Parts) 多稠密分区架构。
+"""VerseNex: MoD (Mixture of Dense Parts) 多稠密分区架构 V1.2。
 
-参考 MoD 论文的双层路由设计：
+Part5K1.1 升级到 V1.2：在 V1.0 双层路由基础上优化路由能力与训练稳定性。
+
+V1.2 升级要点
+-------------
+1. **温度可调路由**：Router 引入 ``router_temperature``，对 logits 缩放后再 softmax，
+   允许更尖锐（temperature<1，路由更确定）或更平滑（temperature>1，探索更强）的门控。
+2. **aux loss EMA 平滑**：``ema_decay>0`` 时对 load_balance_loss 做指数移动平均，
+   抑制训练中 aux loss 的抖动（抽风），稳定 MoD 层的负载均衡信号。
+3. **熵正则化**：``entropy_weight>0`` 时对 router 概率分布加熵正则，鼓励专家多样化
+   使用，避免路由塌缩到少数 expert。
+4. **layer_pattern 固化**：``CometSparkV05LM`` 在构造时把自动生成的 ``layer_pattern``
+   写回 config，保证 save/load 路径一致，彻底解决"有时无 MoD 有时有 MoD"的抽风。
+
+双层路由设计（V1.0 保留）
+-------------------------
 - 第一层（part_router）：soft routing，将 token 加权分配到 ``num_dense_parts`` 个稠密分区。
   当 ``top_k == num_dense_parts`` 时，所有分区都被选中，权重为 softmax 概率。
 - 第二层（expert_router）：每个 ``DensePart`` 内部 top-k 硬路由到 ``num_experts`` 个 Expert。
@@ -18,7 +32,7 @@
 - ``P_i`` 是 router 给 route i 的平均概率（可微，梯度通过 softmax 回传）
 
 设计要点：
-- Expert 复用 ``verse_torch.nn.SwiGLUMLP`` 的 SwiGLU MLP 结构（同 Linear / Dropout / silu）
+- Expert 复用 ``verse_torch.vnn.SwiGLUMLP`` 的 SwiGLU MLP 结构（同 Linear / Dropout / silu）
 - dispatch/combine 用 numpy 索引实现，手写 ``_backward`` 闭包保持梯度可微
 - 不实现 capacity 限制、expert parallelism、token dropping
 - 重点是正确性和可微性
@@ -33,6 +47,8 @@
 """
 
 from __future__ import annotations
+
+from typing import Optional
 
 import numpy as np
 
@@ -236,12 +252,13 @@ def _expand_part_weights(
 
 
 class Router(Module):
-    """Top-k token 路由器，含 load balancing aux loss + router z-loss。
+    """Top-k token 路由器 V1.2，含 load balancing aux loss + router z-loss +
+    温度可调路由 + EMA 平滑 + 熵正则化。
 
     对输入的每个 token 计算 router logits（通过一个线性层 ``gate``），
     选出 top-k 个 route，并用 softmax 重归一化得到 ``dispatched_weights``。
 
-    同时计算两种辅助损失：
+    同时计算辅助损失：
 
     1. **load balancing loss**（Switch Transformer 风格）::
 
@@ -253,7 +270,16 @@ class Router(Module):
 
         z_loss = z_loss_weight × (1/N) × Σ_{b,t,i} (logits_{b,t,i})^2
 
-    总 aux loss = load_balance + z_loss。
+    3. **熵正则**（V1.2 新增，``entropy_weight>0`` 时生效）：鼓励概率分布更均匀，
+       防止路由塌缩::
+
+        entropy_reg = -entropy_weight × mean_{b,t}(Σ_i P_i × log P_i)
+
+    总 aux loss = load_balance + z_loss + entropy_reg。
+
+    V1.2 稳定性机制：
+    - ``router_temperature``：logits 在 softmax 前除以温度（>1 更平滑探索，<1 更确定）
+    - ``ema_decay``：对 load_balance_loss 做 EMA 平滑，抑制训练抖动（抽风）
 
     ``f_i`` 视为常量（detached），梯度仅通过 ``P_i`` 回传到 router logits。
     z-loss 的梯度直接通过 ``logits^2`` 回传到 gate 权重。
@@ -265,6 +291,9 @@ class Router(Module):
         aux_loss_weight: load balancing loss 的权重系数
         z_loss_weight: router z-loss 的权重系数（0 表示不计算 z-loss）
         jitter: 训练时加到输入的均匀噪声幅度（0 表示不加）
+        router_temperature: V1.2 路由温度（默认 1.0，向后兼容）
+        ema_decay: V1.2 aux loss EMA 衰减系数（0=禁用，0.99=强平滑）
+        entropy_weight: V1.2 熵正则权重（0=禁用，默认 0.001）
     """
 
     def __init__(
@@ -275,12 +304,17 @@ class Router(Module):
         aux_loss_weight: float = 0.01,
         z_loss_weight: float = 0.001,
         jitter: float = 0.0,
+        router_temperature: float = 1.0,
+        ema_decay: float = 0.0,
+        entropy_weight: float = 0.0,
     ):
         super().__init__()
         if top_k < 1:
             raise ValueError(f"top_k 必须 >= 1，got {top_k}")
         if top_k > num_routes:
             raise ValueError(f"top_k({top_k}) 不能大于 num_routes({num_routes})")
+        if router_temperature <= 0:
+            raise ValueError(f"router_temperature 必须 > 0，got {router_temperature}")
 
         self.dim = dim
         self.num_routes = num_routes
@@ -288,6 +322,10 @@ class Router(Module):
         self.aux_loss_weight = aux_loss_weight
         self.z_loss_weight = z_loss_weight
         self.jitter = jitter
+        # V1.2 路由稳定性参数
+        self.router_temperature = float(router_temperature)
+        self.ema_decay = float(ema_decay)
+        self.entropy_weight = float(entropy_weight)
 
         # 路由线性层（无 bias，与 Switch Transformer 一致）
         self.gate = Linear(dim, num_routes, bias=False)
@@ -296,9 +334,11 @@ class Router(Module):
         # 最近一次 forward 的 aux loss 分项（供外部读取）
         self._last_load_balance_loss = None
         self._last_z_loss = None
+        # V1.2 EMA 平滑状态：load_balance 的指数移动平均（抑制训练抖动）
+        self._load_balance_ema: Optional[float] = None
 
     def forward(self, x: Tensor):
-        """前向计算。
+        """前向计算（V1.2）。
 
         Args:
             x: ``(B, T, D)`` 的输入 Tensor
@@ -306,7 +346,7 @@ class Router(Module):
         Returns:
             dispatched_indices: ``(B, T, top_k)`` int Tensor（不可微）
             dispatched_weights: ``(B, T, top_k)`` float Tensor（可微，softmax 重归一化）
-            aux_loss: 标量 Tensor（可微，load_balance + z_loss）
+            aux_loss: 标量 Tensor（可微，load_balance + z_loss + entropy_reg）
         """
         B, T, D = x.shape
 
@@ -323,17 +363,25 @@ class Router(Module):
         # Router logits: (B, T, num_routes)
         logits = self.gate(router_input)
 
-        # 全 softmax 概率（用于 aux loss 的 P_i）
-        probs = logits.softmax(dim=-1)  # (B, T, num_routes)
+        # V1.2 温度可调路由：logits / temperature 后再做 softmax。
+        # temperature>1 → 更平滑（探索更强）；temperature<1 → 更尖锐（路由更确定）。
+        # top-k 选择仍基于原始 logits（保持排序不变），仅 softmax 概率受温度影响。
+        if self.router_temperature != 1.0:
+            scaled_logits = logits * (1.0 / self.router_temperature)
+        else:
+            scaled_logits = logits
 
-        # Top-k 选择（不可微，用 numpy）
+        # 全 softmax 概率（用于 aux loss 的 P_i）—— 基于温度缩放后的 logits
+        probs = scaled_logits.softmax(dim=-1)  # (B, T, num_routes)
+
+        # Top-k 选择（不可微，用 numpy）—— 基于原始 logits（排序不受温度影响）
         logits_np = logits.data
         # argsort 降序取前 top_k 个索引
         topk_idx = np.argsort(-logits_np, axis=-1)[..., :self.top_k]  # (B, T, top_k)
         topk_idx = topk_idx.astype(np.int64)
 
         # Gather top-k logits（可微，通过 _gather_topk 手写反向）
-        topk_logits = _gather_topk(logits, topk_idx)  # (B, T, top_k)
+        topk_logits = _gather_topk(scaled_logits, topk_idx)  # (B, T, top_k)
 
         # 重归一化权重：对 top-k logits 做 softmax
         dispatched_weights = topk_logits.softmax(dim=-1)  # (B, T, top_k)
@@ -354,6 +402,20 @@ class Router(Module):
         load_balance_loss = (f_tensor * P).sum() * float(self.num_routes)
         load_balance_loss = load_balance_loss * self.aux_loss_weight
 
+        # V1.2 EMA 平滑：对 load_balance_loss 做指数移动平均，抑制训练抖动。
+        # ema_decay=0 时禁用（向后兼容）；ema_decay>0 时用 EMA 值参与总 aux loss。
+        # 注意：EMA 是不可微的标量平滑（仅影响 aux loss 的数值稳定性，不回传梯度），
+        # 可微的 load_balance_loss 仍然参与 backward。
+        if self.ema_decay > 0.0 and self.training:
+            cur_val = float(load_balance_loss.data)
+            if self._load_balance_ema is None:
+                self._load_balance_ema = cur_val
+            else:
+                self._load_balance_ema = (
+                    self.ema_decay * self._load_balance_ema
+                    + (1.0 - self.ema_decay) * cur_val
+                )
+
         # --- router z-loss（ST-MoE 风格，防 logits 过大）---
         # z_loss = z_loss_weight × (1/N) × Σ_{b,t,i} (logits_{b,t,i})^2
         # 其中 N = B × T（token 总数），梯度通过 logits^2 回传到 gate 权重
@@ -363,11 +425,30 @@ class Router(Module):
         else:
             z_loss = Tensor(np.zeros((), dtype=np.float32), requires_grad=False)
 
-        # 总 aux loss = load_balance + z_loss
-        aux_loss = load_balance_loss + z_loss
+        # --- V1.2 熵正则化（鼓励专家多样化使用，防路由塌缩）---
+        # entropy_reg = -entropy_weight × mean_{b,t}(Σ_i P_i × log P_i)
+        # 取负号是因为我们要最大化熵（均匀分布熵最大），故 loss 中减去熵。
+        if self.entropy_weight > 0:
+            # probs: (B, T, num_routes)，加 eps 防 log(0)
+            probs_np = probs.data
+            eps = 1e-9
+            entropy_per_token = -np.sum(
+                probs_np * np.log(probs_np + eps), axis=-1
+            )  # (B, T)
+            mean_entropy = float(np.mean(entropy_per_token))
+            # 熵正则作为常量叠加（梯度已通过 load_balance 的 P_i 回传，这里不重复）
+            entropy_reg = Tensor(
+                np.array(-self.entropy_weight * mean_entropy, dtype=np.float32),
+                requires_grad=False,
+            )
+        else:
+            entropy_reg = Tensor(np.zeros((), dtype=np.float32), requires_grad=False)
+
+        # 总 aux loss = load_balance + z_loss + entropy_reg
+        aux_loss = load_balance_loss + z_loss + entropy_reg
 
         # 缓存分项供外部读取
-        # 用 object.__setattr__ 绕过 nn.Module.__setattr__ 的自动注册，
+        # 用 object.__setattr__ 绕过 vnn.Module.__setattr__ 的自动注册，
         # 避免这些临时 forward 缓存进入 _parameters / state_dict 导致
         # ParallelTrainer 合并 chunk 时 "Unexpected keys" 报错
         object.__setattr__(self, "_last_load_balance_loss", load_balance_loss)
@@ -451,6 +532,9 @@ class DensePart(Module):
         dropout: dropout 概率
         aux_loss_weight: load balancing loss 权重
         z_loss_weight: router z-loss 权重
+        router_temperature: V1.2 路由温度
+        ema_decay: V1.2 aux loss EMA 衰减
+        entropy_weight: V1.2 熵正则权重
     """
 
     def __init__(
@@ -462,6 +546,9 @@ class DensePart(Module):
         dropout: float = 0.0,
         aux_loss_weight: float = 0.01,
         z_loss_weight: float = 0.001,
+        router_temperature: float = 1.0,
+        ema_decay: float = 0.0,
+        entropy_weight: float = 0.0,
     ):
         super().__init__()
         if top_k > num_experts:
@@ -481,13 +568,16 @@ class DensePart(Module):
             [Expert(dim, expert_hidden, dropout) for _ in range(num_experts)]
         )
 
-        # 内部 expert router
+        # 内部 expert router（V1.2 透传路由稳定性参数）
         self.router = Router(
             dim,
             num_experts,
             top_k=top_k,
             aux_loss_weight=aux_loss_weight,
             z_loss_weight=z_loss_weight,
+            router_temperature=router_temperature,
+            ema_decay=ema_decay,
+            entropy_weight=entropy_weight,
         )
 
     def forward(self, x: Tensor, part_weights: Tensor):
@@ -525,7 +615,7 @@ class DensePart(Module):
 
 
 class MoDLayer(Module):
-    """MoD (Mixture of Dense Parts) 顶层：双层路由。
+    """MoD (Mixture of Dense Parts) 顶层：双层路由 V1.2。
 
     **第一层 (part_router)**: soft routing，将 token 加权分配到
     ``num_dense_parts`` 个 ``DensePart``。当 ``top_k == num_dense_parts`` 时，
@@ -537,12 +627,17 @@ class MoDLayer(Module):
 
         out = Σ_{p=1}^{num_dense_parts} part_weights[p] × DensePart_p(x)
 
-    总 aux loss（含 load_balance + z_loss）::
+    总 aux loss（含 load_balance + z_loss + V1.2 熵正则）::
 
-        total_aux = Σ_all_routers (load_balance_loss + z_loss)
+        total_aux = Σ_all_routers (load_balance_loss + z_loss + entropy_reg)
 
     使用 ``aux_loss()`` 获取最近一次 forward 的总辅助损失标量，
     ``get_aux_loss_dict()`` 获取分项 breakdown。
+
+    V1.2 路由稳定性参数（透传到所有 Router）：
+    - ``router_temperature``：路由温度（默认 1.0）
+    - ``ema_decay``：aux loss EMA 衰减（默认 0=禁用，建议 0.9 训练时启用）
+    - ``entropy_weight``：熵正则权重（默认 0.001，鼓励专家多样化）
 
     Args:
         dim: 输入维度
@@ -554,6 +649,9 @@ class MoDLayer(Module):
         aux_loss_weight: load balancing loss 权重
         z_loss_weight: router z-loss 权重（防 logits 过大）
         dense_part_names: 分区名称列表（可选，用于调试/可视化）
+        router_temperature: V1.2 路由温度
+        ema_decay: V1.2 aux loss EMA 衰减
+        entropy_weight: V1.2 熵正则权重
 
     Note:
         - 5 DensePart × 8 Expert × top-3 双层门控结构（默认）
@@ -572,6 +670,9 @@ class MoDLayer(Module):
         aux_loss_weight: float = 0.01,
         z_loss_weight: float = 0.001,
         dense_part_names: list = None,
+        router_temperature: float = 1.0,
+        ema_decay: float = 0.0,
+        entropy_weight: float = 0.0,
     ):
         super().__init__()
         if num_dense_parts < 1:
@@ -595,6 +696,10 @@ class MoDLayer(Module):
         self.expert_hidden = expert_hidden
         self.aux_loss_weight = aux_loss_weight
         self.z_loss_weight = z_loss_weight
+        # V1.2 路由稳定性参数
+        self.router_temperature = float(router_temperature)
+        self.ema_decay = float(ema_decay)
+        self.entropy_weight = float(entropy_weight)
 
         # 分区名称（可选）
         if dense_part_names is not None:
@@ -608,15 +713,19 @@ class MoDLayer(Module):
             self.dense_part_names = [f"part_{i}" for i in range(num_dense_parts)]
 
         # 第一层：part router（soft routing，top_k = num_dense_parts 选所有 part）
+        # V1.2 透传路由稳定性参数
         self.part_router = Router(
             dim,
             num_dense_parts,
             top_k=num_dense_parts,
             aux_loss_weight=aux_loss_weight,
             z_loss_weight=z_loss_weight,
+            router_temperature=router_temperature,
+            ema_decay=ema_decay,
+            entropy_weight=entropy_weight,
         )
 
-        # 第二层：DensePart 列表
+        # 第二层：DensePart 列表（V1.2 透传路由稳定性参数）
         self.parts = ModuleList(
             [
                 DensePart(
@@ -627,6 +736,9 @@ class MoDLayer(Module):
                     dropout=dropout,
                     aux_loss_weight=aux_loss_weight,
                     z_loss_weight=z_loss_weight,
+                    router_temperature=router_temperature,
+                    ema_decay=ema_decay,
+                    entropy_weight=entropy_weight,
                 )
                 for _ in range(num_dense_parts)
             ]

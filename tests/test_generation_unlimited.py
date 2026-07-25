@@ -278,7 +278,7 @@ def test_nex_generate_sampling_path_eos_stop():
 
 def test_v05_generate_default_unlimited_signature():
     """CometSparkV05LM.generate 默认 max_new_tokens=None + max_safe_limit 参数。"""
-    from spark.model.model import CometSparkV05LM, CometSparkV05Small
+    from spark.src.base_model import CometSparkV05LM, CometSparkV05Small
     import inspect
 
     sig = inspect.signature(CometSparkV05LM.generate)
@@ -302,7 +302,7 @@ def test_v05_generate_unlimited_via_mock():
 
     替换内部 net.generate 为可控 mock，验证 EOS 提前停止行为。
     """
-    from spark.model.model import CometSparkV05Small
+    from spark.src.base_model import CometSparkV05Small
 
     model = CometSparkV05Small()
     # 用 mock 替换 net.generate
@@ -349,7 +349,7 @@ def test_v05_generate_unlimited_via_mock():
 
 def test_v05_generate_max_new_tokens_compat():
     """CometSparkV05LM.generate max_new_tokens=10 仍按值生成（兼容旧调用）。"""
-    from spark.model.model import CometSparkV05Small
+    from spark.src.base_model import CometSparkV05Small
 
     model = CometSparkV05Small()
     idx = np.array([[1, 2, 3]], dtype=np.int64)
@@ -477,7 +477,7 @@ class _MockTokenizer:
 
 def test_generate_with_template_method_exists():
     """CometSparkV05LM 有 generate_with_template 方法。"""
-    from spark.model.model import CometSparkV05LM
+    from spark.src.base_model import CometSparkV05LM
     assert hasattr(CometSparkV05LM, "generate_with_template"), (
         "CometSparkV05LM 缺少 generate_with_template 方法"
     )
@@ -485,7 +485,7 @@ def test_generate_with_template_method_exists():
 
 def test_generate_with_template_returns_string():
     """generate_with_template 返回字符串（用 mock tokenizer + mock net）。"""
-    from spark.model.model import CometSparkV05Small
+    from spark.src.base_model import CometSparkV05Small
 
     model = CometSparkV05Small()
 
@@ -521,7 +521,7 @@ def test_generate_with_template_returns_string():
 
 def test_generate_with_template_compat_with_old_tokenizer():
     """generate_with_template 兼容旧 tokenizer API（apply_chat_template 不接受 add_generation_prompt）。"""
-    from spark.model.model import CometSparkV05Small
+    from spark.src.base_model import CometSparkV05Small
 
 
     class _OldTokenizer:
@@ -598,7 +598,7 @@ def test_legacy_max_new_tokens_eq_10_works_nex():
 
 def test_legacy_max_new_tokens_eq_10_works_v05():
     """CometSparkV05LM.generate(max_new_tokens=10) 仍工作（兼容旧调用）。"""
-    from spark.model.model import CometSparkV05Small
+    from spark.src.base_model import CometSparkV05Small
 
     model = CometSparkV05Small()
     idx = np.array([[1, 2, 3]], dtype=np.int64)

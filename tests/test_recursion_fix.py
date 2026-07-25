@@ -108,10 +108,10 @@ class TestBackwardIterativeDFS:
 def _make_cometspark_v05_model():
     """构造一个最小 CometSparkV05LM 模型用于递归测试。
 
-    Part4K1 Task 8.9: 使用 spark.model.model.CometSparkV05Small（替代旧 CometSparkLM）。
+    Part4K1 Task 8.9: 使用 spark.src.base_model.CometSparkV05Small（替代旧 CometSparkLM）。
     所有模型现在走 VerseNexLM（CometSparkNexLM）路径，arch 统一为 versenex。
     """
-    from spark.model.model import CometSparkV05Small
+    from spark.src.base_model import CometSparkV05Small
 
     # 极小配置，仅用于验证不爆栈，不追求数值合理性
     # CometSparkV05Small 默认 vocab_size=256, n_layer=2, n_embd=64

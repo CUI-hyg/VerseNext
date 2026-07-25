@@ -144,7 +144,7 @@ def _import_cometspark_lm():
 
     查找顺序：
         1. 已缓存（``_COMETSPARK_LM_CLASS``）
-        2. ``from spark.model.model import CometSparkV05LM``
+        2. ``from spark.src.base_model import CometSparkV05LM``
            （由 ``spark._bootstrap.ensure_paths()`` 确保 spark/ 在 sys.path）
         3. 从默认路径 ``<repo>/spark`` 加载（可用环境变量 ``COMETSPARK_SPARK_PATH`` 覆盖）
 
@@ -158,9 +158,9 @@ def _import_cometspark_lm():
     # 确保所有路径已设置（spark/ 已由 ensure_paths 注入）
     _ensure_paths_safe()
 
-    # 2. 尝试 spark.model.model（Part4K1 Task 8.9 首选路径）
+    # 2. 尝试 spark.src.base_model（Part5K1.1 首选路径）
     try:
-        mod = importlib.import_module("spark.model.model")
+        mod = importlib.import_module("spark.src.base_model")
         _COMETSPARK_LM_CLASS = getattr(mod, "CometSparkV05LM")
         return _COMETSPARK_LM_CLASS
     except ImportError:
@@ -173,7 +173,7 @@ def _import_cometspark_lm():
     if spark_path and spark_path not in sys.path:
         sys.path.insert(0, spark_path)
     try:
-        mod = importlib.import_module("spark.model.model")
+        mod = importlib.import_module("spark.src.base_model")
         _COMETSPARK_LM_CLASS = getattr(mod, "CometSparkV05LM")
         return _COMETSPARK_LM_CLASS
     except ImportError as e:
@@ -413,8 +413,8 @@ class ModelLoader:
             model = CometSparkLM.from_pretrained(repo_or_path)
         elif isinstance(payload, dict) and "model_state_dict" in payload:
             # 格式 (b)：仅 state_dict，需要外部 config
-            # Part4K1 Task 8.9: 用 spark.model.config 构造默认 config
-            from spark.model.config import CometSparkV05Config  # type: ignore
+            # Part5K1.1: 用 spark.src.base_config 构造默认 config
+            from spark.src.base_config import CometSparkV05Config  # type: ignore
             config_dict = {
                 "vocab_size": self.vocab_size,
                 "n_layer": self.n_layers,
