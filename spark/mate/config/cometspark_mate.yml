@@ -111,7 +111,11 @@ training:
   parallel_strategy: sequential
 
 tokenizer:
-  kind: bpe
+  # Part5K1.3 Task 8.2: 默认 gigatoken（高速 Tokenizer）
+  # 未安装 gigatoken 时，bpe.load_tokenizer(kind="giga") 会自动降级到 VerseTokenizer
+  # （打印降级警告，path=from_hf 透传给 VerseTokenizer 作为 model_id）。
+  # from_hf 仍保留，供降级路径与显式 kind="bpe" 时使用。
+  kind: giga
   vocab_size: 248320
   from_hf: Qwen/Qwen3.5-35B-A3B
 

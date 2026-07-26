@@ -1698,15 +1698,54 @@ def load_tokenizer(kind: str = "byte", path: Optional[str] = None):
 
     Args:
         kind: tokenizer 类型
+            - ``"giga"``：优先 :class:`GigaTokenizerWrapper`（gigatoken Rust 实现，
+              ~1000× 快于 HF tokenizers），gigatoken 不可用时**自动降级**到
+              :class:`VerseTokenizer`（打印警告）。
+              Part5K1.3 Task 7.8 新增。
+            - ``"verse"``：:class:`VerseTokenizer`（lazy import transformers）。
+              Part5K1.3 Task 7.8 新增。
             - ``"hf"``：尝试用 ``tokenizers`` 包加载 HF ``tokenizer.json``，
               失败 fallback 到 :class:`ByteTokenizer`
             - ``"bpe"``：调用 :meth:`BPETokenizer.load`；无 path 返回空 BPETokenizer
             - ``"byte"``：返回 :class:`ByteTokenizer`（path 可选）
-        path: 文件路径（可选）
+        path: 文件路径 / model_id / 本地目录（可选）。``kind="giga"`` /
+            ``kind="verse"`` 时，``path`` 作为 model_id 或本地 tokenizer 目录
+            传给构造函数。
 
     Returns:
         统一接口对象：``encode(text)`` → ``List[int]``，``decode(ids)`` → ``str``
+
+    Note:
+        默认 ``kind="byte"`` 保持向后兼容（Part5K1.3 Task 7.8：原默认非
+        ``"verse"``，故不改变默认值；"设为默认" 由 Task 8 通过 config 文件
+        ``tokenizer.kind: "giga"`` 完成）。调用方显式传 ``kind="giga"``
+        即可走 gigatoken 路径。
     """
+    # Part5K1.3 Task 7.8: kind="giga" 优先用 gigatoken，不可用时降级到 VerseTokenizer
+    if kind == "giga":
+        try:
+            from .giga import GigaTokenizerWrapper
+            if path is not None:
+                return GigaTokenizerWrapper(model_id_or_tokenizer=path)
+            return GigaTokenizerWrapper()
+        except ImportError:
+            # gigatoken 不可用（或兼容模式下 transformers 不可用），降级到 VerseTokenizer
+            print(
+                "[load_tokenizer] gigatoken 未安装，降级到 VerseTokenizer",
+                flush=True,
+            )
+            return load_tokenizer(kind="verse", path=path)
+
+    # Part5K1.3 Task 7.8: kind="verse" 走 VerseTokenizer 路径（显式调用，不降级）
+    if kind == "verse":
+        from .verse import VerseTokenizer
+        if path is not None:
+            # path 可能是本地目录或 HuggingFace model_id
+            if os.path.isdir(path):
+                return VerseTokenizer(tokenizer_dir=path)
+            return VerseTokenizer(model_id=path)
+        return VerseTokenizer()
+
     if kind == "hf":
         if path and os.path.exists(path):
             try:
@@ -1754,7 +1793,8 @@ def load_tokenizer(kind: str = "byte", path: Optional[str] = None):
         return ByteTokenizer()
 
     raise ValueError(
-        f"Unknown tokenizer kind: {kind!r} (expected 'hf'/'bpe'/'byte')"
+        f"Unknown tokenizer kind: {kind!r} "
+        f"(expected 'giga'/'verse'/'hf'/'bpe'/'byte')"
     )
 
 

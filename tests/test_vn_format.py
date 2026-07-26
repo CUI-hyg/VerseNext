@@ -556,12 +556,13 @@ class TestVersionValidation:
     """读取时校验 vn_format_version。"""
 
     def test_valid_version(self, tmp_dir, sample_state_dict, sample_config):
-        """版本 1 正常读取。"""
+        """当前 VN_FORMAT_VERSION 正常读取（Part5K1.3 升级到 v2）。"""
         vn_path = os.path.join(tmp_dir, "v1.vn")
         with VNFileWriter(vn_path, arch="versenex", config=sample_config) as w:
             w.write_weights(sample_state_dict)
         with VNFileReader(vn_path) as r:
-            assert r.read_meta()["vn_format_version"] == 1
+            assert r.read_meta()["vn_format_version"] == VN_FORMAT_VERSION
+            assert r.read_meta()["vn_format_version"] == 2
 
     def test_invalid_version_rejected(self, tmp_dir, sample_state_dict,
                                       sample_config):

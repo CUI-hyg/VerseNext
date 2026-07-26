@@ -75,6 +75,12 @@ from .verse import VerseTokenizer, QwenTokenizer
 # Task 5.4: NexRL 集成包装器（reward-weighted token preference）
 from .nex_wrapper import NexTokenizerWrapper
 
+# Part5K1.3 Task 7: GigaTokenizerWrapper（包装 gigatoken 库为 BaseTokenizer 接口）
+# 注意：GigaTokenizerWrapper 采用 lazy import gigatoken，模块导入本身不依赖
+# gigatoken。这里 import giga 模块不会触发 gigatoken 加载——只有真正调用
+# GigaTokenizerWrapper() 构造函数时才会触发。
+from .giga import GigaTokenizerWrapper
+
 __version__ = "0.3.0"
 
 __all__ = [
@@ -87,6 +93,8 @@ __all__ = [
     "SentencePieceUnigramTokenizer",
     "VerseTokenizer",
     "QwenTokenizer",  # 向后兼容别名
+    # Part5K1.3 Task 7: gigatoken 包装器
+    "GigaTokenizerWrapper",
     "load_tokenizer",
     # 预处理（Task 2.1）
     "nfkc_normalize",

@@ -1,23 +1,33 @@
 """VerseTorch: PyTorch 委托后端实现。
 
 ``TorchBackend`` 把算子委托给 ``torch.Tensor``，CUDA kernel 走 PyTorch 原生
-实现，NPU 通过 ``torch_npu`` 扩展支持。本模块**仅在 PyTorch 可用时**被实例化
-（由 ``device.get_backend`` 工厂延迟导入）。
+实现，NPU 通过 ``torch_npu`` 扩展支持（CANN 为其底层计算库），ROCm 走
+PyTorch ROCm build（HIP-on-ROCm，复用 cuda API）。本模块**仅在 PyTorch
+可用时**被实例化（由 ``device.get_backend`` 工厂延迟导入）。
 
 主要导出
 ========
 - ``TorchBackend``：继承 ``DeviceBackend``，实现 ``matmul`` / ``linear`` /
   ``attention`` / ``softmax`` / ``layernorm`` / ``rmsnorm`` / ``rope`` 等算子
-  的 torch 委托。
-- ``autocast``：fp16 混合精度上下文管理器（CPU 时 no-op）。
+  的 torch 委托。接受 ``"cuda"`` / ``"mps"`` / ``"npu"`` / ``"rocm"`` /
+  ``"rocm:N"`` 设备字符串（``"rocm"`` 内部映射到 ``torch.device("cuda")``，
+  原字符串保留在 ``_device_str`` 用于诊断）。
+- ``autocast``：fp16 混合精度上下文管理器（CPU 时 no-op；ROCm 映射到
+  ``device_type="cuda"``；NPU 路径首次启用时打印 CANN + PyTorch + torch_npu
+  版本日志，便于运维诊断）。
 - ``to_torch`` / ``to_numpy``：``ndarray`` <-> ``torch.Tensor`` 转换工具。
 
 设计原则
 ========
-- **不自研 CUDA kernel**：所有 GPU 计算走 PyTorch 原生算子
-  （含 ``torch.nn.functional.scaled_dot_product_attention`` 等 fused 路径）。
+- **不自研 CUDA / ROCm / CANN kernel**：所有 GPU/NPU 计算走 PyTorch 原生
+  算子（含 ``torch.nn.functional.scaled_dot_product_attention`` 等 fused
+  路径）；ROCm 走 PyTorch ROCm build 的 MIOpen / rocBLAS / FlashAttention-ROCm；
+  NPU 走 ``torch_npu`` 的 HCCL / hccl_kernel。
 - **NPU 走 torch_npu**：``torch_npu`` 注册后，``torch.device("npu")`` 可用，
   其余 API 与 cuda 一致。
+- **ROCm 走 PyTorch cuda API**：PyTorch 不识别 ``"rocm"`` 字符串，但 ROCm
+  build 通过 HIP 暴露 cuda API，故 ``"rocm"`` / ``"rocm:N"`` 内部映射到
+  ``torch.device("cuda")`` / ``torch.device("cuda:N")``。
 - **autograd 委托**：本后端只提供前向算子，反向传播由 ``torch.Tensor`` 自身
   autograd 机制处理（``Tensor.backward`` 在 GPU 路径调用 ``data.backward()``）。
 """
@@ -33,8 +43,10 @@ from .device import (
     DeviceBackend,
     has_torch,
     has_torch_npu,
+    has_cann,
     get_torch_module,
     get_torch_npu_module,
+    get_cann_version,
     _parse_device,
 )
 
@@ -54,10 +66,18 @@ def _torch_device(device):
     """把字符串 device 转成 ``torch.device`` 实例。
 
     Args:
-        device: ``"cpu"`` / ``"cuda"`` / ``"cuda:0"`` / ``"npu"`` / ``"mps"`` ...
+        device: ``"cpu"`` / ``"cuda"`` / ``"cuda:0"`` / ``"npu"`` / ``"mps"``
+            / ``"rocm"`` / ``"rocm:0"`` ...
 
     Returns:
         ``torch.device`` 实例
+
+    Note:
+        ``"rocm"`` / ``"rocm:N"`` 会被映射到 ``torch.device("cuda")`` /
+        ``torch.device("cuda:N")``：PyTorch 不识别 "rocm" 字符串，但 ROCm
+        build 的 PyTorch 通过 HIP 暴露 cuda API，故走 cuda 路径
+        （HIP-on-ROCm，不自研 kernel）。原 "rocm" 字符串保留在
+        ``TorchBackend._device_str`` 中用于诊断。
 
     Raises:
         RuntimeError: 未安装 torch；或 NPU 设备但未安装 torch_npu。
@@ -69,7 +89,13 @@ def _torch_device(device):
         raise RuntimeError(
             f"未安装 torch_npu，无法使用 NPU 设备 '{device}'"
         )
-    return torch.device(str(device))
+    # ROCm (HIP-on-ROCm) 走 PyTorch cuda 路径：rocm / rocm:N → cuda / cuda:N
+    dev_str = str(device).lower()
+    if dev_str == "rocm":
+        dev_str = "cuda"
+    elif dev_str.startswith("rocm:"):
+        dev_str = "cuda:" + dev_str.split(":", 1)[1]
+    return torch.device(dev_str)
 
 
 def to_torch(ndarray, device: str = "cpu", dtype=None):
@@ -135,12 +161,16 @@ def _numpy_dtype_to_torch(np_dtype):
 # autocast 上下文管理器
 # ---------------------------------------------------------------------------
 
+# NPU autocast 首次启用日志标记：避免每个 autocast 块都打印 CANN 版本日志
+# （Part5K1.3 Task 10.4：仅首次启用时打印，便于运维诊断）
+_npu_autocast_logged: bool = False
+
 
 @contextmanager
 def autocast(device=None, dtype=None, enabled: bool = True):
     """混合精度 autocast 上下文管理器。
 
-    GPU（cuda / mps / npu）设备下启用 ``torch.autocast``（默认 fp16）；
+    GPU（cuda / mps / npu / rocm）设备下启用 ``torch.autocast``（默认 fp16）；
     CPU 设备下为 **no-op**（按需求"CPU 时验证 no-op"）。
     无 PyTorch 时同样 no-op。
 
@@ -148,11 +178,21 @@ def autocast(device=None, dtype=None, enabled: bool = True):
     ``torch_npu`` 可用时，``torch.autocast(device_type="npu", ...)`` 由
     ``torch_npu`` 注册后可正常工作。
 
+    Part5K1.3 Task 10:
+    - **ROCm 兼容**：``device_type="rocm"`` 等价 ``device_type="cuda"``
+      （PyTorch ROCm build 原生支持 fp16 autocast via HIP，在
+      ``torch.autocast(device_type="cuda")`` 下生效）。内部把 ``"rocm"``
+      映射为 ``"cuda"`` 传给 ``torch.autocast``（PyTorch 不识别 "rocm"
+      字符串，但 ROCm build 通过 HIP 暴露 cuda API，不自研 kernel）。
+    - **NPU CANN 日志**：NPU 路径首次启用 autocast 时打印 CANN +
+      PyTorch + torch_npu 版本日志（便于运维诊断，仅首次打印）。
+
     Args:
         device: 设备字符串或 ``torch.device``；``None`` 时自动用 ``"cpu"``。
         dtype: 计算 dtype（cuda 默认 ``torch.float16``）。
         enabled: 是否启用 autocast；``False`` 时直接 yield（no-op）。
     """
+    global _npu_autocast_logged
     if not enabled or torch is None:
         yield
         return
@@ -171,7 +211,30 @@ def autocast(device=None, dtype=None, enabled: bool = True):
         # torch_npu 不可用时降级为 no-op（避免训练中断）
         yield
         return
-    with torch.autocast(device_type=dtype_str, dtype=dtype, enabled=enabled):
+    # ROCm (HIP-on-ROCm) 走 PyTorch cuda 路径：rocm → cuda
+    # PyTorch 不识别 "rocm" 字符串，但 ROCm build 通过 HIP 暴露 cuda API
+    torch_device_type = "cuda" if dtype_str == "rocm" else dtype_str
+    # NPU 路径首次启用时打印 CANN 版本日志（便于运维诊断，仅首次打印）
+    if dtype_str == "npu" and not _npu_autocast_logged:
+        try:
+            cann_version = get_cann_version() if has_cann() else None
+            torch_version = getattr(torch, "__version__", "unknown")
+            torch_npu_mod = get_torch_npu_module()
+            torch_npu_version = (
+                getattr(torch_npu_mod, "__version__", "unknown")
+                if torch_npu_mod is not None
+                else "unavailable"
+            )
+            print(
+                f"[autocast] NPU CANN version={cann_version}, "
+                f"torch={torch_version}, torch_npu={torch_npu_version}"
+            )
+        except Exception:
+            # 日志打印失败不应影响训练
+            pass
+        finally:
+            _npu_autocast_logged = True
+    with torch.autocast(device_type=torch_device_type, dtype=dtype, enabled=enabled):
         yield
 
 
@@ -184,10 +247,16 @@ class TorchBackend(DeviceBackend):
     """PyTorch 委托后端。
 
     算子委托给 ``torch.Tensor``，CUDA kernel 走 PyTorch 原生实现，
-    NPU 通过 ``torch_npu`` 扩展支持。
+    NPU 通过 ``torch_npu`` 扩展支持，ROCm 通过 PyTorch ROCm build
+    （HIP-on-ROCm，暴露为 cuda API）支持。
 
     Args:
-        device: 设备字符串（如 ``"cuda:0"`` / ``"npu:1"`` / ``"mps"``）
+        device: 设备字符串（如 ``"cuda:0"`` / ``"npu:1"`` / ``"mps"`` /
+            ``"rocm"`` / ``"rocm:0"``）。``"rocm"`` / ``"rocm:N"`` 内部
+            映射到 ``torch.device("cuda")`` / ``torch.device("cuda:N")``
+            （PyTorch 不识别 "rocm" 字符串，但 ROCm build 通过 HIP 暴露
+            cuda API），原 ``"rocm"`` 字符串保留在 ``_device_str`` 中用于
+            诊断（见 :attr:`device_type`）。
 
     Raises:
         RuntimeError: 未安装 PyTorch；或 NPU 设备但未安装 torch_npu。
@@ -196,12 +265,21 @@ class TorchBackend(DeviceBackend):
     def __init__(self, device: str = "cuda"):
         if torch is None:
             raise RuntimeError("未安装 PyTorch，无法实例化 TorchBackend")
+        # 保留原 device 字符串（如 "rocm:0"）用于诊断；rocm → cuda 的映射
+        # 在 _torch_device 内部完成（不自研 kernel，走 PyTorch 原生 HIP 路径）
         self._device_str = str(device).lower()
         self._torch_device = _torch_device(self._device_str)
 
     @property
     def device_type(self) -> str:
-        """返回后端设备类型（``"cuda"`` / ``"mps"`` / ``"npu"``）。"""
+        """返回后端设备类型（用于诊断）。
+
+        - ``"cpu"`` / ``"cuda"`` / ``"mps"`` / ``"npu"``：原值
+        - ``"rocm"``：``_device_str`` 以 ``"rocm"`` 开头时返回 ``"rocm"``
+          （诊断用，底层 ``_torch_device`` 已映射到 ``cuda``）
+        """
+        # split(":")[0] 对 "rocm:0" 返回 "rocm"，对 "cuda:0" 返回 "cuda"
+        # 满足"rocm 开头返回 rocm，否则按原逻辑返回 cuda/npu/cpu"的要求
         return self._device_str.split(":")[0]
 
     @property

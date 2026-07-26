@@ -36,7 +36,7 @@ import math
 import os
 import pickle
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Any
 
 import numpy as np
 
@@ -596,6 +596,9 @@ class CometSparkV05LM:
         path: str,
         chat_template: Optional[str] = None,
         tokenizer=None,
+        training_state: Optional[dict] = None,
+        optimizer_state: Optional[dict] = None,
+        extra_state: Optional[Any] = None,
     ) -> None:
         """保存为 ``.vn`` 格式（基于 safetensors 的性能优化容器）。
 
@@ -603,11 +606,25 @@ class CometSparkV05LM:
         不可用时自动降级 npz。与 :meth:`save`（pickle .pt）互为补充，
         且可通过 :meth:`load_vn` 或 ``vn_to_pt`` 无损还原。
 
+        Part5K1.3 Task 5.4：新增 ``training_state`` / ``optimizer_state`` /
+        ``extra_state`` 参数，调用 :class:`verse_torch.vn_format.VNFileWriter`
+        v2 API 写入断点续训所需的训练/优化器/额外状态。子类
+        (:class:`CometSparkSmallLM` / :class:`CometSparkMateLM`) 通过继承
+        获得能力，``save(format="vn", training_state=...)`` 透传到本方法。
+
         Args:
             path: 输出 ``.vn`` 文件路径。
             chat_template: 聊天模板字符串（可选），写入 ``chat_template.jinja``。
             tokenizer: tokenizer 路径（str/PathLike）或 dict（可选），
                 写入 ``tokenizer.json``。
+            training_state: JSON-able dict（可选），写入 ``training_state.json``，
+                建议含 ``step`` / ``epoch`` / ``best_val_loss`` /
+                ``patience_count`` / ``rng_state_hex`` 等字段。
+            optimizer_state: 任意 dict（可选），写入 ``optimizer_state.pkl``
+                （pickle），承载 AdamW 的 ``exp_avg`` / ``exp_avg_sq`` / ``step``
+                / scheduler state 等。
+            extra_state: 任意 Python 对象（可选），写入 ``extra_state.pkl``
+                （pickle），承载用户自定义状态（EMA / grad scaler 等）。
         """
         from verse_torch.vn_format import VNFileWriter
 
@@ -623,6 +640,12 @@ class CometSparkV05LM:
                 writer.write_chat_template(chat_template)
             if tokenizer is not None:
                 writer.write_tokenizer(tokenizer)
+            if training_state is not None:
+                writer.write_training_state(training_state)
+            if optimizer_state is not None:
+                writer.write_optimizer_state(optimizer_state)
+            if extra_state is not None:
+                writer.write_extra_state(extra_state)
             writer.close()
         except Exception:
             writer.close()

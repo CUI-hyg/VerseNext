@@ -44,7 +44,8 @@ import copy
 import json
 import os
 import pickle
-from typing import Optional, List, Iterable
+from pathlib import Path
+from typing import Optional, List, Iterable, Any
 
 import numpy as np
 
@@ -924,25 +925,109 @@ class CometSparkNexLM(Module):
     # save / load（pickle，与 CometSparkLM 兼容）
     # ------------------------------------------------------------------
 
-    def save(self, path: str) -> None:
-        """保存到 ``.pt`` 单文件（pickle）。
+    def save(
+        self,
+        path: str,
+        format: str = "vn",
+        **kwargs,
+    ) -> None:
+        """保存到单文件。
 
-        Payload 结构::
+        Part5K1.3 Task 5.1：新增 ``format`` 参数（默认 ``"vn"``），与
+        :class:`CometSparkSmallLM` 接口对齐。
 
-            {
-                "arch": "versenex",
-                "config": dict,         # 构造参数
-                "state_dict": {name: ndarray},
-            }
+        Args:
+            path: 输出文件路径。
+            format: ``"vn"`` 或 ``"pt"``（默认 ``"vn"``）。
+                - ``"vn"``：调用 :meth:`save_vn`，生成 ``.vn`` 文件
+                  （ZIP 容器，基于 safetensors/npz + meta，支持 mmap 零拷贝）。
+                - ``"pt"``：原 pickle 路径（向后兼容），payload 结构::
+
+                      {
+                          "arch": "versenex",
+                          "config": dict,         # 构造参数
+                          "state_dict": {name: ndarray},
+                      }
+            **kwargs: ``format="vn"`` 时透传给 :meth:`save_vn`
+                （如 ``chat_template`` / ``tokenizer`` / ``training_state`` /
+                ``optimizer_state`` / ``extra_state``）。
+
+        Raises:
+            ValueError: ``format`` 非 ``"vn"`` / ``"pt"`` 时。
         """
-        os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
-        payload = {
-            "arch": "versenex",
-            "config": self.get_config(),
-            "state_dict": {k: np.asarray(v) for k, v in self.state_dict().items()},
-        }
-        with open(path, "wb") as f:
-            pickle.dump(payload, f)
+        if format == "vn":
+            self.save_vn(path, **kwargs)
+        elif format == "pt":
+            os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+            payload = {
+                "arch": "versenex",
+                "config": self.get_config(),
+                "state_dict": {k: np.asarray(v) for k, v in self.state_dict().items()},
+            }
+            with open(path, "wb") as f:
+                pickle.dump(payload, f)
+        else:
+            raise ValueError(
+                f"format 必须为 'vn' 或 'pt'，得到 {format!r}"
+            )
+
+    # ------------------------------------------------------------------
+    # save_vn / _load_vn（Part5K1.3 Task 5.3：.vn 原生格式 + v2 状态）
+    # ------------------------------------------------------------------
+
+    def save_vn(
+        self,
+        path: str,
+        chat_template: Optional[str] = None,
+        tokenizer: Any = None,
+        training_state: Optional[dict] = None,
+        optimizer_state: Optional[dict] = None,
+        extra_state: Optional[Any] = None,
+    ) -> None:
+        """保存为 ``.vn`` 格式（ZIP 容器，VNFileWriter v2 API）。
+
+        Part5K1.3 Task 5.3：新增 ``training_state`` / ``optimizer_state`` /
+        ``extra_state`` 参数，调用 :class:`verse_torch.vn_format.VNFileWriter`
+        v2 API 写入断点续训所需的训练/优化器/额外状态。
+
+        Args:
+            path: 输出 ``.vn`` 文件路径。
+            chat_template: 聊天模板字符串（可选），写入 ``chat_template.jinja``。
+            tokenizer: tokenizer 路径（str/PathLike）或 dict（可选），
+                写入 ``tokenizer.json``。
+            training_state: JSON-able dict（可选），写入 ``training_state.json``，
+                建议含 ``step`` / ``epoch`` / ``best_val_loss`` /
+                ``patience_count`` / ``rng_state_hex`` 等字段。
+            optimizer_state: 任意 dict（可选），写入 ``optimizer_state.pkl``
+                （pickle），承载 AdamW 的 ``exp_avg`` / ``exp_avg_sq`` / ``step``
+                / scheduler state 等。
+            extra_state: 任意 Python 对象（可选），写入 ``extra_state.pkl``
+                （pickle），承载用户自定义状态（EMA / grad scaler 等）。
+        """
+        from verse_torch.vn_format import VNFileWriter
+
+        writer = VNFileWriter(
+            path,
+            arch="versenex",
+            config=self.get_config(),
+        )
+        try:
+            sd = {k: np.asarray(v) for k, v in self.state_dict().items()}
+            writer.write_weights(sd)
+            if chat_template is not None:
+                writer.write_chat_template(chat_template)
+            if tokenizer is not None:
+                writer.write_tokenizer(tokenizer)
+            if training_state is not None:
+                writer.write_training_state(training_state)
+            if optimizer_state is not None:
+                writer.write_optimizer_state(optimizer_state)
+            if extra_state is not None:
+                writer.write_extra_state(extra_state)
+            writer.close()
+        except Exception:
+            writer.close()
+            raise
 
     def load(self, path: str) -> "CometSparkNexLM":
         """从 ``.pt`` 文件加载 state_dict 到当前模型（config 不变）。"""
@@ -953,39 +1038,109 @@ class CometSparkNexLM(Module):
         return self
 
     @classmethod
-    def from_pretrained(cls, path: str) -> "CometSparkNexLM":
+    def from_pretrained(cls, path: str, **kwargs) -> "CometSparkNexLM":
         """从目录或单文件加载完整模型。
 
-        目录模式（HuggingFace 风格）::
+        Part5K1.3 Task 5.2：识别三种输入：
 
-            path/
-              config.json    ← 构造参数
-              model.pt       ← state_dict (pickle)
+        1. **``.vn`` 单文件**（默认格式）：ZIP 容器，通过
+           :class:`verse_torch.vn_format.VNFileReader` 读取（支持 mmap 零拷贝）。
+        2. **``.pt`` 单文件**：原 pickle 路径，
+           payload = ``{"arch": "versenex", "config": dict, "state_dict": dict}``。
+        3. **目录**（HuggingFace 风格）::
 
-        单文件模式（向后兼容）::
+               path/
+                 config.json    ← 构造参数
+                 model.vn       ← 优先（.vn 性能格式）
+                 model.pt       ← 兼容回退（pickle state_dict）
 
-            path.pt → {"arch": "verse_nex", "config": dict, "state_dict": dict}
+        Args:
+            path: ``.vn`` / ``.pt`` 文件路径，或包含 ``config.json`` 的目录路径。
+            **kwargs: 保留扩展参数（当前未使用，便于后续扩展）。
+
+        Returns:
+            加载好权重的 :class:`CometSparkNexLM` 实例。
+
+        Raises:
+            FileNotFoundError: 目录模式中既无 ``model.vn`` 也无 ``model.pt``。
         """
-        if os.path.isdir(path):
-            cfg_path = os.path.join(path, "config.json")
-            with open(cfg_path, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-            model = cls(**cfg)
-            model_pt = os.path.join(path, "model.pt")
-            if os.path.exists(model_pt):
-                with open(model_pt, "rb") as f:
-                    sd = pickle.load(f)
-                if isinstance(sd, dict) and "state_dict" in sd:
-                    sd = sd["state_dict"]
-                model.load_state_dict(sd, strict=False)
-            return model
+        p = Path(path)
+        if p.is_dir():
+            vn_path = p / "model.vn"
+            pt_path = p / "model.pt"
+            if vn_path.exists():
+                return cls._load_vn(vn_path, **kwargs)
+            elif pt_path.exists():
+                return cls._load_pt(pt_path, **kwargs)
+            else:
+                raise FileNotFoundError(
+                    f"目录 {p} 中未找到 model.vn 或 model.pt"
+                )
+        elif p.suffix == ".vn":
+            return cls._load_vn(p, **kwargs)
+        elif p.suffix == ".pt":
+            return cls._load_pt(p, **kwargs)
+        else:
+            # 兼容旧调用：默认按 .pt 处理
+            return cls._load_pt(p, **kwargs)
 
-        # 单文件模式
+    @classmethod
+    def _load_vn(cls, path, **kwargs) -> "CometSparkNexLM":
+        """从 ``.vn`` 单文件加载完整模型（私有辅助方法）。
+
+        通过 :class:`verse_torch.vn_format.VNFileReader` 读取 ZIP 容器中的
+        config 与权重，重建模型实例。
+        """
+        from verse_torch.vn_format import VNFileReader
+
+        reader = VNFileReader(str(path))
+        try:
+            reader.read_meta()  # 校验 vn_format_version
+            cfg = reader.read_config()
+            sd = reader.read_weights(mmap=True)
+        finally:
+            reader.close()
+
+        model = cls(**cfg)
+        model.load_state_dict(sd, strict=False)
+        return model
+
+    @classmethod
+    def _load_pt(cls, path, **kwargs) -> "CometSparkNexLM":
+        """从 ``.pt`` 单文件加载完整模型（私有辅助方法，pickle 路径）。
+
+        支持两种 payload 结构：
+
+        - **完整 payload**：``{"arch": ..., "config": dict, "state_dict": dict}``
+          （由 :meth:`save` 写出）
+        - **仅 state_dict**：目录模式下 ``model.pt`` 仅含 state_dict，
+          此时从同目录的 ``config.json`` 读取构造参数。
+        """
+        path = Path(path)
         with open(path, "rb") as f:
             payload = pickle.load(f)
-        cfg = payload["config"]
+
+        if isinstance(payload, dict) and "config" in payload:
+            # 完整 payload（save 写出的单文件）
+            cfg = payload["config"]
+            sd = payload["state_dict"] if "state_dict" in payload else payload
+        else:
+            # 仅 state_dict（目录模式下 save_pretrained 写出的 model.pt）
+            sd = (
+                payload["state_dict"]
+                if isinstance(payload, dict) and "state_dict" in payload
+                else payload
+            )
+            cfg_path = path.parent / "config.json"
+            if cfg_path.exists():
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+            else:
+                raise FileNotFoundError(
+                    f"{path} 不含 config，且同目录下未找到 config.json"
+                )
+
         model = cls(**cfg)
-        sd = payload["state_dict"] if "state_dict" in payload else payload
         model.load_state_dict(sd, strict=False)
         return model
 

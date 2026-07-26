@@ -111,31 +111,36 @@ python spark/run.py download --url https://example.com/data.jsonl --to-npz -o da
 
 > **提示**：所有子命令均支持 `--dry-run` 只打印将要执行的操作而不真正执行。Part5K1.1 起 `--model small|mate` 自动调用对应配置与 checkpoint 目录，并用 ASCII 表格展示配置 / 模型信息（无外部依赖）。
 
-### GPU/NPU 支持（DeviceBackend）
+### GPU/NPU 支持（DeviceBackend，Part5K1.3 新增 ROCm / CANN 兼容）
 
 `verse_torch.device.DeviceBackend` 提供设备后端抽象：
 
 - `NumpyBackend`（默认 CPU）：所有算子用 NumPy 实现，与自研 autograd 完全等价
-- `TorchBackend`（PyTorch 委托）：CUDA kernel 走 PyTorch 原生实现，NPU 通过 `torch_npu` 扩展支持；**不自研 kernel**
-- `autocast`：fp16 混合精度上下文管理器（CPU 时 no-op）
+- `TorchBackend`（PyTorch 委托）：CUDA kernel 走 PyTorch 原生实现，NPU 通过 `torch_npu` 扩展支持，**AMD ROCm 通过 PyTorch ROCm build（HIP-on-ROCm）复用 cuda 路径**；**不自研 kernel**
+- `autocast`：fp16 混合精度上下文管理器（CPU 时 no-op，GPU/NPU/ROCm 启用 `torch.autocast`）
 - `Tensor.device` / `.to(device)` / `.cuda()` / `.npu()` / `.cpu()`：API 与 PyTorch 一致
 - `Module.to(device)`：迁移所有参数到目标设备
 - 无 PyTorch 环境下 `Tensor.cuda()` 抛 `RuntimeError`，CPU 路径完全不变
+- **AMD ROCm 显式支持（Part5K1.3 新增）**：`--device rocm` / `--device rocm:0` 等价 `cuda`（HIP-on-ROCm 复用 PyTorch cuda API）；`has_rocm()` / `get_rocm_version()` 探测 ROCm 环境；`autocast(device="rocm")` 内部映射 `device_type="cuda"`（PyTorch ROCm build 原生支持 fp16 via HIP）
+- **NPU CANN 兼容增强（Part5K1.3 新增）**：`has_cann()` / `get_cann_version()` 探测 CANN 版本；`autocast` 在 NPU 路径首次启用时打印 CANN + PyTorch + torch_npu 版本日志（便于运维诊断）；`get_memory_info("npu")` 多 API 兜底（`mem_get_info` / `memory_allocated`，兼容不同 CANN 版本）
+- **CLI 设备信息（Part5K1.3 新增）**：`spark/run.py` 启动时打印设备 type + 版本 + 显存（`_print_device_info`），用户启动即可确认环境
 
-详见 [ADR-005 GPU/NPU 后端抽象](docs/architecture/adr-005-gpu-npu-backend.md)。
+详见 [ADR-005 GPU/NPU 后端抽象](docs/architecture/adr-005-gpu-npu-backend.md) / [ADR-019 NPU CANN & AMD ROCm 兼容](docs/architecture/adr-019-rocm-cann-compat.md)。
 
-### .vn 文件格式（Part4K2 / Part5K1.1 多空间缓存）
+### .vn 文件格式（Part4K2 / Part5K1.1 多空间缓存 / Part5K1.3 v2 断点续训）
 
-`verse_torch.vn_format` 定义基于 **safetensors 性能优化**的模型容器格式 `.vn`，取代传统 pickle `.pt`。Part5K1.1 新增**多空间缓存**支持：
+`verse_torch.vn_format` 定义基于 **safetensors 性能优化**的模型容器格式 `.vn`，取代传统 pickle `.pt`。Part5K1.1 新增**多空间缓存**支持；**Part5K1.3 升级到 v2 格式，原生支持断点续训**：
 
 - **ZIP 容器**：内含 `model.safetensors`（或降级 `model.npz`）+ `config.yml` + `chat_template.jinja`（可选）+ `tokenizer.json`（可选）+ `meta.json`
 - **mmap 零拷贝**：safetensors 可用时通过 `safe_open` 零拷贝读取权重；npz 路径落盘懒加载
 - **无损互转**：`pt_to_vn` / `vn_to_pt` / `convert_format`，权重数值完全一致
-- **自描述**：`meta.json` 记录 `vn_format_version` / `arch` / `weight_format` / `compression_info` / `created_at`
+- **自描述**：`meta.json` 记录 `vn_format_version` / `arch` / `weight_format` / `compression_info` / `created_at` / `has_training_state` / `has_optimizer_state` / `has_extra_state`
 - **安全性**：npz 路径强制 `allow_pickle=False`，safetensors 本身 pickle-free
 - **多空间缓存（Part5K1.1）**：`VNCacheManager` 按需在内存与硬盘间自动缓存——内存充足 + 硬盘充足时优先混合缓存（优先级高的放内存，优先级低的放硬盘），内存不充足时主要放硬盘。为 VMPC V2.0 提供高吞吐、高速度的底层支撑。
 - **VMPC 强制格式**：`use_vmpc=True`（默认）时所有模型文件必须使用 `*.vn` 格式，不可替换修改。
-- **CLI**：`verse-convert --input model.pt --output model.vn`（详见 [ADR-009](docs/architecture/adr-009-vn-format.md)）
+- **v2 断点续训（Part5K1.3 新增）**：`VN_FORMAT_VERSION = 2`，新增 `training_state.json`（step/epoch/best_val_loss/rng_state）+ `optimizer_state.pkl`（AdamW m/v 矩阵 + scheduler state）+ `extra_state.pkl`（用户自定义任意对象）三个可选条目；`VNFileReader` 自动识别 v1/v2（v1 文件读取新方法返回 None，向后兼容）；`CheckpointManager` 新增 `format="vn"|"pt"|"auto"` 参数原生写 `.vn`；新增 `ResumeManager` 统一管理断点续训状态（model + optimizer + step + rng + best_val_loss）。详见 [ADR-017](docs/architecture/adr-017-vn-v2-resume.md)。
+- **原子写（Part5K1.3 新增）**：`CheckpointManager.save_best` / `save_last` 先写 `.tmp` 再 `os.replace` 重命名，训练中断时不损坏 checkpoint。
+- **CLI**：`verse-convert --input model.pt --output model.vn`（详见 [ADR-009](docs/architecture/adr-009-vn-format.md) / [ADR-017](docs/architecture/adr-017-vn-v2-resume.md)）
 
 ```python
 from verse_torch import VNFileReader, VNFileWriter
@@ -397,6 +402,70 @@ Part5K1 针对 64+ 层大模型训练推出层融合 + chunked_forward 加速（
 logits = model._fused_forward_blocks(x, block_indices=range(0, 64))
 ```
 
+### Gigatoken 集成（默认 Tokenizer，Part5K1.3 新增）
+
+Part5K1.3 集成社区高性能 tokenizer 库 **gigatoken**（Rust 实现，~1000× 快于 HF tokenizers，drop-in 兼容），作为默认 tokenizer；**直接导入库，不复刻**。详见 [ADR-018](docs/architecture/adr-018-gigatoken-integration.md)。
+
+- **`GigaTokenizerWrapper`**（`verse_infra.verse_tokenizer/giga.py`）：继承 `BaseTokenizer`，包装 `gigatoken.Tokenizer`，对齐 `VerseTokenizer` 接口（`encode` / `decode` / `encode_batch` / `decode_batch` / `save` / `load` / `__len__` / `apply_chat_template`）。
+- **lazy import gigatoken**：模块 import 不触发加载，仅构造时 `import gigatoken`；不可用时抛 `ImportError` 含安装提示。
+- **兼容模式（默认 `native=False`）**：内部用 `gt.Tokenizer(hf_tokenizer).as_hf()` 包装 HF tokenizer 为 drop-in replacement，与 `VerseTokenizer` 输出**逐 token 一致**；可选 `native=True` 走 `gt.Tokenizer(model_id)` 原生 API（更快但行为可能差异）。
+- **默认配置切换**：`spark/small/config/cometspark_small.yml` 与 `spark/mate/config/cometspark_mate.yml` 的 `tokenizer.kind` 默认从 `"verse"` 改为 `"giga"`；`VerseTokenizer` 保留向后兼容，仅在默认路径让位。
+- **自动降级**：`load_tokenizer(kind="giga")` 在 gigatoken 不可用时自动降级到 `VerseTokenizer`，打印警告 + 安装提示，不报错。
+- **可选依赖**：`pip install "verse-infra[giga]"` 安装 `gigatoken >= 0.1.0`（不强制安装，CPU 端侧 / 树莓派 / CI 仍可纯标准库运行）。
+
+```python
+from verse_infra.verse_tokenizer import GigaTokenizerWrapper, load_tokenizer
+
+# 默认 gigatoken（不可用时自动降级到 VerseTokenizer）
+tok = load_tokenizer("tokenizer.json", kind="giga", model_id="Qwen/Qwen3.5-35B-A3B")
+
+# 直接构造 GigaTokenizerWrapper
+tok = GigaTokenizerWrapper(model_id="Qwen/Qwen3.5-35B-A3B")  # 兼容模式
+tok = GigaTokenizerWrapper(model_id="Qwen/Qwen3.5-35B-A3B", native=True)  # 原生模式
+
+# 批量 encode 加速 ≥10×（gigatoken Rust 实现）
+ids_batch = tok.encode_batch(["你好", "世界", "hello"])
+```
+
+### 并行训练递归崩溃修复（Part5K1.3 新增）
+
+Part5K1.3 修复 `ParallelTrainerSafe` 在 Phase 3 merge_finetune（chunk_id=-999）路径下的 `RecursionError: maximum recursion depth exceeded in __instancecheck__`，**60+ 层 VerseNex 模型不再爆栈**。
+
+- **根因 1：`copy.deepcopy(state_dict)` 递归遍历对象图**：改为 `pickle.loads(pickle.dumps(state_dict, protocol=4))`，迭代序列化避免递归。
+- **根因 2：`vnn.Module.state_dict()` / `load_state_dict()` 递归 DFS 遍历子模块**：改为**迭代 BFS**（显式栈），消除深层 module 树下的 `__instancecheck__` 递归链；行为等价（state_dict 键值完全一致）。
+- **`_safe_chunk_run` 兜底**：新增 `RecursionError` 捕获分支——`gc.collect()` + 临时上调 `sys.setrecursionlimit(+500)` 重试一次；仍失败时走"跳过该 chunk"路径（保留现有 graceful degrade）。
+- **chunk 间清理**：`ParallelTrainerSafe._train_chunk_safe` 在每个 chunk 结束后 `gc.collect()` + 检查 `is_shutdown_requested()`，避免残留状态泄漏。
+- **`Trainer.fit` 优雅退出**：主循环捕获 `RecursionError` 时优雅保存当前 `best_state` 后退出（exit code != 0），不丢 checkpoint。
+
+```bash
+# 60+ 层 VerseNex 模型训练（不再 RecursionError，val_loss 正常收敛）
+python spark/run.py train --model mate --parallel-chunks 4 --max-steps 1000
+```
+
+### .vn v2 断点续训（Part5K1.3 新增）
+
+Part5K1.3 升级 `.vn` 格式到 v2（`VN_FORMAT_VERSION = 2`），新增 `ResumeManager` 统一管理断点续训状态，**训练中断后可完整恢复 model + optimizer + step + rng + best_val_loss**，续训结果与未中断训练不可区分。详见 [ADR-017](docs/architecture/adr-017-vn-v2-resume.md)。
+
+- **`ResumeManager`**（`verse_torch.training`）：`save(path, model, optimizer, step, **kwargs)` / `load(path) -> ResumeState` / `apply(trainer, path)` 三方法。
+- **`ResumeState` namedtuple**：`model_state_dict` / `optimizer_state` / `step` / `rng_state` / `best_val_loss` / `epoch` / `patience_count`。
+- **v1 向后兼容**：v1 `.vn` / `.pt` 文件缺失字段返回 None + 警告日志（"该 checkpoint 不含 optimizer state，从头初始化 optimizer"）。
+- **集成点**：`ParallelTrainerSafe._save_resume_state` / `_load_resume_state` 改用 `ResumeManager` + `.vn`（旧 `.pkl` 兼容回退）；`spark/run.py continue` 委托 `ResumeManager.apply`。
+
+```bash
+# 训练中断后断点续训（恢复 step / optimizer m/v / rng / best_val_loss）
+python spark/run.py continue --model small --checkpoint mf_small/best.vn --additional-steps 1000
+```
+
+```python
+from verse_torch.training import ResumeManager
+
+# 训练中断后恢复
+resume = ResumeManager()
+state = resume.load("mf_small/best.vn")  # ResumeState(model_state_dict, optimizer_state, step, rng_state, ...)
+resume.apply(trainer, "mf_small/best.vn")  # 恢复 model / optimizer / step / rng / best_val_loss
+trainer.fit()  # 从 step=N 继续
+```
+
 ## 安装
 
 需要 Python ≥ 3.10、NumPy ≥ 1.26。本仓库采用 uv/pip workspace 多包布局，每个 package 都是独立的可编辑安装单元。
@@ -553,6 +622,9 @@ python -m verse_infra.verse_trainer.cli verse-continue \
 | 内存感知训练 | **VMT 三档策略**（unload / freeze / optimize） | VMTTrainer 继承 LayerWiseTrainer，按层位置差异化分配策略；详见 [ADR-015](docs/architecture/adr-015-vmt-full-strategy.md) |
 | 双模型并行 | **spark/small（0.06zB）+ spark/mate（0.2zB）** | VMPC-small / VMPC-mate 预设 + `--model` 参数 + `mf_` checkpoint；详见 [ADR-014](docs/architecture/adr-014-dual-model-small-mate.md) |
 | 核心类命名 | **verse_torch.vnn**（nn → vnn 重命名，BREAKING） | 品牌统一 + nn.py thin shim + nn=vnn 别名；详见 [ADR-016](docs/architecture/adr-016-nn-to-vnn-rename.md) |
+| 断点续训格式 | **.vn v2**（training_state.json + optimizer_state.pkl + extra_state.pkl） | VN_FORMAT_VERSION=2 + v1 向后兼容 + CheckpointManager 原生 .vn + ResumeManager 统一续训；详见 [ADR-017](docs/architecture/adr-017-vn-v2-resume.md) |
+| 默认 Tokenizer | **gigatoken**（lazy import + 自动降级到 VerseTokenizer） | GigaTokenizerWrapper 兼容 HF + 批量 encode ≥10× 加速 + 不强制依赖；详见 [ADR-018](docs/architecture/adr-018-gigatoken-integration.md) |
+| 异构硬件兼容 | **NPU CANN + AMD ROCm**（不自研 kernel，复用 PyTorch / torch_npu） | --device rocm/npu + has_rocm/has_cann 探测 + autocast ROCm→cuda 映射 + CANN 日志；详见 [ADR-019](docs/architecture/adr-019-rocm-cann-compat.md) |
 
 详细架构决策记录见 [`docs/architecture/`](docs/architecture/)。
 
@@ -612,6 +684,9 @@ python -m verse_infra.verse_trainer.cli verse-continue \
 - [ADR-014 双模型并行 small / mate](docs/architecture/adr-014-dual-model-small-mate.md)（**Part5K1 新增**）
 - [ADR-015 VMT 完整三档策略](docs/architecture/adr-015-vmt-full-strategy.md)（**Part5K1 新增**）
 - [ADR-016 verse_torch.nn → vnn 重命名](docs/architecture/adr-016-nn-to-vnn-rename.md)（**Part5K1 新增**）
+- [ADR-017 .vn v2 格式 + 复杂 Python 对象 + 断点续训](docs/architecture/adr-017-vn-v2-resume.md)（**Part5K1.3 新增**）
+- [ADR-018 Gigatoken 集成（默认 Tokenizer + Lazy Import + 降级策略）](docs/architecture/adr-018-gigatoken-integration.md)（**Part5K1.3 新增**）
+- [ADR-019 NPU CANN & AMD ROCm 生态兼容（不自研 kernel）](docs/architecture/adr-019-rocm-cann-compat.md)（**Part5K1.3 新增**）
 
 ### Part4K1 重大升级摘要
 
@@ -682,6 +757,23 @@ Part5K1.1 在 Part5K1 基础上完成模型升级 + 架构升级 + 修复，重�
 - **run.py 体验优化**：`--model small|mate` 自动调用对应配置与 checkpoint 目录（无需指定配置 / 权重目录）+ ASCII 表格化显示配置 / 模型信息（无外部依赖）+ compress 双路径（VMPC V2.0 默认 / `--no-vmpc` legacy）。
 - **全面升级文档与代码注释**：README / spark/README / docs / 代码注释统一到 VMPC V2.0 + VSC 术语。
 
+### Part5K1.3 重大升级摘要
+
+Part5K1.3 在 Part5K1.1 基础上完成 **漏洞修复 + 原生 .vn + Gigatoken + NPU/ROCm 兼容** 四大方向，不引入新业务能力，专注"修 bug + 把壳换成原生 + 接优秀生态 + 兼容硬件"，让自研架构在"稳定可用 / 原生高性能 / 生态兼容"三维度真正落地：
+
+- **并行训练递归崩溃修复（Task 1）**：`ParallelTrainer.fit` Phase 3 merge_finetune（chunk_id=-999）路径不再触发 `RecursionError`——`copy.deepcopy(state_dict)` 改为 `pickle.loads(pickle.dumps(sd, protocol=4))`；`vnn.Module.state_dict()` / `load_state_dict()` 子模块遍历从递归 DFS 改为迭代 BFS（显式栈）；`_safe_chunk_run` 新增 `RecursionError` 捕获 + `gc.collect()` + `sys.setrecursionlimit(+500)` 重试；`Trainer.fit` 主循环捕获 `RecursionError` 时优雅保存 `best_state` 后退出。**60+ 层 VerseNex 模型不再爆栈**。
+- **CheckpointManager 原子写 + format 参数（Task 2）**：`save_best` / `save_last` 先写 `.tmp` 再 `os.replace` 重命名（POSIX 原子语义，训练中断不损坏 checkpoint）；新增 `format="auto"|"vn"|"pt"` 参数 + `use_vmpc=False` 参数；`use_vmpc=True` + `format="pt"` 抛 `ValueError`。
+- **`.vn` v2 格式升级（Task 3，向后兼容 v1）**：`VN_FORMAT_VERSION = 2`；新增 `training_state.json`（step/epoch/best_val_loss/rng_state）+ `optimizer_state.pkl`（AdamW m/v + scheduler state）+ `extra_state.pkl`（用户自定义任意 Python 对象）三个可选条目；抽取 `VNEntry` 抽象统一管理 ZIP 条目；`VNFileReader` 自动识别 v1/v2（v1 文件 read 新方法返回 None）。
+- **CheckpointManager 原生 `.vn` 集成（Task 4）**：`format="vn"` 时调用 `VNFileWriter` / `VNFileReader`，含 model + training_state + optimizer_state + extra_state；`load_best` / `load_last` 返回统一 dict（缺失字段为 None）。
+- **VerseNex / VerseTorch 原生 `.vn` 适配（Task 5）**：`CometSparkNexLM.save(path, format="vn"|"pt")` 新增 `format` 参数（默认 `"vn"`）；`from_pretrained` 识别 `.vn` / `.pt` / 目录（含 `model.vn` 或 `model.pt`）三种输入；`CometSparkSmallLM` / `CometSparkMateLM` 的 `save_vn` 升级支持 training_state / optimizer_state / extra_state 参数。
+- **ResumeManager 断点续训（Task 6）**：新增 `verse_torch.training.ResumeManager` + `ResumeState` namedtuple；`save` / `load` / `apply` 三方法；`ParallelTrainerSafe._save_resume_state` / `_load_resume_state` 改用 `ResumeManager` + `.vn`（旧 `.pkl` 兼容回退）；`spark/run.py continue` 委托 `ResumeManager.apply`。详见 [ADR-017](docs/architecture/adr-017-vn-v2-resume.md)。
+- **GigaTokenizerWrapper 适配器（Task 7）**：新增 `verse_infra.verse_tokenizer.giga.GigaTokenizerWrapper`（lazy import gigatoken + 兼容模式 `gt.Tokenizer(hf_tokenizer).as_hf()` + 可选原生模式）；实现 `encode` / `decode` / `encode_batch` / `decode_batch` / `save` / `load` / `__len__` / `apply_chat_template` 接口；`load_tokenizer(kind="giga")` 自动降级到 `VerseTokenizer`。
+- **Gigatoken 设为默认（Task 8）**：`spark/small` / `spark/mate` 配置 `tokenizer.kind` 默认 `"giga"`；`pyproject.toml` 的 `verse-tokenizer` extras 新增 `[giga]` 可选依赖 `gigatoken >= 0.1.0`（不强制安装）。详见 [ADR-018](docs/architecture/adr-018-gigatoken-integration.md)。
+- **device.py ROCm / CANN 探测（Task 9）**：`_parse_device` 支持 `"rocm"` / `"rocm:0"`（等价 `cuda`，HIP-on-ROCm）；新增 `has_rocm` / `has_cann` / `get_rocm_version` / `get_cann_version` 探测 API；`get_memory_info("npu")` 多 API 兜底（`mem_get_info` / `memory_allocated`，兼容不同 CANN 版本）。
+- **backend_torch.py TorchBackend 兼容 + autocast 日志（Task 10）**：`TorchBackend` 接受 `"rocm"` device 字符串内部映射到 `torch.device("cuda")`；`autocast(device_type="rocm")` 等价 `"cuda"`（PyTorch ROCm build 原生支持 fp16 via HIP）；NPU 路径首次启用 autocast 时打印 CANN + PyTorch + torch_npu 版本日志。
+- **spark/run.py CLI 兼容（Task 11）**：`--device` 参数支持 `"rocm"` / `"rocm:0"` / `"npu"` / `"cuda"` / `"cpu"` / `"mps"`；启动时打印设备信息（type + 版本 + 显存，调用 `has_rocm` / `get_rocm_version` / `has_cann` / `get_cann_version`）。详见 [ADR-019](docs/architecture/adr-019-rocm-cann-compat.md)。
+- **ADR + 文档更新（Task 12）**：新增 ADR-017 / ADR-018 / ADR-019；更新 README / training_guide；代码注释统一到 v2 / ROCm / CANN 术语。
+
 ### 第二次进化 / Part3K2 / Part4 摘要
 
 详见 [审计报告](audit_report.md) 与 [Part4 升级报告](docs/part4_upgrade_report.md)。
@@ -721,7 +813,7 @@ Part5K1.1 在 Part5K1 基础上完成模型升级 + 架构升级 + 修复，重�
 │   └── src/                # 共享基础组件（base_config/base_model/data_loader/trainer/evaluate/utils）
 ├── datasets/               # raw / cleaned / tokenizer
 ├── docs/                   # papers / architecture / benchmarks
-│   └── architecture/       # ADR-001 ~ ADR-016
+│   └── architecture/       # ADR-001 ~ ADR-019
 ├── verse_data/             # designs / experiments / migration_notes（内部材料）
 ├── tests/                  # 单元测试 + 数值梯度检查 + 端到端用例（786 passed）
 ├── examples/               # MNIST / 最小 LM / CPU 推理 demo / JEPA demo

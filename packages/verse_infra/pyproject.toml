@@ -23,6 +23,9 @@ yaml = ["pyyaml>=6.0"]
 chatml = ["jinja2>=3.0"]
 # VerseTokenizer（Qwen3）需要 transformers（lazy import，仅构造时触发）
 verse = ["transformers>=4.40"]
+# Part5K1.3 Task 8.3: gigatoken 高速 Tokenizer（可选，未安装时 load_tokenizer(kind="giga")
+# 自动降级到 VerseTokenizer，不强制安装）
+giga = ["gigatoken>=0.1.0"]
 
 [project.scripts]
 verse-train = "verse_infra.verse_trainer.cli:train_main"

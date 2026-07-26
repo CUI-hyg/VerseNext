@@ -481,6 +481,65 @@ def _generated_to_ids(generated) -> list:
     return np.asarray(generated).reshape(-1).tolist()
 
 
+def _print_device_info(device) -> None:
+    """启动时打印设备信息（device type + 版本 + 显存）。
+
+    Part5K1.3 Task 11.2: 在 ``cmd_train`` 入口处调用，便于运维诊断。
+    调用 :mod:`verse_torch.device` 的 ROCm / CANN 探测 API（Task 9 已完成），
+    在无 PyTorch / 无 GPU / 无 NPU 环境下也安全降级（不抛异常）。
+
+    使用 lazy import：仅在调用时 import ``verse_torch.device``，保持
+    ``spark/run.py`` 启动时的轻量性（不在模块顶部 import verse_torch）。
+
+    Args:
+        device: ``--device`` 参数值，可为 ``None``（默认 auto）/
+            ``"cpu"`` / ``"cuda"`` / ``"cuda:0"`` / ``"npu"`` / ``"mps"`` /
+            ``"rocm"`` / ``"rocm:0"`` 等。
+    """
+    # Lazy import：保持 spark/run.py 启动轻量
+    from verse_torch.device import (
+        has_rocm, get_rocm_version,
+        has_cann, get_cann_version,
+        has_torch, has_torch_npu,
+        get_memory_info,
+    )
+    # device 为 None 时显示 "auto"（cmd_train 默认从 config 推断）
+    dev_display = device if device is not None else "auto"
+    print(f"[device] target device: {dev_display}", flush=True)
+    dev_str = str(device).lower() if device is not None else ""
+    if "cuda" in dev_str or "rocm" in dev_str:
+        if has_rocm():
+            print(f"[device] AMD ROCm version: {get_rocm_version()}", flush=True)
+        else:
+            print(f"[device] NVIDIA CUDA", flush=True)
+        # 显存（无 GPU 时 get_memory_info 返回 0 占位 dict，不抛异常）
+        try:
+            mem = get_memory_info(device)
+            if mem:
+                print(f"[device] GPU memory: {mem}", flush=True)
+        except Exception as e:
+            print(f"[device] GPU memory query failed: {e}", flush=True)
+    elif "npu" in dev_str:
+        if has_cann():
+            print(f"[device] Huawei CANN version: {get_cann_version()}", flush=True)
+        try:
+            mem = get_memory_info(device)
+            if mem:
+                print(f"[device] NPU memory: {mem}", flush=True)
+        except Exception as e:
+            print(f"[device] NPU memory query failed: {e}", flush=True)
+    elif "cpu" in dev_str:
+        print(f"[device] CPU mode (no GPU/NPU)", flush=True)
+    # PyTorch 版本（与 device 无关，总是打印）
+    if has_torch():
+        import torch  # type: ignore
+        print(f"[device] PyTorch version: {torch.__version__}", flush=True)
+        if has_torch_npu():
+            import torch_npu  # type: ignore
+            npu_ver = getattr(torch_npu, "__version__", "unknown")
+            print(f"[device] torch_npu version: {npu_ver}", flush=True)
+
+
 # ---------------------------------------------------------------------------
 # 子命令：train
 # ---------------------------------------------------------------------------
@@ -492,7 +551,17 @@ def cmd_train(args) -> int:
     调用 ``verse_infra.verse_trainer.train()``，训练后可选自动评估。
     Part5K1 Task 11：支持 ``--model small|mate`` 选择双模型级别。
     Part5K1.1：移除旧 spark/config/ 路径，统一走 small/mate 子包配置。
+    Part5K1.3 Task 11.2: 启动时打印设备信息（device type + 版本 + 显存）。
     """
+    # Part5K1.3 Task 11.2: 启动时打印设备信息（device type + 版本 + 显存）
+    # 在 _select_model_level 之前调用，确保即使配置选择失败也能看到设备状态
+    if not getattr(args, "quiet", False):
+        try:
+            _print_device_info(args.device)
+        except Exception as e:
+            # 设备信息打印失败不应影响训练
+            _warn(f"设备信息打印失败（不影响训练）：{e}")
+
     # Part5K1.1：统一走 _select_model_level（--model 默认 small）
     # 兼容旧 --small 标志：等价于 --model small
     if getattr(args, "small", False) and not getattr(args, "model", None):
@@ -749,6 +818,8 @@ def cmd_continue(args) -> int:
     """持续训练（从 checkpoint 继续追加训练）。
 
     委托 ``verse_infra.verse_trainer.continue_train()``，不重复造轮子。
+    Part5K1.3 Task 6.7：``.vn`` checkpoint 委托 :class:`ResumeManager` 提取
+    续训状态信息（step / best_val_loss / epoch / patience_count）。
     """
     config_path, factory, model_level = _select_model_level(args)
 
@@ -769,6 +840,25 @@ def cmd_continue(args) -> int:
             amp=args.amp,
         )
         return 0
+
+    # Part5K1.3 Task 6.7: .vn checkpoint 委托 ResumeManager 提取续训状态信息
+    # （continue_train 内部的 train() 也会用 VNFileReader 加载 .vn 模型权重；
+    #   此处仅用于向用户展示 resume 状态，不重复加载模型）
+    if (args.checkpoint
+            and args.checkpoint.endswith(".vn")
+            and os.path.exists(args.checkpoint)):
+        try:
+            from verse_torch.training import ResumeManager
+            resume_state = ResumeManager.load(args.checkpoint)
+            if not args.quiet:
+                _info(
+                    f"续训状态：step={resume_state.step} "
+                    f"best_val_loss={resume_state.best_val_loss} "
+                    f"epoch={resume_state.epoch} "
+                    f"patience_count={resume_state.patience_count}"
+                )
+        except Exception as e:
+            _warn(f"读取 .vn resume 状态失败：{e}（将继续尝试 continue_from 路径）")
 
     # 实际持续训练：委托 verse_trainer.continue_train
     import verse_infra.verse_trainer as _vt
@@ -1388,6 +1478,47 @@ def cmd_download(args) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _validate_device(value):
+    """argparse type 校验：--device 接受 cpu / cuda / cuda:N / npu / npu:N / mps / rocm / rocm:N。
+
+    Part5K1.3 Task 11.1: 把 ``"rocm"`` / ``"rocm:N"`` 加入允许的设备字符串，
+    保留现有 ``"cpu"`` / ``"cuda"`` / ``"cuda:N"`` / ``"npu"`` / ``"npu:N"`` /
+    ``"mps"`` 支持。
+
+    采用 ``type=`` 而非 ``choices=`` 是因为 ``"rocm:0"`` / ``"cuda:0"`` 含冒号，
+    argparse ``choices`` 不适合精确匹配。运行时校验由本函数完成，真正的 device
+    解析交给 :func:`verse_torch.device._parse_device`（Task 9 已完成）。
+
+    Args:
+        value: 命令行传入的 device 字符串。
+
+    Returns:
+        原值（不修改大小写，由下游 ``_parse_device`` 统一处理）。
+
+    Raises:
+        argparse.ArgumentTypeError: device 前缀不在允许列表，或冒号后非整数。
+    """
+    s = str(value).lower()
+    # 允许的设备前缀（与 verse_torch.device._parse_device 对齐）
+    valid_prefixes = ("cpu", "cuda", "npu", "mps", "rocm")
+    prefix = s.split(":", 1)[0] if ":" in s else s
+    if prefix not in valid_prefixes:
+        raise argparse.ArgumentTypeError(
+            f"无效的 device 字符串：{value!r}，"
+            f"支持 cpu / cuda / cuda:N / npu / npu:N / mps / rocm / rocm:N"
+        )
+    # 校验冒号后是整数（如 cuda:0 / rocm:1）
+    if ":" in s:
+        idx_str = s.split(":", 1)[1]
+        try:
+            int(idx_str)
+        except ValueError:
+            raise argparse.ArgumentTypeError(
+                f"无效的 device 索引：{value!r}，冒号后应为整数（如 cuda:0）"
+            )
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     """构建命令行参数解析器。"""
     parser = argparse.ArgumentParser(
@@ -1422,8 +1553,8 @@ def build_parser() -> argparse.ArgumentParser:
                          help="向后兼容：等价于 --model small")
     p_train.add_argument("--max-steps", type=int, default=None, help="覆盖 max_steps")
     p_train.add_argument("--batch-size", type=int, default=None, help="覆盖 batch_size")
-    p_train.add_argument("--device", default=None, choices=["cpu", "cuda", "npu"],
-                         help="设备（默认从 config 读取）")
+    p_train.add_argument("--device", default=None, type=_validate_device,
+                         help="设备（cpu/cuda[:N]/npu[:N]/mps/rocm[:N]，默认从 config 读取）")
     p_train.add_argument("--resume", action="store_true", help="从 checkpoint 断点续训")
     p_train.add_argument("--amp", action="store_true", help="启用混合精度")
     p_train.add_argument("--eval-after", dest="eval_after", action="store_true",
@@ -1451,8 +1582,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_ft.add_argument("--data", default=None, help="微调数据路径（jsonl）")
     p_ft.add_argument("--lr", type=float, default=None, help="学习率覆盖")
     p_ft.add_argument("--max-steps", type=int, default=None, help="覆盖 max_steps")
-    p_ft.add_argument("--device", default=None, choices=["cpu", "cuda", "npu"],
-                      help="设备（默认从 config 读取）")
+    p_ft.add_argument("--device", default=None, type=_validate_device,
+                      help="设备（cpu/cuda[:N]/npu[:N]/mps/rocm[:N]，默认从 config 读取）")
     p_ft.add_argument("--dry-run", action="store_true", help="只打印不执行")
     p_ft.add_argument("--quiet", action="store_true", help="静默模式")
     p_ft.add_argument("--verbose", action="store_true", help="详细日志")
@@ -1470,8 +1601,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_pt.add_argument("--data", default=None, help="后训练数据路径（jsonl）")
     p_pt.add_argument("--lr", type=float, default=None, help="学习率覆盖")
     p_pt.add_argument("--max-steps", type=int, default=None, help="覆盖 max_steps")
-    p_pt.add_argument("--device", default=None, choices=["cpu", "cuda", "npu"],
-                      help="设备（默认从 config 读取）")
+    p_pt.add_argument("--device", default=None, type=_validate_device,
+                      help="设备（cpu/cuda[:N]/npu[:N]/mps/rocm[:N]，默认从 config 读取）")
     p_pt.add_argument("--dry-run", action="store_true", help="只打印不执行")
     p_pt.add_argument("--quiet", action="store_true", help="静默模式")
     p_pt.add_argument("--verbose", action="store_true", help="详细日志")
@@ -1487,8 +1618,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_cont.add_argument("--additional-steps", type=int, default=100,
                         help="追加训练步数（默认 100）")
     p_cont.add_argument("--lr", type=float, default=None, help="学习率覆盖（仅记录）")
-    p_cont.add_argument("--device", default=None, choices=["cpu", "cuda", "npu"],
-                        help="设备（默认从 config 读取）")
+    p_cont.add_argument("--device", default=None, type=_validate_device,
+                        help="设备（cpu/cuda[:N]/npu[:N]/mps/rocm[:N]，默认从 config 读取）")
     p_cont.add_argument("--amp", action="store_true", help="启用混合精度")
     p_cont.add_argument("--dry-run", action="store_true", help="只打印不执行")
     p_cont.add_argument("--quiet", action="store_true", help="静默模式")

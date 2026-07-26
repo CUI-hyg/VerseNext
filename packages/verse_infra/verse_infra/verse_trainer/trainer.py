@@ -21,10 +21,12 @@
 from __future__ import annotations
 
 import copy
+import gc
 import json
 import os
 import pickle
 import signal
+import sys
 import tempfile
 import threading
 import time
@@ -38,6 +40,8 @@ from verse_torch.training import (
     Trainer,
     ParallelTrainer,
     CheckpointManager,
+    ResumeManager,
+    ResumeState,
     _default_collate,
     plot_loss_curve,
 )
@@ -192,6 +196,7 @@ def _safe_chunk_run(
 
     last_exc: Optional[Exception] = None
     cur_batch = kwargs.get("batch_size")
+    recursion_retried = False  # Part5K1.3 Task 1.4: RecursionError 重试标志
     for attempt in range(max_oom_retries + 1):
         try:
             if cur_batch is not None:
@@ -208,6 +213,32 @@ def _safe_chunk_run(
                 # chunk_fn 不接受 batch_size 关键字，无法兜底
                 break
             cur_batch = max(1, int(cur_batch * batch_shrink_factor))
+        except RecursionError as e:
+            # Part5K1.3 Task 1.4: 递归爆栈兜底
+            last_exc = e
+            print(
+                f"[_safe_chunk_run] chunk RecursionError (attempt={attempt}), "
+                f"gc.collect() + 临时上调 recursion limit 重试",
+                flush=True,
+            )
+            gc.collect()
+            if not recursion_retried:
+                recursion_retried = True
+                old_limit = sys.getrecursionlimit()
+                sys.setrecursionlimit(old_limit + 500)
+                print(
+                    f"[_safe_chunk_run] recursion limit {old_limit} → "
+                    f"{old_limit + 500}, 重试一次",
+                    flush=True,
+                )
+                continue
+            print(
+                f"[_safe_chunk_run] RecursionError 重试仍失败，跳过该 chunk",
+                flush=True,
+            )
+            raise RuntimeError(
+                f"chunk RecursionError 重试仍失败：{e}"
+            ) from e
         except (RuntimeError,) as e:
             # 兼容 PyTorch CUDA OOM：错误消息含 "out of memory"
             msg = str(e).lower()
@@ -294,47 +325,142 @@ class ParallelTrainerSafe(ParallelTrainer):
             self._load_resume_state(resume_path)
 
     def _load_resume_state(self, path: str) -> None:
-        """从 checkpoint 恢复训练状态。"""
-        print(f"[ParallelTrainerSafe] 从 {path} 恢复训练状态...", flush=True)
-        try:
-            with open(path, "rb") as f:
-                payload = pickle.load(f)
-            # 恢复 model
-            sd = payload.get("model_state_dict") or payload.get("model")
-            if sd is not None and hasattr(self.model, "load_state_dict"):
-                self.model.load_state_dict(copy.deepcopy(sd))
-            # 恢复 best_val_loss / best_state_dict
-            self.best_val_loss = float(payload.get("best_val_loss", float("inf")))
-            bs = payload.get("best_state_dict")
-            if bs is not None:
-                self.best_state_dict = copy.deepcopy(bs)
+        """从 checkpoint 恢复训练状态。
+
+        Part5K1.3 Task 6.6：优先尝试 ``.vn``（via :meth:`ResumeManager.apply`），
+        不存在时回退到旧 ``.pt`` pickle（向后兼容 ParallelTrainerSafe 旧 resume 文件）。
+
+        Args:
+            path: resume checkpoint 路径（``.vn`` 或 ``.pt``）。
+        """
+        # 计算 .vn 和 .pt 候选路径（互相替换扩展名）
+        if path.endswith(".pt"):
+            vn_path = path[:-3] + ".vn"
+            pt_path = path
+        elif path.endswith(".vn"):
+            vn_path = path
+            pt_path = path[:-3] + ".pt"
+        else:
+            vn_path = path + ".vn"
+            pt_path = path + ".pt"
+
+        # 优先 .vn（新格式，via ResumeManager.apply）
+        if os.path.exists(vn_path):
             print(
-                f"[ParallelTrainerSafe] 恢复完成：best_val_loss={self.best_val_loss:.4f}",
+                f"[ParallelTrainerSafe] 从 {vn_path} 恢复训练状态...",
                 flush=True,
             )
-        except Exception as e:
+            try:
+                # ResumeManager.apply 恢复 model / best_val_loss / step / rng
+                ResumeManager.apply(self, vn_path)
+                # 额外恢复 best_state_dict / history（存在 extra_state 中）
+                try:
+                    ckpt = CheckpointManager(
+                        save_dir=os.path.dirname(os.path.abspath(vn_path)) or ".",
+                        best_path=vn_path,
+                        format="vn",
+                        use_vmpc=True,
+                    )
+                    full = ckpt.load_best_full()
+                    extra = full.get("extra_state") or {}
+                    if isinstance(extra, dict):
+                        bs = extra.get("best_state_dict")
+                        if bs is not None and hasattr(self, "best_state_dict"):
+                            self.best_state_dict = pickle.loads(
+                                pickle.dumps(bs, protocol=4)
+                            )
+                        hist = extra.get("history")
+                        if hist is not None and hasattr(self, "history"):
+                            self.history = hist
+                except Exception as e:
+                    print(
+                        f"[ParallelTrainerSafe] 警告：恢复 extra_state 失败：{e}",
+                        flush=True,
+                    )
+                print(
+                    f"[ParallelTrainerSafe] 恢复完成："
+                    f"best_val_loss={self.best_val_loss:.4f}",
+                    flush=True,
+                )
+            except Exception as e:
+                print(
+                    f"[ParallelTrainerSafe] 警告：恢复 .vn checkpoint 失败：{e}，"
+                    f"从头开始训练",
+                    flush=True,
+                )
+        # 回退到旧 .pt pickle（向后兼容）
+        elif os.path.exists(pt_path):
             print(
-                f"[ParallelTrainerSafe] 警告：恢复 checkpoint 失败：{e}，"
-                f"从头开始训练",
+                f"[ParallelTrainerSafe] 从 {pt_path} 恢复训练状态"
+                f"（旧 .pt 格式）...",
+                flush=True,
+            )
+            try:
+                with open(pt_path, "rb") as f:
+                    payload = pickle.load(f)
+                # 恢复 model
+                sd = payload.get("model_state_dict") or payload.get("model")
+                if sd is not None and hasattr(self.model, "load_state_dict"):
+                    self.model.load_state_dict(
+                        pickle.loads(pickle.dumps(sd, protocol=4))
+                    )
+                # 恢复 best_val_loss / best_state_dict
+                self.best_val_loss = float(payload.get("best_val_loss", float("inf")))
+                bs = payload.get("best_state_dict")
+                if bs is not None:
+                    self.best_state_dict = pickle.loads(pickle.dumps(bs, protocol=4))
+                print(
+                    f"[ParallelTrainerSafe] 恢复完成："
+                    f"best_val_loss={self.best_val_loss:.4f}",
+                    flush=True,
+                )
+            except Exception as e:
+                print(
+                    f"[ParallelTrainerSafe] 警告：恢复 .pt checkpoint 失败：{e}，"
+                    f"从头开始训练",
+                    flush=True,
+                )
+        else:
+            print(
+                f"[ParallelTrainerSafe] 警告：resume checkpoint 不存在"
+                f"（{vn_path} / {pt_path}），从头开始训练",
                 flush=True,
             )
 
     def _save_resume_state(self, path: str, step: int = -1) -> None:
-        """保存断点续训所需的完整状态。"""
+        """保存断点续训所需的完整状态（Part5K1.3 Task 6.6）。
+
+        改用 :meth:`ResumeManager.save` 写 ``.vn`` checkpoint（含 model +
+        step + best_val_loss + best_state_dict + history）。``path`` 若以
+        ``.pt`` 结尾自动改为 ``.vn``；旧 ``.pt`` 文件不再写出（向后兼容仅读取）。
+
+        Args:
+            path: resume checkpoint 目标路径（``.vn`` 或 ``.pt``，.pt 自动转 .vn）。
+            step: 当前训练步数。
+        """
+        # 计算 .vn 路径（.pt → .vn，.vn 保持，无扩展名追加 .vn）
+        if path.endswith(".pt"):
+            vn_path = path[:-3] + ".vn"
+        elif path.endswith(".vn"):
+            vn_path = path
+        else:
+            vn_path = path + ".vn"
+
         try:
-            payload = {
-                "step": int(step),
-                "model_state_dict": (
-                    self.model.state_dict()
-                    if hasattr(self.model, "state_dict") else None
-                ),
-                "best_state_dict": self.best_state_dict,
-                "best_val_loss": float(self.best_val_loss),
-                "history": self.history,
-            }
-            os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
-            with open(path, "wb") as f:
-                pickle.dump(payload, f)
+            # ParallelTrainerSafe 无 self.optimizer（per-chunk 内部构造），
+            # 传 None；best_state_dict / history 走 extra_state 便于
+            # _load_resume_state 恢复
+            ResumeManager.save(
+                vn_path,
+                model=self.model,
+                optimizer=None,
+                step=int(step),
+                best_val_loss=float(self.best_val_loss),
+                extra_state={
+                    "best_state_dict": self.best_state_dict,
+                    "history": self.history,
+                },
+            )
         except Exception as e:
             print(
                 f"[ParallelTrainerSafe] 警告：保存 resume checkpoint 失败：{e}",
@@ -343,11 +469,21 @@ class ParallelTrainerSafe(ParallelTrainer):
 
     def _train_chunk_safe(self, model, train_dataset, chunk_steps, chunk_id):
         """用 _safe_chunk_run 包裹 _train_chunk。"""
+        # Part5K1.3 Task 1.5: chunk 间 gc.collect + shutdown 检查
+        if is_shutdown_requested():
+            raise RuntimeError(
+                f"收到 shutdown 信号，跳过 chunk {chunk_id} 执行"
+            )
+        gc.collect()
         # _train_chunk 不接受 batch_size 关键字，直接包裹异常捕获
         # OOM 时由 _train_chunk 内部的 Trainer 抛出，我们捕获后跳过该 chunk
+        #
+        # Part5K1.3 Task 1.5 修复：用 super()._train_chunk 显式调用父类方法，
+        # 避免通过 self._train_chunk（fit 中已被 monkey-patch 为 _train_chunk_safe）
+        # 自引用导致无限递归 → RecursionError。
         try:
             return _safe_chunk_run(
-                self._train_chunk, model, train_dataset, chunk_steps, chunk_id,
+                super()._train_chunk, model, train_dataset, chunk_steps, chunk_id,
             )
         except ChunkOOMError as e:
             print(
@@ -373,6 +509,9 @@ class ParallelTrainerSafe(ParallelTrainer):
             )
             val_loss = self._eval_full_val(model)
             return model, float("inf"), val_loss
+        finally:
+            # Part5K1.3 Task 1.5: chunk 结束后 gc.collect，清理残留状态
+            gc.collect()
 
     def fit(self):
         """安全版 fit：每个 chunk 用 _safe_chunk_run 包裹 + 信号检测。
@@ -408,7 +547,7 @@ class ParallelTrainerSafe(ParallelTrainer):
             # 保存断点续训状态
             if self.checkpoint_mgr is not None:
                 resume_path = os.path.join(
-                    str(self.checkpoint_mgr.save_dir), "resume.pt"
+                    str(self.checkpoint_mgr.save_dir), "resume.vn"
                 )
                 self._save_resume_state(resume_path, step=self.max_steps)
             return history
@@ -418,7 +557,7 @@ class ParallelTrainerSafe(ParallelTrainer):
             # 保存最终 resume 状态
             if self.checkpoint_mgr is not None:
                 resume_path = os.path.join(
-                    str(self.checkpoint_mgr.save_dir), "resume.pt"
+                    str(self.checkpoint_mgr.save_dir), "resume.vn"
                 )
                 self._save_resume_state(resume_path, step=self.max_steps)
 
@@ -1020,12 +1159,27 @@ def train(
         if not quiet:
             print(f"[train] 持续训练：从 {continue_from} 加载模型状态", flush=True)
         try:
-            with open(continue_from, "rb") as f:
-                ckpt_payload = pickle.load(f)
-            # 加载模型状态
-            sd = ckpt_payload.get("model_state_dict") or ckpt_payload.get("state_dict")
+            # Part5K1.3 Task 6.7: .vn checkpoint 走 VNFileReader（via
+            # CheckpointManager.load_best_full），旧 .pt 走 pickle.load
+            if continue_from.endswith(".vn"):
+                from pathlib import Path as _Path
+                _ckpt = CheckpointManager(
+                    save_dir=_Path(continue_from).parent
+                    if str(_Path(continue_from).parent) else _Path("."),
+                    best_path=_Path(continue_from),
+                    format="vn",
+                    use_vmpc=True,
+                )
+                ckpt_payload = _ckpt.load_best_full()
+                # load_best_full 返回的 model_state_dict 直接可用
+                sd = ckpt_payload.get("model_state_dict")
+            else:
+                with open(continue_from, "rb") as f:
+                    ckpt_payload = pickle.load(f)
+                # 加载模型状态
+                sd = ckpt_payload.get("model_state_dict") or ckpt_payload.get("state_dict")
             if sd is not None and hasattr(model, "load_state_dict"):
-                model.load_state_dict(copy.deepcopy(sd))
+                model.load_state_dict(pickle.loads(pickle.dumps(sd, protocol=4)))
                 if not quiet:
                     print(f"[train] 已加载模型 state_dict", flush=True)
             # 继承 best_val_loss（不从头比较）
@@ -1094,7 +1248,13 @@ def train(
         save_path = os.path.join(save_dir, "cometspark_emergency.pt")
         try:
             if hasattr(model, "save"):
-                model.save(save_path)
+                # Part5K1.3 修复：CometSparkNexLM.save 默认 format 改为 "vn"，
+                # 紧急保存路径仍走 .pt（pickle），保持 _load_model_for_eval 兼容
+                try:
+                    model.save(save_path, format="pt")
+                except TypeError:
+                    # 旧接口不支持 format 参数，回退到原调用
+                    model.save(save_path)
                 print(f"[signal] 模型已紧急保存到 {save_path}", flush=True)
         except Exception as e:
             print(f"[signal] 紧急保存模型失败：{e}", flush=True)
@@ -1188,7 +1348,12 @@ def train(
             "empty_cache_interval": empty_cache_interval,
         }
         optimizer_kwargs = {"weight_decay": weight_decay}
-        checkpoint_mgr = CheckpointManager(save_dir)
+        # Part5K1.3 Task 4.4: CheckpointManager 实例化传入 format="auto" + use_vmpc
+        checkpoint_mgr = CheckpointManager(
+            save_dir,
+            format="auto",
+            use_vmpc=bool(vmpc_cfg.get("use_vmpc", False)),
+        )
         parallel_trainer = ParallelTrainerSafe(
             model=model,
             train_dataset=train_ds,
@@ -1255,7 +1420,7 @@ def train(
                     payload = pickle.load(f)
                 sd = payload.get("model_state_dict")
                 if sd is not None and hasattr(model, "load_state_dict"):
-                    model.load_state_dict(copy.deepcopy(sd))
+                    model.load_state_dict(pickle.loads(pickle.dumps(sd, protocol=4)))
                 nex_trainer.best_val_loss = float(payload.get("best_val_loss", float("inf")))
                 if not quiet:
                     print(f"[train] 从 {resume_path} 恢复训练状态", flush=True)
@@ -1338,7 +1503,13 @@ def train(
     full_model_path = os.path.join(save_dir, "cometspark.pt")
     try:
         if hasattr(model, "save"):
-            model.save(full_model_path)
+            # Part5K1.3 修复：CometSparkNexLM.save 默认 format 改为 "vn"，
+            # 此处训练结束保存仍走 .pt（pickle），保持 _load_model_for_eval 兼容
+            try:
+                model.save(full_model_path, format="pt")
+            except TypeError:
+                # 旧接口不支持 format 参数，回退到原调用
+                model.save(full_model_path)
             if not quiet:
                 print(f"[train] 完整模型已保存到 {full_model_path}", flush=True)
     except Exception as e:

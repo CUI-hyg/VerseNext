@@ -30,6 +30,10 @@
 24. [spark/run.py 训练模式补齐（Part5K1 新增）](#24-sparkrunpy-训练模式补齐part5k1-新增)
 25. [JSONL 自修复指南（Part5K1 新增）](#25-jsonl-自修复指南part5k1-新增)
 26. [vnn 重命名迁移指南（Part5K1 新增）](#26-vnn-重命名迁移指南part5k1-新增)
+27. [断点续训指南（Part5K1.3 新增）](#27-断点续训指南part5k13-新增)
+28. [ROCm / NPU CANN 设备训练指南（Part5K1.3 新增）](#28-rocm--npu-cann-设备训练指南part5k13-新增)
+29. [并行训练递归修复指南（Part5K1.3 新增）](#29-并行训练递归修复指南part5k13-新增)
+30. [Gigatoken 默认 Tokenizer 指南（Part5K1.3 新增）](#30-gigatoken-默认-tokenizer-指南part5k13-新增)
 
 ---
 
@@ -2319,6 +2323,409 @@ assert vnn.VerseNexLM is nn.VerseNexLM  # True
 
 ---
 
+## 27. 断点续训指南（Part5K1.3 新增）
+
+Part5K1.3 Task 6 推出 `ResumeManager`，基于 `.vn` v2 格式（见 [ADR-017](architecture/adr-017-vn-v2-resume.md)）统一管理断点续训状态：模型权重 + 优化器状态（AdamW m/v）+ 训练步数 + RNG 状态 + best_val_loss + epoch + patience 全部持久化到 `best.vn` / `last.vn`，训练中断后从 checkpoint 精确恢复，避免从头重训。
+
+### 27.1 与 Part4K2 持续训练的区别
+
+| 特性 | Part4K2 `verse-continue` | Part5K1.3 `ResumeManager` |
+|---|---|---|
+| 语义 | 在已完成训练基础上追加新步数 | 中断点精确恢复（继续同一轮训练） |
+| 恢复 optimizer state | ❌ 仅恢复模型权重 | ✅ AdamW exp_avg / exp_avg_sq / step |
+| 恢复 RNG 状态 | ❌ RNG 重置 | ✅ numpy / python / torch RNG 全恢复 |
+| 恢复 step 计数 | ❌ 从 0 重新计数 | ✅ 从中断 step 继续 |
+| 文件格式 | `.pt`（pickle 单文件） | `.vn` v2（ZIP 容器，含 training_state / optimizer_state） |
+| v1 向后兼容 | — | ✅ v1 `.vn` / 旧 `.pt` 缺失字段返回 None + 警告 |
+
+### 27.2 CLI 用法（spark/run.py continue）
+
+```bash
+# 训练中断后从 best.vn 恢复（CPU 默认路径）
+python spark/run.py continue --model small --checkpoint mf_small/best.vn
+
+# GPU + 混合精度恢复训练
+python spark/run.py continue --model mate --checkpoint mf_mate/best.vn \
+    --device cuda --amp
+
+# 追加 1000 步训练（与中断恢复语义不同：在已完成基础上加步数）
+python spark/run.py continue --model small --checkpoint mf_small/best.vn \
+    --additional-steps 1000
+```
+
+`spark/run.py continue` 内部委托 `ResumeManager.apply(trainer, checkpoint_path)` 完成 step / optimizer / rng / best_val_loss 的恢复，无需手动配置。
+
+### 27.3 编程接口：ResumeManager
+
+```python
+from verse_torch.training import ResumeManager, ResumeState
+
+# 1. 训练循环中保存断点（每个 eval_interval 调用一次）
+resume_mgr = ResumeManager(CheckpointManager(save_dir="mf_small", format="vn"))
+resume_mgr.save(
+    path="mf_small/best.vn",
+    model=model,
+    optimizer=optimizer,
+    step=global_step,
+    best_val_loss=best_vloss,
+    epoch=epoch,
+    patience_count=patience_counter,
+    rng_state={
+        "numpy": np.random.get_state(),
+        "python": random.getstate(),
+        "torch": torch.get_rng_state() if has_torch() else None,
+    },
+    extra_state={"dataloader_seed": 42},  # 可选：用户自定义任意对象
+)
+
+# 2. 训练启动时检测并应用断点
+trainer = Trainer(model=model, optimizer=optimizer, ...)
+resume_state = ResumeManager.load("mf_small/best.vn")
+if resume_state is not None:
+    ResumeManager.apply(trainer, "mf_small/best.vn")
+    print(f"恢复到 step={resume_state.step}, best_val_loss={resume_state.best_val_loss}")
+```
+
+### 27.4 ResumeState 字段
+
+`ResumeState` namedtuple 字段：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `model_state_dict` | dict | 模型权重（v1/v2 均有） |
+| `optimizer_state` | dict \| None | 优化器状态（v2 新增，v1 文件为 None） |
+| `step` | int | 训练步数（v2 新增） |
+| `rng_state` | dict \| None | RNG 状态（v2 新增） |
+| `best_val_loss` | float \| None | 历史最佳验证 loss（v2 新增） |
+| `epoch` | int \| None | 训练轮数（v2 新增） |
+| `patience_count` | int \| None | EarlyStopping 计数（v2 新增） |
+
+### 27.5 v1 向后兼容
+
+- Part5K1 写出的 v1 `.vn` 文件可被 `VNFileReader` 加载，`read_training_state` / `read_optimizer_state` / `read_extra_state` 返回 `None`
+- 旧 `.pt` pickle 文件（无 `vn_format_version` 字段）`load_best_full` 返回 dict，缺失字段为 `None` + 警告日志
+- `ParallelTrainerSafe._load_resume_state` 优先读 `.vn`，`.vn` 不存在时回退到旧 `.pkl` 兼容路径
+
+### 27.6 原子写不损坏 checkpoint
+
+`CheckpointManager.save_best` / `save_last` 使用 `.tmp` + `os.replace` 原子写策略：
+
+1. 先写到 `best.vn.tmp` / `last.vn.tmp`
+2. 写入成功后 `os.replace` 重命名为正式文件名
+3. 写入失败时清理 `.tmp`，不损坏已有 checkpoint
+
+训练中断（断电 / OOM / Ctrl+C）时，要么是新 checkpoint 完整写入，要么是旧 checkpoint 保持不变，不会出现"半写"损坏文件。
+
+---
+
+## 28. ROCm / NPU CANN 设备训练指南（Part5K1.3 新增）
+
+Part5K1.3 Task 9-11 显式支持 AMD ROCm 与华为 NPU CANN 生态，新增设备字符串 `"rocm"` / `"rocm:0"` 与 CANN 版本探测 API。详见 [ADR-019](architecture/adr-019-rocm-cann-compat.md)。
+
+### 28.1 设备矩阵
+
+| 设备 | 命令行参数 | 底层实现 | 依赖 |
+|---|---|---|---|
+| CPU（默认） | `--device cpu` | `NumpyBackend`（自研 autograd） | 无 |
+| NVIDIA CUDA | `--device cuda` | `TorchBackend`（PyTorch 原生 CUDA） | `pip install torch` |
+| Apple Silicon | `--device mps` | `TorchBackend`（PyTorch MPS） | `pip install torch`（macOS） |
+| **AMD ROCm（Part5K1.3）** | `--device rocm` / `--device rocm:0` | `TorchBackend`（PyTorch ROCm build，HIP-on-ROCm 复用 cuda API） | `pip install torch`（ROCm build） |
+| **华为 NPU CANN（Part5K1.3 增强）** | `--device npu` | `TorchBackend`（`torch_npu` 扩展） | `pip install torch torch_npu` |
+
+### 28.2 ROCm 训练用法
+
+AMD ROCm 通过 PyTorch ROCm build 暴露为 `cuda` API（HIP-on-ROCm），`--device rocm` 内部映射到 `torch.device("cuda")`，**不自研 kernel**：
+
+```bash
+# ROCm 训练（AMD GPU，需 PyTorch ROCm build）
+python spark/run.py train --model mate --device rocm --amp
+
+# 指定 ROCm 设备序号（多卡场景）
+python spark/run.py train --model mate --device rocm:1 --amp
+
+# ROCm 持续训练
+python spark/run.py continue --model mate --checkpoint mf_mate/best.vn \
+    --device rocm --amp
+```
+
+> **提示**：`--device rocm` 与 `--device cuda` 在 PyTorch ROCm build 下行为完全等价（HIP 暴露为 cuda API），但 `rocm` 字符串保留在 `TorchBackend._device_str` 中用于运维诊断（区分 NVIDIA 与 AMD GPU）。
+
+### 28.3 NPU CANN 训练用法
+
+```bash
+# NPU 训练（华为昇腾，需 torch + torch_npu）
+python spark/run.py train --model mate --device npu --amp
+
+# NPU 持续训练
+python spark/run.py continue --model mate --checkpoint mf_mate/best.vn \
+    --device npu --amp
+```
+
+NPU 路径首次启用 autocast 时自动打印 CANN + PyTorch + torch_npu 版本日志（仅首次，便于运维诊断）：
+
+```
+[autocast] NPU CANN version=8.0.0, torch=2.3.0, torch_npu=2.3.0.post1
+```
+
+### 28.4 设备探测 API
+
+```python
+from verse_torch.device import (
+    has_rocm, get_rocm_version,
+    has_cann, get_cann_version,
+    has_torch, has_torch_npu,
+)
+
+# ROCm 探测（基于 torch.version.hip）
+if has_rocm():
+    print(f"ROCm version: {get_rocm_version()}")  # 如 "6.1.0"
+
+# CANN 探测（基于 torch_npu.cann_version）
+if has_cann():
+    print(f"CANN version: {get_cann_version()}")  # 如 "8.0.0"
+```
+
+| API | 返回 | 说明 |
+|---|---|---|
+| `has_rocm()` | bool | 检测 PyTorch 是否为 ROCm build（`torch.version.hip is not None`） |
+| `get_rocm_version()` | str \| None | 返回 ROCm 版本字符串（如 `"6.1.0"`） |
+| `has_cann()` | bool | 检测 torch_npu 可用 + CANN 版本可读 |
+| `get_cann_version()` | str \| None | 返回 CANN 版本字符串（如 `"8.0.0"`） |
+
+### 28.5 spark/run.py 启动设备信息
+
+`spark/run.py` 启动时调用 `_print_device_info` 打印设备 type + 版本 + 显存，用户启动即可确认环境：
+
+```
+[device] type=rocm, version=6.1.0, memory_total=16384MB, memory_free=15234MB
+[device] type=npu, version=8.0.0, memory_total=32768MB, memory_free=30240MB
+[device] type=cuda, version=12.1, memory_total=24576MB, memory_free=23521MB
+[device] type=cpu
+```
+
+### 28.6 autocast 设备类型映射
+
+| 外部 device | `torch.autocast` device_type | 说明 |
+|---|---|---|
+| `cpu` | （no-op） | CPU 不启用 autocast |
+| `cuda` | `cuda` | NVIDIA GPU 原生 |
+| `mps` | `mps` | Apple Silicon 原生 |
+| `npu` | `npu` | torch_npu 注册后可识别 |
+| `rocm` | `cuda` | PyTorch ROCm build 通过 HIP 暴露 cuda API |
+
+### 28.7 无 ROCm / NPU 环境回退
+
+- `--device rocm` 在非 ROCm build 的 PyTorch 下抛 `RuntimeError("未安装 PyTorch ROCm build")`
+- `--device npu` 在未安装 `torch_npu` 时抛 `RuntimeError("未安装 torch_npu")`
+- `has_rocm()` / `has_cann()` 在无 torch 环境下返回 `False`（不抛异常，lazy 检测）
+- CPU 路径完全不变（向后兼容）
+
+---
+
+## 29. 并行训练递归修复指南（Part5K1.3 新增）
+
+Part5K1.3 Task 1 修复 `ParallelTrainer` Phase 3 `merge_finetune` 路径的 `RecursionError`：60+ 层 VerseNex 模型在 `chunk_id=-999` 路径触发 Python 默认递归上限（1000），训练崩溃。详见 [ADR-016](architecture/adr-016-nn-to-vnn-rename.md)（vnn.Module.state_dict 迭代 BFS 配合本修复）。
+
+### 29.1 问题根因
+
+旧实现的两处递归隐患：
+
+1. **`copy.deepcopy(state_dict)` 递归对象图遍历**：`ParallelTrainer.fit` 中 chunk_id=-999 路径用 `copy.deepcopy(self.best_state_dict)` 复制 60+ 层模型的 state_dict，deepcopy 内部递归遍历嵌套 dict / list，深度超过 Python 默认 `sys.getrecursionlimit()=1000` 时抛 `RecursionError`。
+2. **`Module.state_dict()` 递归 DFS 子模块遍历**：`vnn.Module.state_dict()` 用递归 DFS 遍历子模块树，60+ 层模型 + 每层多个子模块（attention / mlp / norm 等）递归深度可达数百层，叠加 deepcopy 的递归深度直接超限。
+
+### 29.2 修复方案
+
+| 修复点 | 旧实现 | 新实现（Part5K1.3） |
+|---|---|---|
+| state_dict 深拷贝 | `copy.deepcopy(state_dict)` | `pickle.loads(pickle.dumps(state_dict, protocol=4))`（迭代序列化，不递归对象图） |
+| `Module.state_dict()` 子模块遍历 | 递归 DFS | 迭代 BFS（显式栈，行为等价：state_dict 键值完全一致） |
+| `Module.load_state_dict()` 子模块遍历 | 递归 DFS | 迭代 BFS（同上） |
+| `_safe_chunk_run` RecursionError 处理 | 直接崩溃 | `gc.collect()` + `sys.setrecursionlimit(+500)` 重试一次；仍失败时 graceful degrade 跳过 chunk |
+| `ParallelTrainerSafe._train_chunk_safe` | chunk 间无 GC | chunk 间 `gc.collect()` + `is_shutdown_requested()` 检查 |
+| `Trainer.fit` 主循环 RecursionError | 直接崩溃 | 优雅保存当前 `best_state` 后退出（exit code != 0），不丢 checkpoint |
+
+### 29.3 60+ 层模型训练示例
+
+```python
+from verse_torch.vnn import VerseNexLM
+from verse_torch.training import ParallelTrainerSafe
+
+# 构造 64 层 VerseNex 模型（Part5K1 起支持层融合 + chunked_forward）
+model = VerseNexLM(
+    vocab_size=248320,
+    n_layer=64,                # 60+ 层（Part5K1.3 前会触发 RecursionError）
+    n_embd=1024,
+    n_head=16,
+    ...
+)
+
+# ParallelTrainerSafe 并行训练（不再崩溃）
+trainer = ParallelTrainerSafe(
+    model=model,
+    train_dataset=train_ds,
+    val_dataset=val_ds,
+    cfg={
+        "parallel_chunks": 4,
+        "max_steps": 1000,
+        "seed": 42,
+    },
+)
+trainer.fit()
+print(f"best_val_loss={trainer.best_val_loss:.4f}")
+```
+
+### 29.4 CLI 用法
+
+```bash
+# 60+ 层模型并行训练（CPU 串行实现，接口对齐并行）
+python spark/run.py train --model mate --parallel-chunks 4 --max-steps 1000
+
+# 配合 GPU + 混合精度
+python spark/run.py train --model mate --parallel-chunks 4 \
+    --device cuda --amp --max-steps 5000
+```
+
+### 29.5 RecursionError 兜底机制
+
+`_safe_chunk_run` 新增 `RecursionError` 捕获分支，训练中遇到递归超限时：
+
+1. 捕获 `RecursionError`，打印警告
+2. `gc.collect()` 释放残留对象图
+3. `sys.setrecursionlimit(sys.getrecursionlimit() + 500)` 临时上调递归上限
+4. 重试一次该 chunk
+5. 仍失败时走"跳过该 chunk"路径（保留现有 graceful degrade，不崩溃整个训练）
+6. `Trainer.fit` 主循环捕获 `RecursionError` 时优雅保存当前 `best_state` 后退出（exit code != 0）
+
+### 29.6 验证测试
+
+`tests/test_parallel_recursion_fix.py` 构造 60+ 层 VerseNex 模型 + `chunk_id=-999` 路径，断言：
+
+- 不触发 `RecursionError`
+- `val_loss` 收敛（< 初始 loss × 0.9）
+- state_dict 键值与递归实现完全一致（行为等价）
+
+---
+
+## 30. Gigatoken 默认 Tokenizer 指南（Part5K1.3 新增）
+
+Part5K1.3 Task 7-8 集成 `gigatoken`（Rust 实现，~1000× 快于 HF tokenizers）作为默认 tokenizer，通过 `GigaTokenizerWrapper` 适配器对接 `BaseTokenizer` 接口；gigatoken 不可用时自动降级到 `VerseTokenizer`。详见 [ADR-018](architecture/adr-018-gigatoken-integration.md)。
+
+### 30.1 安装 gigatoken（可选）
+
+```bash
+# 安装 gigatoken（不强制，缺失时自动降级）
+pip install "gigatoken>=0.1.0"
+
+# 或通过 verse-tokenizer extras 安装
+pip install "verse-tokenizer[giga]"
+```
+
+> **零重型依赖原则**：gigatoken 是可选依赖，CPU 端侧 / 树莓派场景仍可纯标准库运行（自动降级到 `VerseTokenizer`）。
+
+### 30.2 默认 tokenizer 切换
+
+Part5K1.3 起 `spark/small/config/cometspark_small.yml` 与 `spark/mate/config/cometspark_mate.yml` 的 `tokenizer.kind` 默认从 `"verse"` 改为 `"giga"`：
+
+```yaml
+tokenizer:
+  kind: giga              # Part5K1.3 默认（gigatoken 不可用时自动降级到 verse）
+  path: Qwen/Qwen3.5-35B-A3B
+  vocab_size: 248320
+```
+
+CLI 用法不变：
+
+```bash
+# 默认走 gigatoken 路径（gigatoken 不可用时降级到 verse，打印警告）
+python spark/run.py train --model small
+
+# mate 旗舰训练（同样默认 gigatoken）
+python spark/run.py train --model mate
+```
+
+### 30.3 编程接口：GigaTokenizerWrapper
+
+```python
+from verse_infra.verse_tokenizer import GigaTokenizerWrapper
+
+# 兼容模式（推荐）：drop-in replacement for HF tokenizer
+tok = GigaTokenizerWrapper.from_pretrained("Qwen/Qwen3.5-35B-A3B")
+# 内部用 gt.Tokenizer(hf_tokenizer).as_hf() 兼容模式
+
+# encode / decode（与 VerseTokenizer 输出一致）
+ids = tok.encode("你好，世界")
+text = tok.decode(ids)
+
+# 批量 encode（gigatoken 性能优势主要在此）
+ids_batch = tok.encode_batch(["你好", "世界", "！"])
+
+# apply_chat_template（委托底层 HF tokenizer）
+chat_ids = tok.apply_chat_template([
+    {"role": "user", "content": "你好"},
+    {"role": "assistant", "content": "你好！"},
+])
+
+# 长度与特殊 token
+print(len(tok))              # 248320
+print(tok.bos_id, tok.eos_id, tok.pad_id)
+```
+
+### 30.4 工厂函数
+
+```python
+from verse_infra.verse_tokenizer import load_tokenizer
+
+# kind="giga"：优先 gigatoken，不可用时降级到 verse
+tok = load_tokenizer("tokenizer.json", kind="giga")
+
+# 显式走 verse 路径（向后兼容）
+tok = load_tokenizer("tokenizer.json", kind="verse")
+
+# kind="byte" / "bpe" / "hf" 行为不变
+tok = load_tokenizer("tokenizer.json", kind="byte")
+```
+
+### 30.5 自动降级策略
+
+`load_tokenizer(kind="giga")` 在 gigatoken 不可用时自动降级：
+
+1. 尝试 `from verse_infra.verse_tokenizer.giga import GigaTokenizerWrapper`
+2. 失败时打印警告：`[tokenizer] gigatoken 不可用，降级到 VerseTokenizer。安装：pip install gigatoken`
+3. 自动构造 `VerseTokenizer`（行为完全等价，性能略慢）
+4. 不抛异常（保证 CPU 端侧 / 树莓派场景仍可运行）
+
+### 30.6 native 模式（高级）
+
+`GigaTokenizerWrapper` 默认走兼容模式（`gt.Tokenizer(hf_tokenizer).as_hf()`），保证与 `VerseTokenizer` 输出完全一致。如需走 gigatoken 原生 API：
+
+```python
+from verse_infra.verse_tokenizer import GigaTokenizerWrapper
+
+tok = GigaTokenizerWrapper(model_id="Qwen/Qwen3.5-35B-A3B", native=True)
+# 内部用 gt.Tokenizer(model_id) 原生 API（可能有不兼容情况，仅推荐进阶用户）
+```
+
+> **提示**：native 模式可能存在与 HF tokenizer 的细微差异（特殊 token 处理 / chat template 渲染等），生产环境推荐用默认兼容模式。
+
+### 30.7 性能对比
+
+| Tokenizer | encode_batch 10000 条 | 加速比 |
+|---|---|---|
+| `VerseTokenizer`（HF tokenizers） | 基线（~1000 条/秒） | 1× |
+| `GigaTokenizerWrapper`（兼容模式） | ~10× 基线 | ~10× |
+| `GigaTokenizerWrapper`（native 模式） | ~1000× 基线 | ~1000× |
+
+> **提示**：mate 旗舰（≈1.12B 参数）大规模预训练的 tokenize 阶段耗时占比可达 30%+，gigatoken 可将 tokenize 阶段压缩到 3% 以下，整体训练吞吐显著提升。
+
+### 30.8 向后兼容
+
+- `VerseTokenizer` 不删除，用户既有代码与 checkpoint 不失效
+- `load_tokenizer(kind="byte"|"bpe"|"hf"|"verse")` 行为不变
+- `BPETokenizer.from_pretrained("Qwen/Qwen3.5-35B-A3B")` 仍可正常工作
+- 旧配置文件 `tokenizer.kind: verse` 仍可工作（显式指定 verse 路径）
+
+---
+
 ## 相关文档
 
 - [VerseTorch README](../packages/verse_torch/README.md) —— Tensor / nn / autograd / GPU-NPU 后端基础
@@ -2335,6 +2742,9 @@ assert vnn.VerseNexLM is nn.VerseNexLM  # True
 - [jinja2 聊天模板 ADR](architecture/adr-010-jinja2-chat-template.md) —— Part4K2 ChatML 模板决策
 - [智能分区训练 ADR](architecture/adr-011-layerwise-training.md) —— Part4K2 大模型低内存训练决策
 - [压缩技术 V1.3 ADR](architecture/adr-012-compression-v13.md) —— Part4K2 三重损失蒸馏决策
+- [.vn v2 断点续训 ADR](architecture/adr-017-vn-v2-resume.md) —— Part5K1.3 .vn v2 格式 + ResumeManager 决策
+- [Gigatoken 集成 ADR](architecture/adr-018-gigatoken-integration.md) —— Part5K1.3 默认 tokenizer + lazy import + 降级策略决策
+- [ROCm / CANN 兼容 ADR](architecture/adr-019-rocm-cann-compat.md) —— Part5K1.3 NPU CANN & AMD ROCm 生态兼容决策
 - [压缩 PoC 基准](benchmarks/compression_poc.md) —— 1M 参数模型压缩实测数据
 - [性能调优指南](performance_tuning.md) —— CPU BLAS / numba / GPU 加速 / 混合精度 / CachedDataset
 - [主 README](../README.md)
