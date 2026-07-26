@@ -204,6 +204,9 @@ class VerseNexTrainer:
             self.save_dir,
             format="auto",
             use_vmpc=bool(_cfg_get(cfg, "use_vmpc", False)),
+            # Part5K1.5：use_vmpc=True 时自动启用 async_vn
+            # （last.pt 快速缓存 + best.vn subprocess 异步保存，不阻塞训练）
+            async_vn=bool(_cfg_get(cfg, "use_vmpc", False)),
         )
 
         # 是否启用 aux 路径
@@ -1119,6 +1122,9 @@ class DPOTrainer:
             self.save_dir,
             format="auto",
             use_vmpc=bool(_cfg_get(cfg, "use_vmpc", False)),
+            # Part5K1.5：use_vmpc=True 时自动启用 async_vn
+            # （last.pt 快速缓存 + best.vn subprocess 异步保存，不阻塞训练）
+            async_vn=bool(_cfg_get(cfg, "use_vmpc", False)),
         )
 
         # 历史

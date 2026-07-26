@@ -307,19 +307,49 @@ def _find_latest_checkpoint(ckpt_dir: str) -> Optional[str]:
     return candidates[0][1]
 
 
+def _resolve_save_dir(config_path: str, model_level: str) -> str:
+    """解析 checkpoint 保存目录（Part5K1.5 修复）。
+
+    与训练时的路径解析逻辑**完全一致**：读取配置文件中的
+    ``checkpoint.save_dir``（默认 ``mf_{level}``），以 config_path 的
+    dirname 作为 base_dir 解析为绝对路径。
+
+    之前 bug：chat/generate 用 ``_REPO_ROOT`` 作为 base_dir，而训练用
+    ``os.path.dirname(config_path)`` 作为 base_dir，导致路径不一致
+    （训练保存到 ``spark/small/config/mf_small/``，但 chat/generate 在
+    ``mf_small/`` 找）。
+    """
+    base_dir = os.path.dirname(config_path) or _REPO_ROOT
+    default_save_dir = _MATE_CKPT_DIR if model_level == "mate" else _SMALL_CKPT_DIR
+    try:
+        full_cfg = _load_yaml_config(config_path)
+        save_dir_name = str(
+            full_cfg.get("checkpoint", {}).get("save_dir", default_save_dir)
+        )
+    except Exception:
+        save_dir_name = default_save_dir
+
+    if os.path.isabs(save_dir_name):
+        return save_dir_name
+    return os.path.join(base_dir, save_dir_name)
+
+
 def _resolve_checkpoint(
-    model_level: str, checkpoint_arg: Optional[str] = None
+    model_level: str,
+    checkpoint_arg: Optional[str] = None,
+    config_path: Optional[str] = None,
 ) -> Optional[str]:
-    """解析 checkpoint 路径（Part5K1.1 新增）。
+    """解析 checkpoint 路径（Part5K1.1 新增，Part5K1.5 修复路径不一致 bug）。
 
     优先级：
     1. ``--checkpoint`` 显式指定
-    2. 在 ``model_level`` 对应的 checkpoint 目录（mf_small / mf_mate）中
-       自动查找最新 checkpoint
+    2. 在 ``model_level`` 对应的 checkpoint 目录中自动查找最新 checkpoint
+       （Part5K1.5：路径解析与训练一致，基于 config_path 的 dirname）
 
     Args:
         model_level: ``"small"`` / ``"mate"``。
         checkpoint_arg: ``--checkpoint`` 参数值（可 None）。
+        config_path: 配置文件路径，用于解析 save_dir（与训练一致）。
 
     Returns:
         checkpoint 文件路径，或 None（未找到）。
@@ -327,10 +357,14 @@ def _resolve_checkpoint(
     if checkpoint_arg:
         return checkpoint_arg
 
-    ckpt_dir = _MATE_CKPT_DIR if model_level == "mate" else _SMALL_CKPT_DIR
-    # 相对路径以 repo root 为基准
-    if not os.path.isabs(ckpt_dir):
-        ckpt_dir = os.path.join(_REPO_ROOT, ckpt_dir)
+    # Part5K1.5：用 config_path 解析 save_dir，与训练路径一致
+    if config_path:
+        ckpt_dir = _resolve_save_dir(config_path, model_level)
+    else:
+        # 兜底：无 config_path 时用旧逻辑（repo root + mf_{level}）
+        ckpt_dir = _MATE_CKPT_DIR if model_level == "mate" else _SMALL_CKPT_DIR
+        if not os.path.isabs(ckpt_dir):
+            ckpt_dir = os.path.join(_REPO_ROOT, ckpt_dir)
 
     latest = _find_latest_checkpoint(ckpt_dir)
     if latest:
@@ -632,20 +666,186 @@ def cmd_train(args) -> int:
         _info(f"训练步数：{result.get('total_steps', '?')}")
 
     # 训练后自动评估（默认开启）
+    # Part5K1.5：改为逐行读取 val.jsonl + 限制 max_new_tokens，避免无限生成卡死
     if args.eval_after:
-        _info("开始自动评估...")
         try:
-            eval_result = _vt.evaluate(
+            _run_post_train_eval(
                 config_path=config_path,
-                base_dir=os.path.dirname(config_path) or _REPO_ROOT,
+                model_level=model_level,
                 checkpoint=result.get("best_checkpoint"),
+                save_dir=result.get("save_dir"),
+                quiet=args.quiet,
             )
-            n_samples = len(eval_result.get("results", []))
-            _ok(f"评估完成，生成 {n_samples} 条样本")
         except Exception as e:
             _warn(f"自动评估失败（不影响训练结果）：{e}")
 
     return 0
+
+
+def _run_post_train_eval(
+    config_path: str,
+    model_level: str,
+    checkpoint: Optional[str],
+    save_dir: Optional[str],
+    quiet: bool = False,
+) -> None:
+    """训练后自动评估（Part5K1.5 重写）。
+
+    替代旧的 ``_vt.evaluate()`` 调用，解决以下问题：
+    1. **无限卡死 + CPU 100%**：旧评估用 ``max_new_tokens=None``（EOS 自然停止），
+       未训练模型不输出 EOS 时会跑满 100K 安全上限，每条 prompt 极慢。
+    2. **界面拥挤**：旧输出格式混乱，难以逐条评分。
+
+    新方案：
+    - 逐行读取 ``val.jsonl``，提取 prompt（chat 数组取最后 user，prompt-completion 取 prompt）
+    - 每条限制 ``max_new_tokens=64``，避免无限生成
+    - 逐条生成 + 格式化打印，界面清晰便于人工评分
+    """
+    import json
+
+    # 1. 解析 val.jsonl 路径（与训练一致：基于 config_path 的 dirname）
+    base_dir = os.path.dirname(config_path) or _REPO_ROOT
+    try:
+        full_cfg = _load_yaml_config(config_path)
+        val_rel = str(full_cfg.get("data", {}).get("val_path", "data/val.jsonl"))
+    except Exception:
+        val_rel = "data/val.jsonl"
+    val_path = val_rel if os.path.isabs(val_rel) else os.path.join(base_dir, val_rel)
+
+    if not os.path.exists(val_path):
+        _warn(f"val.jsonl 不存在：{val_path}，跳过训练后评估")
+        return
+
+    # 2. 逐行读取 val.jsonl，提取 prompt + reference
+    prompts = []
+    references = []
+    with open(val_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            if isinstance(obj, list):
+                # chat 数组格式：取最后一条 user 消息作为 prompt
+                last_user = None
+                last_assistant = None
+                for msg in obj:
+                    if isinstance(msg, dict):
+                        if msg.get("role") == "user":
+                            last_user = msg.get("content", "")
+                        elif msg.get("role") == "assistant":
+                            last_assistant = msg.get("content", "")
+                if last_user is not None:
+                    prompts.append(last_user)
+                    references.append(last_assistant or "")
+            elif isinstance(obj, dict):
+                # prompt-completion 格式
+                p = obj.get("prompt", "")
+                c = obj.get("completion", "")
+                if p:
+                    prompts.append(p)
+                    references.append(c)
+
+    if not prompts:
+        _warn("val.jsonl 中未提取到 prompt，跳过训练后评估")
+        return
+
+    # 3. 定位 checkpoint
+    ckpt = checkpoint
+    if not ckpt or not os.path.exists(ckpt):
+        ckpt = _resolve_checkpoint(model_level, None, config_path)
+    if not ckpt:
+        _warn("未找到 checkpoint，跳过训练后评估")
+        return
+
+    # 4. 加载模型 + tokenizer
+    if not quiet:
+        _info(f"加载 checkpoint 进行评估：{ckpt}")
+    model, tokenizer = _load_model_and_tokenizer(
+        ckpt, config_path=config_path, model_level=model_level
+    )
+    model.eval()
+
+    # 推断 eos_id
+    eos_id = getattr(tokenizer, "eos_id", None)
+    if eos_id is None:
+        vocab = getattr(tokenizer, "vocab", None)
+        if isinstance(vocab, dict):
+            for _eos_str in ("<|im_end|>", "<|eos|>", "<eos>", ""):
+                if _eos_str in vocab:
+                    eos_id = int(vocab[_eos_str])
+                    break
+
+    import numpy as np
+
+    # Part5K1.5：限制 max_new_tokens=64，避免无限生成卡死
+    max_new_tokens = 64
+    temperature = 1.0
+    top_k = None
+
+    n_total = len(prompts)
+    if not quiet:
+        _info(f"开始逐条评估（{n_total} 条，每条最多生成 {max_new_tokens} tokens）")
+        print(flush=True)
+
+    for i, (prompt, ref) in enumerate(zip(prompts, references)):
+        # encode prompt
+        try:
+            prompt_ids = list(tokenizer.encode(prompt, add_special_tokens=False))
+        except TypeError:
+            prompt_ids = list(tokenizer.encode(prompt))
+        if not prompt_ids:
+            prompt_ids = [0]
+
+        idx = np.asarray(prompt_ids, dtype=np.int64).reshape(1, -1)
+
+        try:
+            with _no_grad_guard():
+                generated = model.generate(
+                    idx,
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    top_k=top_k,
+                    eos_id=eos_id,
+                )
+            if hasattr(generated, "data"):
+                gen_ids = generated.data.reshape(-1).tolist()
+            else:
+                gen_ids = np.asarray(generated).reshape(-1).tolist()
+            gen_ids = gen_ids[len(prompt_ids):]  # 去掉 prompt 部分
+            try:
+                gen_text = tokenizer.decode(gen_ids)
+            except Exception:
+                gen_text = repr(gen_ids[:20])
+        except Exception as e:
+            gen_text = f"<生成失败: {e}>"
+
+        # 格式化输出（界面清晰，便于评分）
+        print("=" * 70, flush=True)
+        print(f"  [{i + 1}/{n_total}]", flush=True)
+        print(f"  [问题]   {prompt}", flush=True)
+        print(f"  [生成]   {gen_text}", flush=True)
+        if ref:
+            print(f"  [参考]   {ref}", flush=True)
+        print(f"  [tokens] {len(gen_ids)}", flush=True)
+        print("=" * 70, flush=True)
+        print(flush=True)
+
+    _ok(f"评估完成，共 {n_total} 条样本")
+
+
+def _no_grad_guard():
+    """no_grad 上下文管理器（兼容 verse_torch 不可用时）。"""
+    try:
+        from verse_torch import no_grad
+        return no_grad()
+    except Exception:
+        import contextlib
+        return contextlib.nullcontext()
 
 
 # ---------------------------------------------------------------------------
@@ -895,7 +1095,7 @@ def cmd_eval(args) -> int:
     config_path, _factory, model_level = _select_model_level(args)
 
     # Part5K1.1：自动查找 checkpoint
-    checkpoint = _resolve_checkpoint(model_level, args.checkpoint)
+    checkpoint = _resolve_checkpoint(model_level, args.checkpoint, config_path)
     if checkpoint and not os.path.exists(checkpoint):
         raise FileNotFoundError(
             f"checkpoint 不存在：{checkpoint}"
@@ -952,7 +1152,7 @@ def cmd_generate(args) -> int:
 
     # Part5K1.1：dry-run 优先，不要求 checkpoint 存在
     if args.dry_run:
-        checkpoint = _resolve_checkpoint(model_level, args.checkpoint) or "(auto)"
+        checkpoint = _resolve_checkpoint(model_level, args.checkpoint, config_path) or "(auto)"
         _print_dry_run(
             "generate",
             checkpoint=checkpoint,
@@ -965,7 +1165,7 @@ def cmd_generate(args) -> int:
         return 0
 
     # Part5K1.1：自动查找 checkpoint
-    checkpoint = _resolve_checkpoint(model_level, args.checkpoint)
+    checkpoint = _resolve_checkpoint(model_level, args.checkpoint, config_path)
     if not checkpoint:
         raise FileNotFoundError(
             f"未找到 checkpoint。请先运行 `python spark/run.py train --model {model_level}`"
@@ -1075,7 +1275,7 @@ def cmd_chat(args) -> int:
 
     # Part5K1.1：dry-run 优先，不要求 checkpoint 存在
     if args.dry_run:
-        checkpoint = _resolve_checkpoint(model_level, args.checkpoint) or "(auto)"
+        checkpoint = _resolve_checkpoint(model_level, args.checkpoint, config_path) or "(auto)"
         _print_dry_run(
             "chat",
             checkpoint=checkpoint,
@@ -1086,7 +1286,7 @@ def cmd_chat(args) -> int:
         return 0
 
     # Part5K1.1：自动查找 checkpoint
-    checkpoint = _resolve_checkpoint(model_level, args.checkpoint)
+    checkpoint = _resolve_checkpoint(model_level, args.checkpoint, config_path)
     if not checkpoint:
         raise FileNotFoundError(
             f"未找到 checkpoint。请先运行 `python spark/run.py train --model {model_level}`"
