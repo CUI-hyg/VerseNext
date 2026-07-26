@@ -320,23 +320,26 @@ class TestTrainCommand:
         config_path = call_kwargs.kwargs.get("config_path") or call_kwargs.args[0]
         assert config_path.endswith(_SMALL_CONFIG)
 
-    @patch("verse_infra.verse_trainer.evaluate")
+    @patch("spark.run._run_post_train_eval")
     @patch("verse_infra.verse_trainer.train")
-    def test_train_eval_after(self, mock_train, mock_eval):
-        """--eval-after（默认）训练后自动评估。"""
+    def test_train_eval_after(self, mock_train, mock_post_eval):
+        """--eval-after（默认）训练后自动评估。
+
+        Part5K1.5：训练后评估改为 _run_post_train_eval（逐行读取 val.jsonl），
+        不再调用 verse_infra.verse_trainer.evaluate。
+        """
         mock_train.return_value = {
             "best_val_loss": 0.3,
             "save_dir": "checkpoints",
             "total_steps": 200,
             "best_checkpoint": "checkpoints/best.pt",
         }
-        mock_eval.return_value = {"results": [{"prompt": "a", "generated": "b"}]}
         args = build_parser().parse_args(["train", "--small"])
         ret = cmd_train(args)
 
         assert ret == 0
         mock_train.assert_called_once()
-        mock_eval.assert_called_once()
+        mock_post_eval.assert_called_once()
 
     @patch("verse_infra.verse_trainer.evaluate")
     @patch("verse_infra.verse_trainer.train")

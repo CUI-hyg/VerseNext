@@ -591,6 +591,78 @@ def _from_serializable(obj: Any) -> Any:
     return obj
 
 
+def _pt_to_vn_worker(pt_path: str, vn_path: str) -> None:
+    """Part5K1.5：subprocess worker —— 将 ``best.pt`` 转为 ``best.vn``。
+
+    由 :meth:`CheckpointManager._async_save_vn` 通过 ``subprocess.Popen``
+    在独立进程中执行，避免阻塞主训练进程。
+
+    流程：
+    1. 读取 ``pt_path`` 的 pickle payload（经 ``_from_serializable`` 还原）
+    2. 调用 :class:`CheckpointManager` 的 ``_save_vn`` 写 ``vn_path``（原子写）
+    3. 失败时：仅打印错误到 stderr，不抛异常（``best.pt`` 已作为备份保留）
+
+    Args:
+        pt_path: 源 ``.pt`` 文件路径（pickle，由 ``_atomic_save`` 写入）
+        vn_path: 目标 ``.vn`` 文件路径（VNFileWriter 原生格式）
+    """
+    import traceback
+
+    try:
+        # 1. 读取 .pt payload
+        with open(pt_path, "rb") as f:
+            raw = pickle.load(f)
+        state = _from_serializable(raw)
+
+        # 2. 提取子状态（与 save_best 的 format="vn" 路径一致）
+        #    _atomic_save 时 _to_serializable 已把 Tensor 转 dict，
+        #    state 可能含 model_state_dict / training_state / optimizer_state / extra_state
+        #    以及顶层标准字段（step / val_loss / best_val_loss 等）
+        #    _save_vn 内部会从 state 中自动提取 model_state_dict 和标准字段，
+        #    所以这里直接传整个 state，让 _save_vn 做提取。
+        training_state = None
+        optimizer_state = None
+        extra_state = None
+        if isinstance(state, dict):
+            training_state = state.get("training_state")
+            optimizer_state = state.get("optimizer_state")
+            extra_state = state.get("extra_state")
+
+        # 3. 用 CheckpointManager._save_vn 原子写 .vn
+        #    构造一个临时 manager 仅复用 _save_vn 方法（避免重复实现）
+        #    use_vmpc=True, format="vn" 保证 _resolve_path 正确
+        mgr = CheckpointManager(
+            save_dir=os.path.dirname(os.path.abspath(vn_path)) or ".",
+            best_path=vn_path,
+            last_path=vn_path + ".last",  # 占位，不会用到
+            format="vn",
+            use_vmpc=True,
+            async_vn=False,
+        )
+        # 直接传整个 state：_save_vn 会从中提取 model_state_dict 和标准字段
+        mgr._save_vn(
+            Path(vn_path),
+            state,
+            training_state=training_state,
+            optimizer_state=optimizer_state,
+            extra_state=extra_state,
+        )
+        print(
+            f"[_pt_to_vn_worker] OK: {pt_path} → {vn_path}",
+            file=sys.stderr,
+            flush=True,
+        )
+    except Exception:
+        # 失败时 best.pt 已保留作为备份，仅打印错误
+        print(
+            f"[_pt_to_vn_worker] FAIL: 转换 {pt_path} → {vn_path} 失败：\n"
+            f"{traceback.format_exc()}",
+            file=sys.stderr,
+            flush=True,
+        )
+        # 不抛异常：subprocess 退出码非 0 也不影响主训练（best.pt 已备份）
+
+
 class CheckpointManager:
     """检查点管理器：保存/加载 best 与 last 模型状态。
 
@@ -621,7 +693,20 @@ class CheckpointManager:
         last_path: Optional[os.PathLike] = None,
         format: str = "auto",
         use_vmpc: bool = False,
+        async_vn: bool = False,
     ):
+        """Part5K1.5：async_vn 模式。
+
+        ``async_vn=True`` 时（需 ``use_vmpc=True``）：
+        - ``last`` 始终用 ``.pt``（快速缓存，不阻塞训练）
+        - ``best`` 先快速保存 ``best.pt``（备份），再通过 subprocess 异步保存 ``best.vn``
+        - subprocess 失败时 ``best.pt`` 保留作为备份
+        """
+        # Part5K1.5：async_vn 模式校验
+        if async_vn and not use_vmpc:
+            raise ValueError("async_vn=True 需要 use_vmpc=True")
+        self.async_vn = async_vn
+
         # 校验 format 取值
         if format not in ("auto", "vn", "pt"):
             raise ValueError(
@@ -835,6 +920,11 @@ class CheckpointManager:
     ) -> None:
         """保存最佳模型状态到 best.pt（或 best.vn），原子写。
 
+        Part5K1.5：``async_vn=True`` 时：
+        1. 先快速保存 ``best.pt``（pickle，作为备份/缓存）
+        2. 通过 subprocess 异步保存 ``best.vn``（不阻塞训练）
+        3. subprocess 失败时 ``best.pt`` 保留作为备份
+
         Args:
             state: 模型 state_dict 或任意可 pickle 的状态字典
             training_state: 训练状态（step / epoch / best_val_loss 等）；
@@ -852,7 +942,14 @@ class CheckpointManager:
               从 ``state`` 中提取 ``model_state_dict``（或纯 state_dict）作为权重，
               其余标准字段（step / val_loss 等）合并到 training_state。
         """
-        if self.format == "vn":
+        if self.async_vn:
+            # Part5K1.5：async_vn 模式
+            # 1. 先快速保存 best.pt（pickle，作为备份）
+            best_pt_path = self.save_dir / "best.pt"
+            self._atomic_save(best_pt_path, state)
+            # 2. subprocess 异步保存 best.vn（不阻塞训练）
+            self._async_save_vn(best_pt_path, self.save_dir / "best.vn")
+        elif self.format == "vn":
             self._save_vn(
                 self.best_path, state, training_state,
                 optimizer_state, extra_state,
@@ -870,15 +967,64 @@ class CheckpointManager:
     ) -> None:
         """保存最近一次检查点到 last.pt（或 last.vn），原子写。
 
+        Part5K1.5：``async_vn=True`` 时始终用 ``.pt``（快速缓存，不阻塞训练）。
+
         参数语义同 :meth:`save_best`。
         """
-        if self.format == "vn":
+        if self.async_vn:
+            # Part5K1.5：async_vn 模式 → last 始终用 .pt
+            last_pt_path = self.save_dir / "last.pt"
+            self._atomic_save(last_pt_path, state)
+        elif self.format == "vn":
             self._save_vn(
                 self.last_path, state, training_state,
                 optimizer_state, extra_state,
             )
         else:
             self._atomic_save(self.last_path, state)
+
+    def _async_save_vn(self, pt_path: Path, vn_path: Path) -> None:
+        """Part5K1.5：通过 subprocess 异步将 best.pt 转为 best.vn。
+
+        - 不阻塞主训练进程（subprocess.Popen 后立即返回）
+        - 失败时 best.pt 保留作为备份（不抛异常，仅打印警告）
+        - 使用 ``__main__`` 级别的 ``_pt_to_vn_worker`` 作为子进程入口
+        """
+        import subprocess
+        import sys
+
+        # 构造子进程命令：调用模块级 worker 函数
+        script = (
+            "import sys, pickle;\n"
+            "sys.path.insert(0, {paths!r});\n"
+            "from verse_torch.training import _pt_to_vn_worker;\n"
+            "_pt_to_vn_worker({pt!r}, {vn!r});\n"
+        ).format(
+            paths=[str(p) for p in sys.path if p],
+            pt=str(pt_path),
+            vn=str(vn_path),
+        )
+
+        try:
+            # 启动子进程（不等待完成，异步执行）
+            proc = subprocess.Popen(
+                [sys.executable, "-c", script],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            # 不等待 proc 完成（异步）。进程结束后 OS 自动回收。
+            # 记录 PID 便于调试（可选）
+            if not hasattr(self, "_async_procs"):
+                self._async_procs = []
+            self._async_procs.append(proc)
+        except Exception as e:
+            # subprocess 启动失败：best.pt 已保存，作为备份
+            import warnings
+            warnings.warn(
+                f"Part5K1.5: async best.vn 保存失败（best.pt 已作为备份）：{e}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
     # ------------------------------------------------------------------
     # load_best / load_last（向后兼容：返回保存的 state dict）
@@ -894,7 +1040,21 @@ class CheckpointManager:
           + ``training_state`` + ``optimizer_state`` + ``extra_state`` 的统一 dict，
           并把 ``training_state`` 中的标准字段（step / val_loss 等）展开到顶层
           （便于 ``load_best()["step"]`` 这样的旧式访问）。
+        - Part5K1.5 ``async_vn=True``：优先尝试 ``best.vn``，不存在时回退到
+          ``best.pt``（异步保存未完成或失败时的备份）。
         """
+        if self.async_vn:
+            # Part5K1.5：async_vn 模式 — 优先 best.vn，回退 best.pt
+            if self.best_path.exists():
+                return self._load_vn_state(self.best_path)
+            best_pt = self.save_dir / "best.pt"
+            if best_pt.exists():
+                with open(best_pt, "rb") as f:
+                    payload = pickle.load(f)
+                return _from_serializable(payload)
+            raise FileNotFoundError(
+                f"未找到 best checkpoint：{self.best_path} 和 {best_pt} 均不存在"
+            )
         if self.format == "vn":
             return self._load_vn_state(self.best_path)
         with open(self.best_path, "rb") as f:
@@ -902,7 +1062,17 @@ class CheckpointManager:
         return _from_serializable(payload)
 
     def load_last(self) -> dict:
-        """从 last.pt（或 last.vn）读取并返回状态字典（向后兼容）。"""
+        """从 last.pt（或 last.vn）读取并返回状态字典（向后兼容）。
+
+        Part5K1.5 ``async_vn=True``：始终从 ``last.pt`` 读取（async_vn 模式下
+        last 始终用 .pt 快速缓存）。
+        """
+        if self.async_vn:
+            # Part5K1.5：async_vn 模式 — last 始终是 .pt
+            last_pt = self.save_dir / "last.pt"
+            with open(last_pt, "rb") as f:
+                payload = pickle.load(f)
+            return _from_serializable(payload)
         if self.format == "vn":
             return self._load_vn_state(self.last_path)
         with open(self.last_path, "rb") as f:
@@ -926,11 +1096,31 @@ class CheckpointManager:
               兼容旧文件的 ``val_loss`` 字段）
 
         format="vn" 路径调用 ``VNFileReader``；format="pt" 路径从 pickle 中提取。
+
+        Part5K1.5 ``async_vn=True``：优先 ``best.vn``，不存在时回退 ``best.pt``。
         """
+        if self.async_vn:
+            # Part5K1.5：async_vn 模式 — 优先 best.vn，回退 best.pt
+            if self.best_path.exists():
+                return self._load_full(self.best_path)
+            best_pt = self.save_dir / "best.pt"
+            if best_pt.exists():
+                return self._load_full(best_pt)
+            raise FileNotFoundError(
+                f"未找到 best checkpoint：{self.best_path} 和 {best_pt} 均不存在"
+            )
         return self._load_full(self.best_path)
 
     def load_last_full(self) -> dict:
-        """同 :meth:`load_best_full` 但读 last 文件。"""
+        """同 :meth:`load_best_full` 但读 last 文件。
+
+        Part5K1.5 ``async_vn=True``：始终读 ``last.pt``（async_vn 模式下
+        last 始终用 .pt 快速缓存）。
+        """
+        if self.async_vn:
+            # Part5K1.5：async_vn 模式 — last 始终是 .pt
+            last_pt = self.save_dir / "last.pt"
+            return self._load_full(last_pt)
         return self._load_full(self.last_path)
 
     def _load_vn_state(self, path: Path) -> dict:
@@ -958,10 +1148,14 @@ class CheckpointManager:
     def _load_full(self, path: Path) -> dict:
         """读取 checkpoint 并返回统一 dict（缺失字段为 None）。
 
-        - format="vn"：调用 :meth:`_load_vn`（VNFileReader 读取）
-        - format="pt"：从 pickle payload 中提取标准字段
+        - ``.vn`` 文件：调用 :meth:`_load_vn`（VNFileReader 读取）
+        - ``.pt`` 文件：从 pickle payload 中提取标准字段
+
+        Part5K1.5：根据**文件扩展名**判断格式（而非 ``self.format``），
+        以支持 ``async_vn`` 模式下回退到 ``best.pt`` 的场景。
         """
-        if self.format == "vn":
+        # Part5K1.5：根据文件扩展名判断格式（支持 async_vn 回退到 .pt）
+        if str(path).endswith(".vn"):
             return self._load_vn(path)
 
         with open(path, "rb") as f:
@@ -1910,6 +2104,9 @@ class Trainer:
             self.save_dir,
             format="auto",
             use_vmpc=bool(_cfg_get(cfg, "use_vmpc", False)),
+            # Part5K1.5：use_vmpc=True 时自动启用 async_vn
+            # （last.pt 快速缓存 + best.vn subprocess 异步保存，不阻塞训练）
+            async_vn=bool(_cfg_get(cfg, "use_vmpc", False)),
         )
 
         # 训练历史

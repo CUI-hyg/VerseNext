@@ -112,14 +112,17 @@ class TestSmallModelConstruction:
 
         cfg = CometSparkSmallConfig()
         assert cfg.vocab_size == 256
-        assert cfg.n_embd == 64
-        assert cfg.n_layer == 2
-        assert cfg.n_head == 4
-        assert cfg.n_kv_head == 2
-        assert cfg.mod_every == 2
-        assert cfg.num_dense_parts == 2
-        assert cfg.num_experts_per_part == 2
-        assert cfg.top_k == 1
+        # Part5K1.5 升级：n_embd 64→128, n_layer 2→8, n_head 4→8, n_kv_head 2→4
+        assert cfg.n_embd == 128
+        assert cfg.n_layer == 8
+        assert cfg.n_head == 8
+        assert cfg.n_kv_head == 4
+        assert cfg.seq_len == 150
+        # Part5K1.5：强制全 MoD 架构（mod_every=1）
+        assert cfg.mod_every == 1
+        assert cfg.num_dense_parts == 4
+        assert cfg.num_experts_per_part == 4
+        assert cfg.top_k == 2
         # small 用更高 init_std
         assert cfg.init_std == 0.04
         assert cfg.arch == "versenex"
@@ -274,12 +277,15 @@ class TestConfigLoading:
         # 架构字段
         assert cfg.arch == "versenex"
         assert cfg.vocab_size == 256
-        assert cfg.n_embd == 64
-        assert cfg.n_layer == 2
-        assert cfg.mod_every == 2
-        assert cfg.num_dense_parts == 2
-        assert cfg.num_experts_per_part == 2
-        assert cfg.top_k == 1
+        # Part5K1.5 升级：n_embd 64→128, n_layer 2→8
+        assert cfg.n_embd == 128
+        assert cfg.n_layer == 8
+        assert cfg.seq_len == 150
+        # Part5K1.5：强制全 MoD 架构
+        assert cfg.mod_every == 1
+        assert cfg.num_dense_parts == 4
+        assert cfg.num_experts_per_part == 4
+        assert cfg.top_k == 2
         assert cfg.init_std == 0.04
         # VMPC 段
         assert cfg.vmpc_profile == "small"

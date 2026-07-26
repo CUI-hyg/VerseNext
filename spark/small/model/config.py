@@ -80,26 +80,26 @@ class CometSparkSmallConfig(CometSparkV05Config):
         checkpoint_save_dir: checkpoint 保存目录名（默认 ``"mf_small"``，Task 10 用）。
 
     Note:
-        架构字段默认值已调整为 small 预设：
-        ``vocab_size=256, n_embd=64, n_layer=2, n_head=4, n_kv_head=2,
-        mod_every=2, num_dense_parts=2, num_experts_per_part=2, top_k=1,
-        init_std=0.04``（small 用更高 init_std 加速收敛）。
+        Part5K1.5 升级后架构字段默认值：
+        ``vocab_size=256, n_embd=128, n_layer=8, n_head=8, n_kv_head=4,
+        seq_len=150, mod_every=1（全 MoD）, num_dense_parts=4,
+        num_experts_per_part=4, top_k=2, init_std=0.04``。
     """
 
-    # 覆盖父类默认值（small 极小配置）
+    # 覆盖父类默认值（Part5K1.5 升级：全 MoD 架构 + 更深更宽）
     vocab_size: int = 256
-    n_layer: int = 2
-    n_embd: int = 64
-    n_head: int = 4
-    n_kv_head: int = 2
-    seq_len: int = 64
+    n_layer: int = 8
+    n_embd: int = 128
+    n_head: int = 8
+    n_kv_head: int = 4
+    seq_len: int = 150
     max_position_embeddings: int = 256
-    mod_every: int = 2
-    num_dense_parts: int = 2
-    num_experts_per_part: int = 2
-    top_k: int = 1
-    window_size: int = 32
-    num_global_tokens: int = 4
+    mod_every: int = 1             # Part5K1.5：强制每层都是 MoD
+    num_dense_parts: int = 4       # Part5K1.5：4 个 DensePart
+    num_experts_per_part: int = 4  # Part5K1.5：4 个 Expert/DensePart
+    top_k: int = 2                 # Part5K1.5：激活 2 个 Expert
+    window_size: int = 64
+    num_global_tokens: int = 8
     use_alibi: bool = True
     use_rope: bool = False
     # small 用更高 init_std，加速小模型收敛

@@ -502,9 +502,16 @@ class TestYAMLConfigFiles:
 
         assert cfg.arch == "versenex"
         assert cfg.vocab_size == 256
-        assert cfg.n_layer == 2
-        assert cfg.n_embd == 64
+        # Part5K1.5 升级：n_layer 2→8, n_embd 64→128, seq_len 64→150
+        assert cfg.n_layer == 8
+        assert cfg.n_embd == 128
+        assert cfg.seq_len == 150
         assert cfg.tie_weights is True
+        # Part5K1.5：强制全 MoD 架构
+        assert cfg.mod_every == 1
+        assert cfg.num_dense_parts == 4
+        assert cfg.num_experts_per_part == 4
+        assert cfg.top_k == 2
         # Part5K1.1：VMPC V2.0 字段
         assert cfg.use_vmpc is True
         assert cfg.vmpc_target_ratio == 0.06
