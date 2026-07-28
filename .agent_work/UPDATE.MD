@@ -5,19 +5,22 @@
 > 审计目标：找出 Bug、漏洞、错误、冲突之处，以及"蜘蛛丝"代码
 > （重复、低效、反复套壳、过分的相互导入、垃圾逻辑等）
 
+> Part5K1.7 更新：高危 Bug 1.1–1.13 已全部修复，本报告仅保留中危/低危条目。
+> 另：Task 1 已将 `moe.py` 重命名为 `mod.py`，本报告中后续 `moe.py` 引用均指 `mod.py`。
+
 ## 摘要
 
 | 严重程度 | 数量 | 说明 |
 |---------|------|------|
-| 高危 | 13 | 影响训练正确性 / 推理崩溃 / 资源爆炸 |
+| 高危 | 0 | Part5K1.7 已全部修复 |
 | 中危 | 35 | 影响数值一致性 / 性能 / 接口冲突 |
 | 低危 | 25 | 死代码 / 命名误导 / 文档错误 / 微小性能 |
-| **合计** | **73** | — |
+| **合计** | **60** | — |
 
-**核心结论**：
-1. `moe.py` 的 EMA 平滑和熵正则化**实际未生效**（死代码 + 梯度断裂），MoD 架构的核心辅助损失实现有严重缺陷。
-2. `nexrl/` 子模块的 PPO 实现有**多处违反算法假设**（KL 尺度、IS logprob、GAE bootstrap、reward shaping），整个 RL 训练路径不可信。
-3. `linear_attention.py` 的 `forward_chunkwise` **梯度无法回传**（pad 用 `np.concatenate` 切断计算图），与 docstring "适用于长序列训练" 严重不符。
+**核心结论**（Part5K1.5 审计时的原始判断，1-3 已在 Part5K1.7 修复）：
+1. ~~`mod.py`（原 `moe.py`）的 EMA 平滑和熵正则化**实际未生效**（死代码 + 梯度断裂），MoD 架构的核心辅助损失实现有严重缺陷。~~ ✅ Part5K1.7 已修复
+2. ~~`nexrl/` 子模块的 PPO 实现有**多处违反算法假设**（KL 尺度、IS logprob、GAE bootstrap、reward shaping），整个 RL 训练路径不可信。~~ ✅ Part5K1.7 已修复
+3. ~~`linear_attention.py` 的 `forward_chunkwise` **梯度无法回传**（pad 用 `np.concatenate` 切断计算图），与 docstring "适用于长序列训练" 严重不符。~~ ✅ Part5K1.7 已修复
 4. **5 套 KV Cache 接口并存**（dict / list / `ParallelKVCache` / `StaticCache` / `DynamicCache`），无统一抽象，且 `ParallelKVCache` 全项目无人使用（死代码）。
 5. **3 套 RoPE 实现**、**2 套稀疏注意力**、**3 套 softmax**，大量重复造轮子。
 
@@ -25,124 +28,7 @@
 
 ## 一、高危 Bug（必须修复）
 
-### 1.1 `moe.py` — Router EMA `_load_balance_ema` 死代码（功能未生效）
-
-- **位置**：[moe.py](file:///workspace/packages/verse_nex/verse_nex/moe.py) L338（初始化）、L409-L417（更新）
-- **类型**：Bug / 死代码
-- **描述**：`_load_balance_ema` 在 `__init__` 中初始化为 `None`，在 `forward` 中当 `ema_decay > 0 and self.training` 时被更新（L411-L417 计算 EMA 值并赋给 `self._load_balance_ema`）。但**全文件没有任何地方读取这个值**参与计算。`load_balance_loss`（可微版本）仍然直接参与 `aux_loss`，EMA 值被完全丢弃。
-- **影响**：V1.2 宣称的"EMA 平滑抑制训练抖动"功能**实际未生效**。
-- **修复方向**：在 `aux_loss` 中用 `self._load_balance_ema` 替换或混合 `load_balance_loss`（注意 EMA 不可微，需保留可微路径），或删除这段死代码并修正文档。
-
-### 1.2 `moe.py` — 熵正则化 `entropy_reg` 断开梯度（参数完全无效）
-
-- **位置**：[moe.py](file:///workspace/packages/verse_nex/verse_nex/moe.py) L431-L445
-- **类型**：Bug / 数值计算错误
-- **描述**：
-  ```python
-  probs_np = probs.data                    # 取 .data，梯度断开
-  entropy_per_token = -np.sum(probs_np * np.log(probs_np + eps), axis=-1)
-  mean_entropy = float(np.mean(entropy_per_token))
-  entropy_reg = Tensor(np.array(-self.entropy_weight * mean_entropy, ...), requires_grad=False)
-  ```
-  `entropy_reg` 是 `requires_grad=False` 的常量，加到 `aux_loss` 后**不产生任何梯度**。注释辩解称"梯度已通过 load_balance 的 P_i 回传"——这是**错误的逻辑**：`load_balance_loss` 的梯度方向是降低 `f_i × P_i`（让概率匹配命中率），而熵正则的梯度方向是最大化熵（让 P 更均匀），两者是完全不同的优化目标。
-- **影响**：`entropy_weight` 参数除了改变 loss 数值显示外，对训练**完全无效**。
-- **修复方向**：用 Tensor 运算实现可微熵正则：`entropy = -(probs * (probs + eps).log()).sum(dim=-1).mean()`，然后 `aux_loss = aux_loss - entropy_weight * entropy`。
-
-### 1.3 `linear_attention.py` — `forward_chunkwise` pad 切断梯度路径
-
-- **位置**：[linear_attention.py](file:///workspace/packages/verse_nex/verse_nex/linear_attention.py) L264-L267、L348-L354
-- **类型**：Bug / 梯度断裂
-- **描述**：
-  ```python
-  zeros = Tensor(np.zeros((B, pad_len, H, d)), requires_grad=False)
-  q = Tensor(np.concatenate([q.data, zeros.data], axis=1), requires_grad=q.requires_grad)
-  ```
-  新建 Tensor 用 `np.concatenate` 拼接 `q.data`，**`q` 的 `_children` 丢失**，反向传播无法从新 q 回到原 q。`_compute_qkv` 计算的 q、k、v 梯度全部断掉。同样问题在 L348-L354 拼接 chunk 输出时也存在。
-- **影响**：`forward_chunkwise` 实际不可训练（梯度无法回传到 qkv 投影权重），与 docstring "适用于长序列训练" 严重不符。
-- **修复方向**：用 `verse_torch.vnn._concat`（可微拼接）替换 `np.concatenate`，或用 `sparse_attention._pad_last_dim`（已实现带梯度的 pad）。
-
-### 1.4 `sparse_attention.py` — `forward_recurrent` KV cache 无限增长
-
-- **位置**：[sparse_attention.py](file:///workspace/packages/verse_nex/verse_nex/sparse_attention.py) L354-L358、L451-L458
-- **类型**：Bug / 资源泄漏
-- **描述**：
-  - L354-L359：`kv_cache = list(kv_cache)` 然后 `kv_cache.append((k.data, v.data))`，每个 token 都 append，**从不修剪**。
-  - L451-L458：注释说"修剪 KV cache（移除过老 chunk）"，但实际是 `pass  # 简化：不修剪，让外层管理`。
-  - L421-L423 用 `attend_indices[-(self.max_kv_chunks * C):]` 截断 attend 列表，但 `kv_cache` 没截断，下次 attend 时仍能索引到老 token，逻辑不一致。
-- **影响**：长序列推理时 `kv_cache` 长度线性增长，内存 O(T)，与"常数内存"的 recurrent 设计目标矛盾，最终 OOM。
-- **修复方向**：实现真正的 cache 修剪：保留最近 `max_kv_chunks * C` 个 token 的 (K, V)，并用偏移量记录全局位置。
-
-### 1.5 `kv_cache_parallel.py` — `batch_update` 替换 buffer 破坏预分配语义
-
-- **位置**：[kv_cache_parallel.py](file:///workspace/packages/verse_nex/verse_nex/kv_cache_parallel.py) L197-L198
-- **类型**：Bug / 性能 + 正确性
-- **描述**：构造函数（L89-L97）预分配 `self._k_buf[i]` 形状为 `(max_batch, max_seq, num_heads, head_dim)`。但 `batch_update` 在 L197-L198 执行 `self._k_buf[layer_idx] = new_k`，其中 `new_k` 是 `_concat` 结果，形状为 `(B, T_new_total, H, D)`，**T_new_total 通常 < max_seq**。导致：
-  1. 预分配的 max_seq buffer 被丢弃，每次 update 都创建新 Tensor，**失去预分配性能优势**。
-  2. `reset()` L227-L232 用 `np.zeros_like(self._k_buf[i].data)` 重建 buffer，但此时 `_k_buf[i]` 已经是 shorter tensor，重建后的 buffer 形状是 `(B, T_new_total, H, D)` 而非 `(max_batch, max_seq, H, D)`，**buffer 大小永久缩小**。
-- **影响**：预分配失效 + 长序列下 buffer 不足。
-- **修复方向**：在 `batch_update` 中将 `new_k` 写入预分配 buffer 的 `[:B, :T_new_total]` 切片，保留 max_seq 维度。
-
-### 1.6 `kv_cache_parallel.py` — `get()` 未按 `per_seq_lens` 截断
-
-- **位置**：[kv_cache_parallel.py](file:///workspace/packages/verse_nex/verse_nex/kv_cache_parallel.py) L203-L212
-- **类型**：Bug / 数据污染
-- **描述**：`get` docstring 说"返回的 K/V 形状为 `(B, max(per_seq_lens), H, D)`"，但实现直接 `return self._k_buf[layer_idx], self._v_buf[layer_idx]`，由于问题 1.5，buffer 实际形状是 `(B, T_new_total, H, D)`，T_new_total 是最后一次 update 后的总长度。如果 batch 内序列长度不同（变长场景），返回的 K/V 含 padding 位置的零值，下游 attention 会把这些零当真实 key 计算，导致 softmax 分母偏大、输出偏零。
-- **修复方向**：`get` 应按 `max(self.per_seq_lens[:B])` 截断，或返回 `(K[:B, :max_len], V[:B, :max_len])`。
-
-### 1.7 `tri_sparse_attn.py` — ALiBi 路径在 parallel 与 recurrent 之间语义不一致
-
-- **位置**：[tri_sparse_attn.py](file:///workspace/packages/verse_nex/verse_nex/tri_sparse_attn.py) L600-L608（parallel） vs L712-L725（recurrent）
-- **类型**：Bug / 数值不一致
-- **描述**：
-  - Parallel 路径（L600）：`use_path_c = self.use_alibi and T_k <= self._ALIBI_MAX_T`，判据是 **KV cache 总长度 `T_k`**，且 ALiBi 路径独立构造 `(B, H, T_q, T_k)` 全注意力矩阵，看到**所有 past key**。
-  - Recurrent 路径（L714）：`T_total = position + 1; use_path_c = self.use_alibi and T_total <= self._ALIBI_MAX_T`，判据是**全局位置**，且 ALiBi 路径复用 `swa_scores`（L721 `alibi_scores = swa_scores + alibi_bias`），意味着 recurrent 的 ALiBi 只看到 SWA 窗口内的 W 个 key。
-  - 当 `position=1500, W=512, T_k=512`：parallel 检查 `T_k=512 ≤ 1024` 启用 ALiBi 看 512 个 key；recurrent 检查 `T_total=1501 > 1024` **不启用 ALiBi**。
-- **影响**：破坏"parallel 与 recurrent 数值一致到 1e-3"的契约。
-- **修复方向**：将 recurrent 的判据改为 `n_cached <= self._ALIBI_MAX_T`，且让 ALiBi 路径独立计算 `q @ k^T` 而非复用 `swa_scores`。
-
-### 1.8 `nexrl/trainer.py` — `_compute_gae` 对 truncated rollout 错误处理
-
-- **位置**：[trainer.py](file:///workspace/packages/verse_nex/verse_nex/nexrl/trainer.py) L219-L226
-- **类型**：Bug / GAE 计算
-- **描述**：代码在 `t == T - 1` 时硬编码 `next_value = 0.0`，注释为"终止状态 value = 0"。但 rollout 结束的原因有 `eos`（真正终止）和 `max_len`（截断）两种（见 collector.py:210-211）。被 `max_len` 截断的 episode 应当用 `V(s_T)` bootstrap，否则 advantage 会被系统性低估，导致策略梯度信号偏负。
-- **修复方向**：让 `Rollout` 携带 `truncated` 标志，截断时 `next_value = values[T]`，仅 eos 终止时才置 0。
-
-### 1.9 `nexrl/trainer.py` + `agent.py` — `compute_kl` 用 `sum` 而非 `mean`，KL 损失尺度爆炸
-
-- **位置**：[trainer.py](file:///workspace/packages/verse_nex/verse_nex/nexrl/trainer.py) L382-L390，根因在 [agent.py](file:///workspace/packages/verse_nex/verse_nex/nexrl/agent.py) L159
-- **类型**：Bug / KL 损失
-- **描述**：`self.agent.compute_kl(logits, ref_logits)` 内部 `kl = (ref_probs * (ref_log_probs - new_log_probs)).sum()` 对整个 `(B, T, V)` 张量求和。当 `T=16, V=50000` 时，单个样本的 KL 标量即可达到 ~`T×V×tiny` 量级，`total_loss = ... + self.kl_weight * kl_loss`（trainer.py:397）在 `kl_weight > 0` 时会瞬间爆炸或主导损失。`compute_kl_scalar`（agent.py:197）反而用 `np.mean`，两个接口语义不一致，监控值与训练值不匹配。
-- **影响**：KL 权重一旦 >0，loss 立即爆炸，整个 PPO+KL 路径不可用。
-- **修复方向**：把 `compute_kl` 改为 `(...).sum(dim=-1).mean()`（per-token 平均），并统一两个接口。
-
-### 1.10 `nexrl/trainer.py` — `RewardShaper` 只对终末 reward 做一次 shaping（几乎无效）
-
-- **位置**：[trainer.py](file:///workspace/packages/verse_nex/verse_nex/nexrl/trainer.py) L630-L635
-- **类型**：Bug / reward shaping
-- **描述**：标准 potential-based shaping 要求逐步做 `F(s_t, s_{t+1}) = γΦ(s_{t+1}) - Φ(s_t)`。这里只对最终 reward 做一次：`prev_info = logprobs[:-1]`、`curr_info = logprobs`，两者只差一个 token，`_default_potential` 取 mean 后 Φ(s₀) ≈ Φ(s_T)，shaping 项 ≈ 0。势函数塑造的理论保证（policy invariance）失效，等于没用。
-- **修复方向**：要么逐步 shaping（在 collector 内每步调用），要么直接移除该路径。
-
-### 1.11 `nexrl/collector.py` — `collect_batched` 缺少 attention mask，padding token 污染前向
-
-- **位置**：[collector.py](file:///workspace/packages/verse_nex/verse_nex/nexrl/collector.py) L301-L309、L315
-- **类型**：Bug / batched 前向
-- **描述**：`padded = np.zeros((len(batch_inputs), max_len))`，用 0 padding 但 0 是有效 token id，且没有传 attention mask 给 `forward_policy`。padding 位置会经过 `tok_emb` + 所有 `blocks`，参与注意力计算，导致 `last_logits = logits_np[j, len(batch_inputs[j]) - 1, :]` 被其他样本的 padding 污染。
-- **修复方向**：左 padding + attention mask，或干脆每个 rollout 独立前向（用 `collect`）。
-
-### 1.12 `nexrl/action.py` — `ActionSampler.sample` logprob 与采样分布不一致（破坏 PPO IS 假设）
-
-- **位置**：[action.py](file:///workspace/packages/verse_nex/verse_nex/nexrl/action.py) L235-L242，被 collector.py:186-191、324-329 调用
-- **类型**：Bug / PPO 假设
-- **描述**：对 `nucleus/topk`，采样分布是"截断 + 重归一化"，但返回的 `logprob = log_softmax(original_logits)[token_id]`，与采样概率不一致；对 `epsilon_greedy`，采样分布是 `(1-ε)·argmax + ε·uniform`，但 `logprob` 仍是 `log_softmax`。`collector` 把这个 logprob 写入 `rollout.logprobs`，`_ppo_update` 拿它当 `old_logprob` 算 `ratio = new/old`，PPO 的 IS 假设 `behavior = old policy` 直接失效。
-- **影响**：nucleus/topk/epsilon_greedy 三种策略下 PPO 训练都是无效的。
-- **修复方向**：logprob 用实际采样分布的 log（截断后重归一化），或限制 PPO 只用 `softmax` 策略。
-
-### 1.13 `nexrl/agent.py` + `collector.py` — `agent.act` 与 `collector._single_rollout` 重复，`NexAction` 是死代码
-
-- **位置**：[agent.py](file:///workspace/packages/verse_nex/verse_nex/nexrl/agent.py) L92-L137 vs [collector.py](file:///workspace/packages/verse_nex/verse_nex/nexrl/collector.py) L149-L239
-- **类型**：蜘蛛丝 + 死代码
-- **描述**：`NexAgent.act` 自带"前向 → 取 last_logits → sample → 构造 `NexAction`"的完整逻辑，但 `collector` 完全没调用它，自己又写了一遍。结果 `NexAction`（action.py:19-29）只在 `act()` 里被构造，从未被 `collector` / `trainer` / `env` 使用，是事实上的死代码。
-- **修复方向**：让 collector 调用 `agent.act`，或删除 `NexAgent.act` + `NexAction`。
+> **Part5K1.7 已全部修复**：原 1.1–1.13 共 13 个高危条目（涵盖 `mod.py` Router EMA 死代码 / 熵正则梯度断裂、`linear_attention.py` chunkwise 梯度断裂、`sparse_attention.py` KV cache 无限增长、`kv_cache_parallel.py` buffer 替换 / `get` 未截断、`tri_sparse_attn.py` ALiBi parallel/recurrent 不一致、`nexrl` GAE bootstrap / KL sum / RewardShaper 删除 / attention mask / ActionSampler logprob / NexAction 死代码删除）已在 Part5K1.7 全部修复或删除，本节不再保留具体条目。详见文末"修复优先级建议"中的 P0 / P1 完成标记。
 
 ---
 
@@ -169,23 +55,23 @@
 - **描述**：`load` 方法只读 `.pt`（pickle），不识别 `.vn`；但 `from_pretrained` 两种都支持。`save` 支持 `format="vn"` 和 `"pt"`；但 `save_pretrained` 只写 `model.pt`，不写 `model.vn`。用户用 `save(format="vn")` 存的模型，不能用 `load` 加载，必须用 `from_pretrained`。
 - **修复方向**：让 `load` 复用 `from_pretrained` 的分发逻辑；让 `save_pretrained` 支持写 `model.vn`。
 
-### 2.4 `moe.py` — `expert_hidden` 自动计算逻辑重复
+### 2.4 `mod.py` — `expert_hidden` 自动计算逻辑重复
 
-- **位置**：[moe.py](file:///workspace/packages/verse_nex/verse_nex/moe.py) L689-L690（MoDLayer）与 L557-L559（DensePart）
+- **位置**：[mod.py](file:///workspace/packages/verse_nex/verse_nex/mod.py) L689-L690（MoDLayer）与 L557-L559（DensePart）
 - **类型**：蜘蛛丝 / 重复代码
 - **描述**：`expert_hidden = max(int(dim * 8 / 3 / 64) * 64, 64)` 这行公式在 `MoDLayer.__init__` 和 `DensePart.__init__` 中各写了一遍。MoDLayer 计算后传给 DensePart，DensePart 的 `if expert_hidden is None` 分支永远走不到。
 - **修复方向**：只在 `MoDLayer` 中计算，或提取为公共工具函数 `_default_expert_hidden(dim)`。
 
-### 2.5 `moe.py` — MoDLayer 访问 Router 私有属性（封装泄漏）
+### 2.5 `mod.py` — MoDLayer 访问 Router 私有属性（封装泄漏）
 
-- **位置**：[moe.py](file:///workspace/packages/verse_nex/verse_nex/moe.py) L776-L777、L786-L792
+- **位置**：[mod.py](file:///workspace/packages/verse_nex/verse_nex/mod.py) L776-L777、L786-L792
 - **类型**：蜘蛛丝 / 封装泄漏
 - **描述**：`MoDLayer.forward` 中直接访问 `self.part_router._last_load_balance_loss`、`self.parts[p].router._last_load_balance_loss`、`self.parts[p].router._last_z_loss` 等下划线开头的私有属性来累加 breakdown。
 - **修复方向**：给 Router 增加公开的 `get_loss_breakdown() -> dict` 方法。
 
-### 2.6 `moe.py` — `_dispatch_and_combine` 循环内大量临时 Tensor 创建
+### 2.6 `mod.py` — `_dispatch_and_combine` 循环内大量临时 Tensor 创建
 
-- **位置**：[moe.py](file:///workspace/packages/verse_nex/verse_nex/moe.py) L182-L211
+- **位置**：[mod.py](file:///workspace/packages/verse_nex/verse_nex/mod.py) L182-L211
 - **类型**：蜘蛛丝 / 低效逻辑
 - **描述**：对每个 expert（默认 8 个），循环内创建 `slot_mask_t`、`w_e_full`、`w_e`、`y_e_weighted`、`scattered` 共 5+ 个临时 Tensor，且 `slot_mask = (idx_np == e)` 和 `token_mask = slot_mask.any(axis=-1)` 每次都重新生成。
 - **修复方向**：预计算所有 expert 的 `token_mask`（向量化 `(idx_np[..., None] == np.arange(num_experts)).any(axis=1)`）。
@@ -547,23 +433,23 @@
 
 ## 五、修复优先级建议
 
-### P0 — 立即修复（影响训练正确性）
+### P0 — 立即修复（Part5K1.7 已全部完成）
 
-1. **moe.py 熵正则梯度断裂**（问题 1.2）：`entropy_weight` 完全无效，影响 MoD 路由质量。
-2. **moe.py EMA 死代码**（问题 1.1）：决定是否实现或删除。
-3. **linear_attention.py chunkwise 梯度切断**（问题 1.3）：长序列训练不可用。
-4. **nexrl KL sum bug**（问题 1.9）：PPO+KL 路径爆炸。
-5. **nexrl attention mask 缺失**（问题 1.11）：batched 采集数据污染。
-6. **nexrl PPO logprob 不一致**（问题 1.12）：PPO 训练无效。
+1. ~~`mod.py` 熵正则梯度断裂（1.2）~~ ✅ 已修复（可微 Tensor 运算）
+2. ~~`mod.py` Router EMA 死代码（1.1）~~ ✅ 已修复（EMA 仅作监控标量）
+3. ~~`linear_attention.py` chunkwise 梯度切断（1.3）~~ ✅ 已修复（`_concat` + `_pad_last_dim`）
+4. ~~`nexrl` KL sum bug（1.9）~~ ✅ 已修复（`sum(dim=-1).mean()`）
+5. ~~`nexrl` attention mask 缺失（1.11）~~ ✅ 已修复（左 padding + mask）
+6. ~~`nexrl` PPO logprob 不一致（1.12）~~ ✅ 已修复（实际采样分布 log）
 
-### P1 — 短期修复（影响推理正确性 / 资源）
+### P1 — 短期修复（部分完成）
 
-7. **sparse_attention KV cache 无限增长**（问题 1.4）：长序列推理 OOM。
-8. **kv_cache_parallel buffer 替换 + get 未截断**（问题 1.5、1.6）：预分配失效 + 数据污染。
-9. **tri_sparse ALiBi parallel/recurrent 不一致**（问题 1.7）：数值一致性契约破裂。
-10. **mamba2/rwkv7 SSD L_data 内存爆炸**（问题 2.7、2.10）：长序列训练 OOM。
-11. **nexrl GAE bootstrap**（问题 1.8）：truncated rollout advantage 偏负。
-12. **nexrl reward shaping 失效**（问题 1.10）：potential-based 保证失效。
+7. ~~`sparse_attention` KV cache 无限增长（1.4）~~ ✅ 已修复（cache 修剪 + `cache_offset`）
+8. ~~`kv_cache_parallel` buffer 替换 + get 未截断（1.5、1.6）~~ ✅ 已修复（切片写入保留 max_seq + 按 `per_seq_lens` 截断）
+9. ~~`tri_sparse` ALiBi parallel/recurrent 不一致（1.7）~~ ✅ 已修复（判据统一 + 独立计算）
+10. **`mamba2`/`rwkv7` SSD `L_data` 内存爆炸（2.7、2.10）** —— ❌ 未修复（长序列训练 OOM）
+11. ~~`nexrl` GAE bootstrap（1.8）~~ ✅ 已修复（`Rollout.truncated` + bootstrap）
+12. ~~`nexrl` reward shaping 失效（1.10）~~ ✅ 已删除（`RewardShaper` 移除）
 
 ### P2 — 中期重构（架构清理）
 
@@ -589,25 +475,25 @@
 | 文件 | 高危 | 中危 | 低危 | 合计 |
 |------|------|------|------|------|
 | cometspark.py | 0 | 3 | 3 | 6 |
-| moe.py | 2 | 3 | 0 | 5 |
+| mod.py（原 moe.py） | 0 | 3 | 0 | 3 |
 | mamba2.py | 0 | 1 | 2 | 3 |
 | rwkv7.py | 0 | 2 | 1 | 3 |
-| tri_sparse_attn.py | 1 | 3 | 0 | 4 |
-| kv_cache_parallel.py | 2 | 2 | 0 | 4 |
-| sparse_attention.py | 1 | 2 | 1 | 4 |
-| linear_attention.py | 1 | 0 | 1 | 2 |
+| tri_sparse_attn.py | 0 | 3 | 0 | 3 |
+| kv_cache_parallel.py | 0 | 2 | 0 | 2 |
+| sparse_attention.py | 0 | 2 | 1 | 3 |
+| linear_attention.py | 0 | 0 | 1 | 1 |
 | positional.py | 0 | 1 | 1 | 2 |
 | hybrid.py | 0 | 2 | 1 | 3 |
 | speculative.py | 0 | 2 | 0 | 2 |
-| nexrl/trainer.py | 3 | 5 | 0 | 8 |
-| nexrl/collector.py | 2 | 2 | 0 | 4 |
-| nexrl/action.py | 1 | 2 | 1 | 4 |
-| nexrl/agent.py | 1 | 0 | 1 | 2 |
+| nexrl/trainer.py | 0 | 5 | 0 | 5 |
+| nexrl/collector.py | 0 | 2 | 0 | 2 |
+| nexrl/action.py | 0 | 2 | 1 | 3 |
+| nexrl/agent.py | 0 | 0 | 1 | 1 |
 | nexrl/reward.py | 0 | 1 | 0 | 1 |
 | nexrl/env.py | 0 | 1 | 0 | 1 |
 | nexrl/state.py | 0 | 0 | 1 | 1 |
 | 跨文件 | 0 | 0 | 4 | 4 |
-| **合计** | **13** | **35** | **25** | **73** |
+| **合计** | **0** | **35** | **25** | **60** |
 
 ### 按类型分布
 

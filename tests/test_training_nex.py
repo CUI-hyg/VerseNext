@@ -195,7 +195,7 @@ def test_verse_nex_trainer_without_aux(tmp_path):
     )
     model = CometSparkV05LM(config)
     # 验证确实无 MoD 层
-    from verse_nex.moe import MoDLayer
+    from verse_nex.mod import MoDLayer
     n_mod = sum(1 for m in model.net.modules() if isinstance(m, MoDLayer))
     assert n_mod == 0, f"应无 MoD 层，实际 {n_mod}"
 

@@ -94,7 +94,7 @@ class TestModelConstruction:
     def test_v05_factory_has_mod_and_trisparse(self):
         """CometSparkV05() 应同时含 MoD 和 trisparse 层。"""
         from spark.src.base_model import CometSparkV05
-        from verse_nex.moe import MoDLayer
+        from verse_nex.mod import MoDLayer
         from verse_nex.tri_sparse_attn import TriSparseAttention
 
         # 小 vocab 避免 OOM

@@ -337,12 +337,19 @@ class TopKChunkSparseAttention(Module):
 
         Args:
             x: (B, 1, D)
-            state: tuple (kv_cache, position)
+            state: tuple (kv_cache, position, cache_offset)
                 kv_cache: list of (K, V) per past token, 每个 (B, H, d)
-                position: int, 当前 token 的位置
+                    长度上限为 max_kv_chunks * C（若 max_kv_chunks 设定）
+                position: int, 当前 token 的位置（0-indexed）
+                cache_offset: int, kv_cache[0] 对应的全局位置
+                    （即被丢弃的 token 数，用于全局位置→cache 索引映射）
+                兼容旧格式 (kv_cache, position)，按 cache_offset=0 处理。
         Returns:
             out: (B, 1, D)
-            new_state: tuple (kv_cache, position)
+            new_state: tuple (kv_cache, position, cache_offset)
+
+        Part5K1.7：实现真正的 KV cache 修剪，保留最近 max_kv_chunks * C 个 token，
+        内存占用 O(C) 而非 O(T)。用 cache_offset 记录全局位置偏移。
         """
         B, T, D = x.shape
         assert T == 1, f"recurrent mode requires T=1, got T={T}"
@@ -354,8 +361,14 @@ class TopKChunkSparseAttention(Module):
         if state is None:
             kv_cache = []  # list of (K, V), each (B, H, d)
             position = 0
+            cache_offset = 0
         else:
-            kv_cache, position = state
+            # 兼容旧 state（无 cache_offset）→ 视为 offset=0
+            if len(state) == 2:
+                kv_cache, position = state
+                cache_offset = 0
+            else:
+                kv_cache, position, cache_offset = state
             kv_cache = list(kv_cache)  # copy
 
         with no_grad():
@@ -372,6 +385,16 @@ class TopKChunkSparseAttention(Module):
             # 添加到 KV cache
             kv_cache.append((k.data, v.data))
             cur_pos = position  # 当前 token 在序列中的位置（0-indexed）
+
+            # Part5K1.7：修剪 KV cache，保留最近 max_kv_chunks * C 个 token，
+            # 内存占用 O(C) 而非 O(T)。用 cache_offset 记录被丢弃的 token 数，
+            # 用于把全局位置映射回 kv_cache 内部索引。
+            if self.max_kv_chunks is not None:
+                max_cache_len = self.max_kv_chunks * C
+                if len(kv_cache) > max_cache_len:
+                    dropped = len(kv_cache) - max_cache_len
+                    kv_cache = kv_cache[-max_cache_len:]
+                    cache_offset += dropped
 
             # 决定 attend 的 past tokens
             # 当前 token 在 chunk ci = cur_pos // C, 位置 ii = cur_pos % C
@@ -396,40 +419,47 @@ class TopKChunkSparseAttention(Module):
             remaining_past_chunks = list(range(0, max(0, ci - W)))
             if len(remaining_past_chunks) > 0 and k_top > 0:
                 # 用 Q 与每个 past chunk 的 mean K 计算 score
+                # 只考虑仍存在于 kv_cache 中的 chunk（global position >= cache_offset）
                 k_means = []
+                valid_chunks = []
                 for cj in remaining_past_chunks:
-                    chunk_ks = [kv_cache[p][0] for p in range(cj * C, (cj + 1) * C)]
-                    if len(chunk_ks) > 0:
-                        k_mean = np.mean(chunk_ks, axis=0)  # (B, H, d)
-                    else:
-                        k_mean = np.zeros((B, H, d), dtype=np.float32)
+                    g_start = cj * C
+                    g_end = (cj + 1) * C
+                    # 映射到 cache 内部索引，并裁剪到可用范围
+                    c_start = max(0, g_start - cache_offset)
+                    c_end = min(len(kv_cache), g_end - cache_offset)
+                    if c_end <= c_start:
+                        continue  # 整个 chunk 已被丢弃
+                    chunk_ks = [kv_cache[i][0] for i in range(c_start, c_end)]
+                    k_mean = np.mean(chunk_ks, axis=0)  # (B, H, d)
                     k_means.append(k_mean)
-                k_means = np.stack(k_means, axis=1)  # (B, P, H, d)
-                # scores[b, p, h] = q[b, h, :] . k_means[b, p, h, :]
-                scores = np.einsum("bhd,bphd->bph", q.data, k_means)  # (B, P, H)
-                scores_avg = scores.mean(axis=2).mean(axis=0)  # (P,)
-                k_actual = min(k_top, len(remaining_past_chunks))
-                topk_idx = np.argsort(-scores_avg)[:k_actual]
-                for idx in topk_idx:
-                    cj = remaining_past_chunks[idx]
-                    for p in range(cj * C, (cj + 1) * C):
-                        if p < cur_pos and p not in attend_indices:
-                            attend_indices.append(p)
+                    valid_chunks.append(cj)
+                if len(valid_chunks) > 0:
+                    k_means = np.stack(k_means, axis=1)  # (B, P, H, d)
+                    # scores[b, p, h] = q[b, h, :] . k_means[b, p, h, :]
+                    scores = np.einsum("bhd,bphd->bph", q.data, k_means)  # (B, P, H)
+                    scores_avg = scores.mean(axis=2).mean(axis=0)  # (P,)
+                    k_actual = min(k_top, len(valid_chunks))
+                    topk_idx = np.argsort(-scores_avg)[:k_actual]
+                    for idx in topk_idx:
+                        cj = valid_chunks[idx]
+                        for p in range(cj * C, (cj + 1) * C):
+                            if p < cur_pos and p not in attend_indices:
+                                attend_indices.append(p)
 
             attend_indices = sorted(attend_indices)
-            # 限制 KV cache 大小（如果 max_kv_chunks 设定）
-            if self.max_kv_chunks is not None and len(attend_indices) > self.max_kv_chunks * C:
-                # 只保留最近的 max_kv_chunks * C 个
-                attend_indices = attend_indices[-(self.max_kv_chunks * C):]
+            # 修剪后 kv_cache 只保留 [cache_offset, cache_offset + len(kv_cache)) 范围内
+            # 的 token，过滤掉已被丢弃的 attend 索引，确保索引与 kv_cache 长度一致。
+            attend_indices = [p for p in attend_indices if p >= cache_offset]
 
             # 计算 attention
             if len(attend_indices) == 0:
                 # 第一个 token，直接用 V[0]
                 out = v.data  # (B, H, d)
             else:
-                # 收集 K, V
-                K_sel = np.stack([kv_cache[p][0] for p in attend_indices], axis=1)  # (B, M, H, d)
-                V_sel = np.stack([kv_cache[p][1] for p in attend_indices], axis=1)  # (B, M, H, d)
+                # 收集 K, V（用 cache 内部索引 = global position - cache_offset）
+                K_sel = np.stack([kv_cache[p - cache_offset][0] for p in attend_indices], axis=1)  # (B, M, H, d)
+                V_sel = np.stack([kv_cache[p - cache_offset][1] for p in attend_indices], axis=1)  # (B, M, H, d)
                 # scores: (B, H, M) = q . K^T
                 # q: (B, H, d), K_sel: (B, M, H, d) -> transpose to (B, H, d, M)
                 K_sel_t = np.transpose(K_sel, (0, 2, 3, 1))  # (B, H, d, M)
@@ -448,16 +478,7 @@ class TopKChunkSparseAttention(Module):
             out_tensor = self.norm(out_tensor)
             out_tensor = self.out(out_tensor)
 
-            # 修剪 KV cache（移除过老的 chunk，不参加 sliding window 或 top-k）
-            # 简化：保留全部 KV cache（在 max_kv_chunks 限制内）
-            if self.max_kv_chunks is not None:
-                # 保留最近 max_kv_chunks 个 chunk
-                min_keep_chunk = max(0, ci - self.max_kv_chunks + 1)
-                # 不删除，因为索引会乱；这里只保留最近 max_kv_chunks 个 chunk 的 tokens
-                # 但需要谨慎处理索引
-                pass  # 简化：不修剪，让外层管理
-
-            new_state = (kv_cache, cur_pos + 1)
+            new_state = (kv_cache, cur_pos + 1, cache_offset)
 
         return out_tensor, new_state
 

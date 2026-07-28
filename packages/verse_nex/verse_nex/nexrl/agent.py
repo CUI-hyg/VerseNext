@@ -13,7 +13,7 @@ import numpy as np
 
 from verse_torch import Tensor, no_grad
 
-from .action import ActionSampler, NexAction
+from .action import ActionSampler
 from .state import NexState
 
 
@@ -96,7 +96,7 @@ class NexAgent:
         temperature: float = 1.0,
         track_grad: bool = False,
         **kwargs,
-    ) -> Tuple[NexAction, Tensor]:
+    ) -> Tuple[int, float, Tensor]:
         """根据当前状态采样动作。
 
         用策略网络对当前序列做一次前向，取最后一个位置的 logits，
@@ -110,7 +110,7 @@ class NexAgent:
             **kwargs: 采样策略额外参数
 
         Returns:
-            (action, logits_tensor) 元组
+            (token_id, logprob, logits_tensor) 元组
         """
         # 构造输入序列
         all_tokens = state.all_tokens
@@ -133,13 +133,16 @@ class NexAgent:
             last_logits, strategy=strategy, rng=self.rng, **kwargs,
         )
 
-        action = NexAction(token_id=token_id, logprob=logprob)
-        return action, logits
+        # Part5K1.7（1.13）：返回元组，不再构造 NexAction
+        return token_id, logprob, logits
 
     def compute_kl(self, new_logits: Tensor, ref_logits: Tensor) -> Tensor:
         """计算 KL 散度。
 
-        KL(ref || new) = sum( ref_probs * (log(ref_probs) - log(new_probs)) )
+        KL(ref || new) = mean over tokens of sum_v( ref_probs * (log(ref_probs) - log(new_probs)) )
+
+        per-token 求和后取平均，避免 KL 损失尺度随 (B, T, V) 爆炸。
+        与 compute_kl_scalar 语义一致。
 
         Args:
             new_logits: 策略网络 logits (..., V) Tensor
@@ -155,8 +158,8 @@ class NexAgent:
         # ref_probs = exp(ref_log_probs)
         ref_probs = ref_log_probs.exp()
 
-        # KL = sum(ref_probs * (ref_log_probs - new_log_probs))
-        kl = (ref_probs * (ref_log_probs - new_log_probs)).sum()
+        # KL = per-token sum then mean（Part5K1.7：避免 KL 损失尺度爆炸）
+        kl = (ref_probs * (ref_log_probs - new_log_probs)).sum(dim=-1).mean()
         return kl
 
     def compute_kl_scalar(self, new_logits, ref_logits) -> float:

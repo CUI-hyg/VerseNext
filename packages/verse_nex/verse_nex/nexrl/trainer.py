@@ -22,7 +22,7 @@ from verse_torch.training import clip_grad_norm
 
 from .agent import NexAgent
 from .collector import ParallelRolloutCollector, Rollout
-from .reward import NexReward, RewardNormalizer, RewardShaper
+from .reward import NexReward, RewardNormalizer
 
 
 def _forward_with_hidden(model, input_ids) -> Tuple[Tensor, Tensor]:
@@ -83,7 +83,6 @@ class NexTrainer:
             - temperature: 采样温度（默认 1.0）
             - reward_fn: 自定义 reward 函数
             - use_reward_normalizer: 是否启用 reward 归一化（默认 True）
-            - use_reward_shaper: 是否启用 reward 塑形（默认 False）
     """
 
     def __init__(self, agent: NexAgent, optimizer=None, cfg=None):
@@ -131,9 +130,7 @@ class NexTrainer:
         self.use_reward_normalizer = bool(
             self.cfg.get("use_reward_normalizer", True)
         )
-        self.use_reward_shaper = bool(self.cfg.get("use_reward_shaper", False))
         self.reward_normalizer = RewardNormalizer() if self.use_reward_normalizer else None
-        self.reward_shaper = RewardShaper(gamma=self.gamma) if self.use_reward_shaper else None
 
         # Rollout collector
         self.max_new_tokens = int(self.cfg.get("max_new_tokens", 16))
@@ -196,6 +193,7 @@ class NexTrainer:
         self,
         rewards: List[float],
         values: List[float],
+        truncated: bool = False,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """计算 GAE 优势和回报。
 
@@ -206,7 +204,10 @@ class NexTrainer:
 
         Args:
             rewards: 每步的 reward 列表
-            values: 每步的 value 估计列表
+            values: 每步的 value 估计列表；truncated 时长度可为 T+1，
+                    values[T] 作为 V(s_T) bootstrap
+            truncated: 是否被 max_len 截断。True 时末步用 V(s_T) bootstrap，
+                        False（eos 终止）时末步 next_value = 0
 
         Returns:
             advantages: (T,) ndarray
@@ -218,14 +219,20 @@ class NexTrainer:
 
         for t in reversed(range(T)):
             if t == T - 1:
-                next_value = 0.0  # 终止状态 value = 0
+                if truncated:
+                    # 截断：用 V(s_T) bootstrap，values[T] 由 collector 额外采集
+                    next_value = values[T] if len(values) > T else 0.0
+                else:
+                    # eos 终止：value = 0
+                    next_value = 0.0
             else:
                 next_value = values[t + 1]
             delta = rewards[t] + self.gamma * next_value - values[t]
             last_gae = delta + self.gamma * self.gae_lambda * last_gae
             advantages[t] = last_gae
 
-        returns = advantages + np.array(values, dtype=np.float32)
+        # 仅取前 T 个 values（truncated 时 values 可能含 V(s_T)）
+        returns = advantages + np.array(values[:T], dtype=np.float32)
         return advantages, returns
 
     # ------------------------------------------------------------------
@@ -624,16 +631,8 @@ class NexTrainer:
                 reward_fn=reward_fn,
             )
 
-            # 2. 处理 rewards（归一化 + 塑形）
+            # 2. 处理 rewards（归一化）
             for r in rollouts:
-                # reward shaping（可选）
-                if self.reward_shaper is not None:
-                    prev_info = {"logprobs": r.logprobs[:-1] if len(r.logprobs) > 1 else []}
-                    curr_info = {"logprobs": r.logprobs}
-                    r.reward = self.reward_shaper.shape(
-                        r.reward, prev_info, curr_info,
-                    )
-
                 # reward normalization（可选）
                 if self.reward_normalizer is not None:
                     self.reward_normalizer.update(r.reward)
@@ -646,7 +645,9 @@ class NexTrainer:
                     # 把终末 reward 分配到最后一步
                     step_rewards = [0.0] * len(r.generated_tokens)
                     step_rewards[-1] = r.reward
-                    advs, rets = self._compute_gae(step_rewards, r.values)
+                    advs, rets = self._compute_gae(
+                        step_rewards, r.values, truncated=r.truncated,
+                    )
                     r.advantages = advs
                     r.returns = rets
                 else:

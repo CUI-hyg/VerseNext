@@ -34,7 +34,7 @@ import pytest
 
 from verse_torch import Tensor, no_grad
 from verse_nex import MoDLayer
-from verse_nex.moe import Router, Expert, DensePart
+from verse_nex.mod import Router, Expert, DensePart
 
 
 # ---------------------------------------------------------------------------

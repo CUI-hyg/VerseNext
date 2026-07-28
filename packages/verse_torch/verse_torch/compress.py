@@ -1917,7 +1917,7 @@ def compress_mod_experts(model, keep_ratio: float = 0.5,
                          return_stats: bool = False):
     """MoD Expert 结构化剪枝。
 
-    对模型中所有 :class:`verse_nex.moe.MoDLayer` 实例：
+    对模型中所有 :class:`verse_nex.mod.MoDLayer` 实例：
 
     1. 收集每个 Expert 的参数 L2 范数（``sqrt(sum(p.data**2 for p in
        expert.parameters()))``）；
@@ -1950,7 +1950,7 @@ def compress_mod_experts(model, keep_ratio: float = 0.5,
     """
     # 延迟导入 MoDLayer（避免顶层 import 时 verse_nex 不可用）
     try:
-        from verse_nex.moe import MoDLayer
+        from verse_nex.mod import MoDLayer
     except ImportError:  # pragma: no cover - 环境无 verse_nex 时无可剪枝对象
         MoDLayer = None
 

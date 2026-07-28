@@ -27,7 +27,7 @@ from .sparse_attention import TopKChunkSparseAttention
 # 模块本身保留只读兼容，仍可通过 `from verse_nex.hybrid import HybridBlock` 访问。
 # Part4 新增
 from .tri_sparse_attn import TriSparseAttention
-from .moe import Router, Expert, DensePart, MoDLayer
+from .mod import Router, Expert, DensePart, MoDLayer
 from .cometspark import (
     VerseNexBlock,
     CometSparkNexLM,
@@ -41,7 +41,6 @@ from .nexrl import (
     NexAgent,
     NexEnv,
     NexState,
-    NexAction,
     NexReward,
     ChatEnv,
     MathEnv,
@@ -50,7 +49,6 @@ from .nexrl import (
     ExplorationSchedule,
     repeat_penalty,
     RewardNormalizer,
-    RewardShaper,
     Rollout,
     ParallelRolloutCollector,
     NexTrainer,
@@ -104,7 +102,6 @@ __all__ = [
     "NexAgent",
     "NexEnv",
     "NexState",
-    "NexAction",
     "NexReward",
     "ChatEnv",
     "MathEnv",
@@ -113,7 +110,6 @@ __all__ = [
     "ExplorationSchedule",
     "repeat_penalty",
     "RewardNormalizer",
-    "RewardShaper",
     "Rollout",
     "ParallelRolloutCollector",
     "NexTrainer",

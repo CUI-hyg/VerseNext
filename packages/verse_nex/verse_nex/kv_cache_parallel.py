@@ -97,6 +97,8 @@ class ParallelKVCache(KVCache):
         ]
         # 每个序列当前长度（默认 0）
         self.per_seq_lens = np.zeros(self.max_batch, dtype=np.int64)
+        # 当前 batch 大小（最近一次 batch_update 写入的 B，供 get() 截断使用）
+        self._cur_batch: int = 0
         # 每层是否已写入（用于 reset 后状态管理）
         self._layer_initialized = [False] * self.num_layers
 
@@ -192,24 +194,41 @@ class ParallelKVCache(KVCache):
                     new_k = _concat(new_k_list, dim=0)
                     new_v = _concat(new_v_list, dim=0)
 
-        # 把新 K/V 写回 buffer（保留 max_seq 维度，未用部分用零填充）
-        # 用整体替换（与 StaticCache.update 一致策略）
-        self._k_buf[layer_idx] = new_k
-        self._v_buf[layer_idx] = new_v
-        # 更新每个序列长度
+        # 把新 K/V 写回预分配 buffer 的切片（保留 (max_batch, max_seq, H, D) 形状）
+        # 注意：不能用整体替换（self._k_buf[layer_idx] = new_k），否则预分配的
+        # max_seq buffer 被丢弃，reset() 会按缩短后的形状重建，buffer 永久缩小。
+        B_new, T_new_total = new_k.shape[0], new_k.shape[1]
+        self._k_buf[layer_idx].data[:B_new, :T_new_total] = new_k.data
+        self._v_buf[layer_idx].data[:B_new, :T_new_total] = new_v.data
+        # 若未填满 max_seq，清零剩余位置避免脏数据（防止下次 concat 读到旧值）
+        if T_new_total < self.max_seq:
+            self._k_buf[layer_idx].data[:B_new, T_new_total:] = 0
+            self._v_buf[layer_idx].data[:B_new, T_new_total:] = 0
+        # 记录当前 batch 大小（供 get() 按 per_seq_lens 截断）
+        self._cur_batch = B
+        # 更新每个序列长度（累计追加）
         self.per_seq_lens[:B] = self.per_seq_lens[:B] + T_new
         return new_k, new_v
 
     def get(self, layer_idx: int = 0):
-        """取出指定层的 (K, V) Tensor。
+        """取出指定层的 (K, V) Tensor（按 per_seq_lens 截断，去除尾部 padding）。
 
-        返回的 K/V 形状为 (B, max(per_seq_lens), H, D)。
+        返回的 K/V 形状为 ``(B, max(per_seq_lens[:B]), H, D)``，其中 ``B`` 为
+        最近一次 ``batch_update`` 写入的 batch 大小（``_cur_batch``）。
+        尾部 padding 位置不返回，避免下游 attention 把零值当真实 key 计算。
+
+        若 ``B == 0``（尚未写入），返回零 batch 的 ``(0, max_seq, H, D)`` Tensor。
         """
         if layer_idx >= self.num_layers:
             raise IndexError(
                 f"layer_idx {layer_idx} 超出 num_layers {self.num_layers}"
             )
-        return self._k_buf[layer_idx], self._v_buf[layer_idx]
+        B = self._cur_batch
+        if B <= 0:
+            return self._k_buf[layer_idx][:0], self._v_buf[layer_idx][:0]
+        max_len = int(self.per_seq_lens[:B].max())
+        return (self._k_buf[layer_idx][:B, :max_len],
+                self._v_buf[layer_idx][:B, :max_len])
 
     def get_seq(self, b: int, layer_idx: int = 0):
         """取出指定序列、指定层的有效 (K, V)（去除尾部 padding）。"""
@@ -222,16 +241,23 @@ class ParallelKVCache(KVCache):
             self._v_buf[layer_idx][b:b + 1, :s]
 
     def reset(self) -> None:
-        """清空 cache（所有序列、所有层）。"""
+        """清空 cache（所有序列、所有层）。
+
+        按初始的 ``(max_batch, max_seq, H, D)`` 形状重建 buffer，而非沿用当前
+        ``_k_buf[i]`` 的形状——因为 ``batch_update`` 只写入切片不替换 buffer，
+        但仍按初始形状重建可避免任何潜在的形状漂移。
+        """
+        shape = (self.max_batch, self.max_seq, self.num_heads, self.head_dim)
         for i in range(self.num_layers):
             self._k_buf[i] = Tensor(
-                np.zeros_like(self._k_buf[i].data), requires_grad=False
+                np.zeros(shape, dtype=self.dtype), requires_grad=False
             )
             self._v_buf[i] = Tensor(
-                np.zeros_like(self._v_buf[i].data), requires_grad=False
+                np.zeros(shape, dtype=self.dtype), requires_grad=False
             )
             self._layer_initialized[i] = False
         self.per_seq_lens[:] = 0
+        self._cur_batch = 0
 
     def reset_seq(self, b: int) -> None:
         """清空指定序列的 cache（speculative decoding 单序列重启用）。"""

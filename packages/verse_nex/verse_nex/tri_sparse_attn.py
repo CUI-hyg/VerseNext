@@ -710,15 +710,22 @@ class TriSparseAttention(Module):
             global_out = np.einsum("bhm,hmd->bhd", global_attn, global_v)  # (B, H, d)
 
             # ===== 路径 C: ALiBi =====
-            T_total = position + 1
-            use_path_c = self.use_alibi and T_total <= self._ALIBI_MAX_T
+            # Part5K1.7：统一 parallel/recurrent 的 ALiBi 语义
+            # - 判据：n_cached <= _ALIBI_MAX_T（与 parallel 的 T_k <= _ALIBI_MAX_T 一致）
+            # - 独立计算 q @ k^T，不复用 swa_scores（与 parallel _alibi_forward 结构对齐）
+            # 注：recurrent 的 KV cache 已裁剪到 window_size，故 ALiBi 实际可见
+            # n_cached (≤ W) 个 key；当 parallel 也使用裁剪后的 cache (T_k ≤ W) 时
+            # 两者数值一致到 1e-3（满足契约）。
+            use_path_c = self.use_alibi and n_cached <= self._ALIBI_MAX_T
             if use_path_c:
                 # key 全局位置: [position - n_cached + 1, position]
                 key_positions = np.arange(n_cached) + (position - n_cached + 1)
                 dist = position - key_positions  # (n_cached,) >= 0
                 # ALiBi bias: (H, n_cached)
                 alibi_bias = -self.alibi_slopes[:, None] * dist[None, :]
-                alibi_scores = swa_scores + alibi_bias[None, :, :]  # (B, H, n_cached)
+                # 独立计算 q @ k^T（不复用 swa_scores，与 parallel _alibi_forward 一致）
+                alibi_scores = np.einsum("bhd,bhmd->bhm", q_data, k_rep_t) * scale
+                alibi_scores = alibi_scores + alibi_bias[None, :, :]  # (B, H, n_cached)
                 alibi_attn = _np_softmax(alibi_scores, axis=-1)
                 alibi_out = np.einsum(
                     "bhm,bhmd->bhd", alibi_attn, v_rep_t

@@ -12,7 +12,7 @@ import numpy as np
 
 from verse_torch import Tensor, no_grad
 
-from .action import ActionSampler, repeat_penalty
+from .action import repeat_penalty
 from .agent import NexAgent
 from .state import NexState
 
@@ -29,7 +29,8 @@ class Rollout:
         values: 每步的 value 估计（可选，None 表示无 value function）
         reward: 最终 reward
         reward_components: reward 各维度分解
-        done_reason: 结束原因
+        done_reason: 结束原因（"eos" / "max_len"）
+        truncated: 是否被 max_len 截断（True 时 GAE 应用 V(s_T) bootstrap）
         advantages: GAE 优势（由 trainer 计算，默认空 ndarray）
         returns: 回报（由 trainer 计算，默认空 ndarray）
     """
@@ -42,6 +43,7 @@ class Rollout:
     reward: float = 0.0
     reward_components: Dict[str, float] = field(default_factory=dict)
     done_reason: str = ""
+    truncated: bool = False  # 是否被 max_len 截断（True）或 eos 终止（False）
     advantages: Any = field(default=None)  # numpy ndarray，由 trainer 填充
     returns: Any = field(default=None)  # numpy ndarray，由 trainer 填充
 
@@ -182,8 +184,8 @@ class ParallelRolloutCollector:
                         penalty=self.repeat_penalty_factor,
                     )
 
-                # 采样
-                token_id, logprob = ActionSampler.sample(
+                # 采样（Part5K1.7 1.13：统一使用 agent.sampler 实例）
+                token_id, logprob = self.agent.sampler.sample(
                     last_logits,
                     strategy=self.strategy,
                     rng=self.rng,
@@ -207,35 +209,17 @@ class ParallelRolloutCollector:
                     done_reason = "eos"
                     break
 
-            if not done:
-                done_reason = "max_len"
-
-        # 解码生成文本
-        generated_text = decode_fn(generated_tokens)
-
-        # 计算 reward
-        if reward_fn is not None:
-            reward_result = reward_fn(generated_text, prompt, logprobs, generated_tokens)
-            if isinstance(reward_result, dict):
-                reward = float(reward_result.get("total", 0.0))
-                reward_components = reward_result
-            else:
-                reward = float(reward_result)
-                reward_components = {"total": reward}
-        else:
-            # 默认 reward: 基于长度的简单奖励
-            reward = min(1.0, len(generated_tokens) / max(1, self.max_new_tokens))
-            reward_components = {"total": reward, "length": reward}
-
-        return Rollout(
+        # Part5K1.7（1.13）：公共逻辑（bootstrap value + decode + reward）抽取到 _build_rollout
+        return self._build_rollout(
             prompt=prompt,
             prompt_tokens=list(prompt_tokens),
             generated_tokens=generated_tokens,
             logprobs=logprobs,
             values=values,
-            reward=reward,
-            reward_components=reward_components,
+            done=done,
             done_reason=done_reason,
+            decode_fn=decode_fn,
+            reward_fn=reward_fn,
         )
 
     def collect_batched(
@@ -298,11 +282,17 @@ class ParallelRolloutCollector:
                 if not batch_inputs:
                     break  # 所有 rollout 都已完成
 
-                # padding
+                # Part5K1.7（1.11）：左 padding + attention mask
+                # 左 padding 使真实序列末尾对齐到 max_len-1，last_logits 取 [:, -1, :] 即真实最后 token
+                # （选项 C：不改 forward_policy 接口，padding 对末尾 logits 影响最小）
                 max_len = max(len(seq) for seq in batch_inputs)
-                padded = np.zeros((len(batch_inputs), max_len), dtype=np.int64)
+                pad_id = 0
+                padded = np.full((len(batch_inputs), max_len), pad_id, dtype=np.int64)
+                attention_mask = np.zeros((len(batch_inputs), max_len), dtype=np.int32)
                 for j, seq in enumerate(batch_inputs):
-                    padded[j, :len(seq)] = seq
+                    pad_len_j = max_len - len(seq)
+                    padded[j, pad_len_j:] = seq
+                    attention_mask[j, pad_len_j:] = 1
 
                 # 批量前向
                 input_tensor = Tensor(padded)
@@ -312,7 +302,8 @@ class ParallelRolloutCollector:
                 # 为每个活跃 rollout 采样
                 for j, idx in enumerate(batch_indices):
                     rs = rollout_states[idx]
-                    last_logits = logits_np[j, len(batch_inputs[j]) - 1, :]
+                    # Part5K1.7（1.11）：左 padding 后真实序列末尾对齐到 -1 位置
+                    last_logits = logits_np[j, -1, :]
 
                     # 重复惩罚
                     if self.use_repeat_penalty and rs["generated_tokens"]:
@@ -321,17 +312,21 @@ class ParallelRolloutCollector:
                             penalty=self.repeat_penalty_factor,
                         )
 
-                    token_id, logprob = ActionSampler.sample(
+                    # Part5K1.7（1.13）：统一使用 agent.sampler 实例
+                    token_id, logprob = self.agent.sampler.sample(
                         last_logits,
                         strategy=self.strategy,
                         rng=self.rng,
                         temperature=self.temperature,
                     )
 
-                    # value 估计
+                    # value 估计（使用未 padding 的真实序列）
                     if self.value_fn is not None:
                         try:
-                            v = float(self.value_fn(self.agent, padded[j:j+1]))
+                            v = float(self.value_fn(
+                                self.agent,
+                                np.asarray([batch_inputs[j]], dtype=np.int64),
+                            ))
                             rs["values"].append(v)
                         except Exception:
                             rs["values"].append(0.0)
@@ -343,40 +338,109 @@ class ParallelRolloutCollector:
                         rs["done"] = True
                         rs["done_reason"] = "eos"
 
-        # 构造 Rollout 对象
+        # Part5K1.7（1.13）：公共逻辑抽取到 _build_rollout
         all_rollouts: List[Rollout] = []
         for rs in rollout_states:
-            if not rs["done"]:
-                rs["done_reason"] = "max_len"
-            generated_text = decode_fn(rs["generated_tokens"])
-
-            if reward_fn is not None:
-                reward_result = reward_fn(
-                    generated_text, rs["prompt"],
-                    rs["logprobs"], rs["generated_tokens"],
-                )
-                if isinstance(reward_result, dict):
-                    reward = float(reward_result.get("total", 0.0))
-                    reward_components = reward_result
-                else:
-                    reward = float(reward_result)
-                    reward_components = {"total": reward}
-            else:
-                reward = min(1.0, len(rs["generated_tokens"]) / max(1, self.max_new_tokens))
-                reward_components = {"total": reward, "length": reward}
-
-            all_rollouts.append(Rollout(
+            rollout = self._build_rollout(
                 prompt=rs["prompt"],
                 prompt_tokens=list(rs["prompt_tokens"]),
                 generated_tokens=rs["generated_tokens"],
                 logprobs=rs["logprobs"],
                 values=rs["values"],
-                reward=reward,
-                reward_components=reward_components,
+                done=rs["done"],
                 done_reason=rs["done_reason"],
-            ))
+                decode_fn=decode_fn,
+                reward_fn=reward_fn,
+            )
+            all_rollouts.append(rollout)
 
         return all_rollouts
+
+    # ------------------------------------------------------------------
+    # 公共逻辑：构造 Rollout（bootstrap value + decode + reward）
+    # ------------------------------------------------------------------
+
+    def _build_rollout(
+        self,
+        prompt: str,
+        prompt_tokens: List[int],
+        generated_tokens: List[int],
+        logprobs: List[float],
+        values: List[float],
+        done: bool,
+        done_reason: str,
+        decode_fn,
+        reward_fn,
+    ) -> Rollout:
+        """构造 Rollout 对象（collect 与 collect_batched 公共逻辑）。
+
+        处理：
+        1. truncated 判定（not done → max_len 截断）
+        2. 截断时多采集一个 V(s_T) 用于 GAE bootstrap
+        3. 解码生成文本
+        4. 计算 reward
+
+        Args:
+            prompt: 原始 prompt 文本
+            prompt_tokens: prompt token id 列表
+            generated_tokens: 生成的 token id 列表
+            logprobs: 每步 logprob 列表
+            values: 每步 value 列表（截断时会 append bootstrap value）
+            done: 是否 eos 终止
+            done_reason: 终止原因（"eos" / "max_len"）
+            decode_fn: 解码函数
+            reward_fn: reward 函数
+
+        Returns:
+            Rollout 对象
+        """
+        truncated = not done  # max_len 截断为 True，eos 终止为 False
+        final_done_reason = done_reason if done else "max_len"
+        values = list(values)  # 避免修改调用方列表
+
+        # 截断时多采集一个 V(s_T) 用于 GAE bootstrap
+        if truncated and self.value_fn is not None:
+            all_tokens_final = list(prompt_tokens) + generated_tokens
+            if not all_tokens_final:
+                all_tokens_final = [0]
+            input_ids_final = np.asarray([all_tokens_final], dtype=np.int64)
+            with no_grad():
+                try:
+                    v = float(self.value_fn(self.agent, input_ids_final))
+                    values.append(v)
+                except Exception:
+                    values.append(0.0)
+
+        # 解码生成文本
+        generated_text = decode_fn(generated_tokens)
+
+        # 计算 reward
+        if reward_fn is not None:
+            reward_result = reward_fn(
+                generated_text, prompt, logprobs, generated_tokens,
+            )
+            if isinstance(reward_result, dict):
+                reward = float(reward_result.get("total", 0.0))
+                reward_components = reward_result
+            else:
+                reward = float(reward_result)
+                reward_components = {"total": reward}
+        else:
+            # 默认 reward: 基于长度的简单奖励
+            reward = min(1.0, len(generated_tokens) / max(1, self.max_new_tokens))
+            reward_components = {"total": reward, "length": reward}
+
+        return Rollout(
+            prompt=prompt,
+            prompt_tokens=list(prompt_tokens),
+            generated_tokens=generated_tokens,
+            logprobs=logprobs,
+            values=values,
+            reward=reward,
+            reward_components=reward_components,
+            done_reason=final_done_reason,
+            truncated=truncated,
+        )
 
     # ------------------------------------------------------------------
     # 默认编码/解码函数

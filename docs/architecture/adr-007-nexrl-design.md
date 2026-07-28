@@ -33,7 +33,7 @@ Part4K1 之前，Verse 框架的训练能力局限于**监督学习**（SFT / DP
 | `NexEnv` | `nexrl/env.py` | 任务环境（抽象基类 + `ChatEnv` / `MathEnv` / `CodeEnv`），提供 observation + reward |
 | `NexState` | `nexrl/state.py` | RL 状态数据类：prompt + prompt_tokens + generated_tokens + kv_cache + logprobs + step + done |
 | `NexAction` | `nexrl/action.py` | 动作采样：ε-greedy / softmax / nucleus + ExplorationSchedule（探索衰减）+ repeat_penalty（重复惩罚） |
-| `NexReward` | `nexrl/reward.py` | 多维奖励：correctness + fluency + safety + length_penalty + RewardNormalizer（running mean/std）+ RewardShaper（potential-based） |
+| `NexReward` | `nexrl/reward.py` | 多维奖励：correctness + fluency + safety + length_penalty + RewardNormalizer（running mean/std） |
 
 ### 2. ParallelRolloutCollector
 
