@@ -39,7 +39,7 @@ V1.2 升级要点
 
 典型用法::
 
-    from verse_nex.moe import MoDLayer
+    from verse_nex.mod import MoDLayer
     mod = MoDLayer(dim=512, num_dense_parts=5, num_experts_per_part=8, top_k=3)
     out, aux = mod(x)   # x: (B, T, 512) -> out: (B, T, 512), aux: scalar
     loss = task_loss + aux
@@ -403,9 +403,10 @@ class Router(Module):
         load_balance_loss = load_balance_loss * self.aux_loss_weight
 
         # V1.2 EMA 平滑：对 load_balance_loss 做指数移动平均，抑制训练抖动。
-        # ema_decay=0 时禁用（向后兼容）；ema_decay>0 时用 EMA 值参与总 aux loss。
-        # 注意：EMA 是不可微的标量平滑（仅影响 aux loss 的数值稳定性，不回传梯度），
-        # 可微的 load_balance_loss 仍然参与 backward。
+        # ema_decay=0 时禁用（向后兼容）。
+        # Part5K1.7：EMA 仅作为监控/日志标量保留（不可微，不参与 aux_loss 数值），
+        # 避免不可微 EMA 污染梯度。可微的 load_balance_loss 仍然参与 backward。
+        # 读取 self._load_balance_ema 可用于监控路由稳定性。
         if self.ema_decay > 0.0 and self.training:
             cur_val = float(load_balance_loss.data)
             if self._load_balance_ema is None:
@@ -426,21 +427,18 @@ class Router(Module):
             z_loss = Tensor(np.zeros((), dtype=np.float32), requires_grad=False)
 
         # --- V1.2 熵正则化（鼓励专家多样化使用，防路由塌缩）---
+        # Part5K1.7：可微实现，梯度通过 probs 回传到 gate 权重。
         # entropy_reg = -entropy_weight × mean_{b,t}(Σ_i P_i × log P_i)
         # 取负号是因为我们要最大化熵（均匀分布熵最大），故 loss 中减去熵。
         if self.entropy_weight > 0:
-            # probs: (B, T, num_routes)，加 eps 防 log(0)
-            probs_np = probs.data
+            # Part5K1.7：用 Tensor 运算实现可微熵正则（梯度回传到 gate 权重）
+            # entropy = -mean_{b,t}(Σ_i P_i × log P_i)  （最大化熵 → loss 中减去熵）
             eps = 1e-9
-            entropy_per_token = -np.sum(
-                probs_np * np.log(probs_np + eps), axis=-1
-            )  # (B, T)
-            mean_entropy = float(np.mean(entropy_per_token))
-            # 熵正则作为常量叠加（梯度已通过 load_balance 的 P_i 回传，这里不重复）
-            entropy_reg = Tensor(
-                np.array(-self.entropy_weight * mean_entropy, dtype=np.float32),
-                requires_grad=False,
-            )
+            # probs: (B, T, num_routes) Tensor，可微
+            log_probs = (probs + eps).log()  # Tensor 运算，保持梯度
+            entropy_per_token = -(probs * log_probs).sum(dim=-1)  # (B, T)
+            mean_entropy = entropy_per_token.mean()  # 标量 Tensor
+            entropy_reg = -self.entropy_weight * mean_entropy  # 标量 Tensor，可微
         else:
             entropy_reg = Tensor(np.zeros((), dtype=np.float32), requires_grad=False)
 

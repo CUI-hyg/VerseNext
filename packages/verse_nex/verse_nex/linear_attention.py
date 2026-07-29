@@ -247,7 +247,13 @@ class RetNet(Module):
         """分块并行：块内 parallel，块间 recurrent 传递状态。
 
         适用于长序列训练（比 full parallel 省内存）。
+
+        Part5K1.7：使用可微 _concat + _pad_last_dim 替换 np.concatenate，
+        恢复 qkv 投影权重的梯度路径。
         """
+        from verse_torch.vnn import _concat
+        from verse_nex.sparse_attention import _pad_last_dim
+
         B, T, D = x.shape
         H, d = self.n_heads, self.d_head
 
@@ -261,10 +267,10 @@ class RetNet(Module):
         # pad 到 chunk_size 整数倍
         pad_len = n_chunks * chunk_size - T
         if pad_len > 0:
-            zeros = Tensor(np.zeros((B, pad_len, H, d), dtype=np.float32), requires_grad=False)
-            q = Tensor(np.concatenate([q.data, zeros.data], axis=1), requires_grad=q.requires_grad)
-            k = Tensor(np.concatenate([k.data, zeros.data], axis=1), requires_grad=k.requires_grad)
-            v = Tensor(np.concatenate([v.data, zeros.data], axis=1), requires_grad=v.requires_grad)
+            # _pad_last_dim 在 axis=1 末尾 pad pad_len 个 0，保持梯度路径
+            q = _pad_last_dim(q, pad_len, axis=1)
+            k = _pad_last_dim(k, pad_len, axis=1)
+            v = _pad_last_dim(v, pad_len, axis=1)
 
         T_padded = n_chunks * chunk_size
         # 状态 (B, H, d, d) - 用 numpy 维护（chunk 间的递推是顺序的）
@@ -348,10 +354,7 @@ class RetNet(Module):
         # 拼接并裁剪到原 T
         out_full = outs[0]
         for o in outs[1:]:
-            out_full = Tensor(
-                np.concatenate([out_full.data, o.data], axis=1),
-                requires_grad=out_full.requires_grad or o.requires_grad,
-            )
+            out_full = _concat([out_full, o], dim=1)
         # 取前 T 个位置
         out_full = out_full[:, :T]
 

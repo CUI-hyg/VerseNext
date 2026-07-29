@@ -62,7 +62,7 @@ from verse_torch.vnn import (
 )
 
 from .tri_sparse_attn import TriSparseAttention
-from .moe import MoDLayer
+from .mod import MoDLayer
 
 
 # ---------------------------------------------------------------------------

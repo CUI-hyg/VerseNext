@@ -34,7 +34,7 @@ Part4 在 Part3K2 基础上完成 **11 大升级**，正式推出：
 
 ### 1.2 MoDLayer（Mixture of Dense Parts）
 
-**文件**：[`packages/verse_nex/verse_nex/moe.py`](../packages/verse_nex/verse_nex/moe.py)（621 行）
+**文件**：[`packages/verse_nex/verse_nex/mod.py`](../packages/verse_nex/verse_nex/mod.py)（621 行）
 
 灵感来源于人大脑的功能分区：
 
@@ -265,7 +265,7 @@ def compress_mod_experts(model, keep_ratio=0.5, min_experts_per_part=1, return_s
 | 文件 | 行数 | 说明 |
 |---|---|---|
 | `packages/verse_nex/verse_nex/tri_sparse_attn.py` | 624 | TriSparseAttention |
-| `packages/verse_nex/verse_nex/moe.py` | 621 | MoDLayer |
+| `packages/verse_nex/verse_nex/mod.py` | 621 | MoDLayer |
 | `packages/verse_nex/verse_nex/cometspark.py` | ~920 | CometSparkNexLM |
 | `packages/verse_torch/verse_torch/training_nex.py` | ~900 | 4 个训练器 + 2 个数据集 |
 | `packages/verse_tokenizer/verse_tokenizer/verse.py` | 865 | VerseTokenizer |

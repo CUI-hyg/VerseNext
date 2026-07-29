@@ -14,7 +14,7 @@
   - **品牌落地**：`TransformerLM` → `VerseNexLM`、`GQASelfAttention` → `VerseNexAttention`、`VerseNexBlock` 统一为唯一名（旧名作为 `DeprecationWarning` 别名）
   - **MoD 完善**：`load_balance_loss` + `router z-loss` 稳定训练
   - **超稀疏并行注意力**：多 query chunk 并行 + `SpeculativeDecoder`（Medusa 风格）+ `ParallelKVCache`
-  - **NexRL 强化学习**：五要素抽象（`NexAgent` / `NexEnv` / `NexState` / `NexAction` / `NexReward`）+ `NexTrainer`（PPO + GAE + KL 自适应）
+  - **NexRL 强化学习**：四要素抽象（`NexAgent` / `NexEnv` / `NexState` / `NexReward`）+ `ActionSampler`（采样策略）+ `NexTrainer`（PPO + GAE + KL 自适应）
 - 位置编码：RoPE / ALiBi / NoPE，统一接口。
 - 纯 Python + NumPy 友好，无重型深度学习框架硬依赖（GPU/NPU 通过 `verse_torch.device.DeviceBackend` 可选委托）。
 
@@ -175,7 +175,7 @@ output = decoder.generate(prompt_ids, max_new_tokens=128)
 | `NexAgent` | `nexrl/agent.py` | 策略网络（VerseNexLM）+ 参考网络（冻结，KL 约束） |
 | `NexEnv` | `nexrl/env.py` | 任务环境：`ChatEnv` / `MathEnv` / `CodeEnv` |
 | `NexState` | `nexrl/state.py` | RL 状态：prompt + tokens + KV cache + logprobs |
-| `NexAction` | `nexrl/action.py` | 动作采样：ε-greedy / softmax / nucleus + 探索衰减 + 重复惩罚 |
+| `ActionSampler` | `nexrl/action.py` | 动作采样：ε-greedy / softmax / nucleus / top-k + 探索衰减 + 重复惩罚 |
 | `NexReward` | `nexrl/reward.py` | 多维奖励：correctness + fluency + safety + length_penalty + 归一化 + shaping |
 
 训练组件：

@@ -37,7 +37,6 @@ from verse_nex.nexrl import (
     NexAgent,
     NexEnv,
     NexState,
-    NexAction,
     NexReward,
     ChatEnv,
     MathEnv,
@@ -46,7 +45,6 @@ from verse_nex.nexrl import (
     ExplorationSchedule,
     repeat_penalty,
     RewardNormalizer,
-    RewardShaper,
     Rollout,
     ParallelRolloutCollector,
     NexTrainer,
@@ -264,31 +262,9 @@ class TestRewardNormalizer:
 
 
 # ===========================================================================
-# SubTask 4.2: RewardShaper
+# SubTask 4.2: RewardShaper（已在 Part5K1.7 移除）
 # ===========================================================================
-
-
-class TestRewardShaper:
-    """RewardShaper potential-based 塑形。"""
-
-    def test_basic_shaping(self):
-        """基本塑形：F = γ*Φ(s') - Φ(s)。"""
-        shaper = RewardShaper(gamma=0.99)
-        prev_info = {"logprobs": [-1.0, -2.0]}
-        curr_info = {"logprobs": [-0.5, -1.0]}
-        shaped = shaper.shape(1.0, prev_info, curr_info)
-        # Φ(curr) > Φ(prev) → shaped > reward
-        assert shaped != 1.0
-
-    def test_custom_potential(self):
-        """自定义势函数。"""
-        def my_potential(state_info):
-            return float(state_info.get("score", 0.0))
-
-        shaper = RewardShaper(gamma=0.9, potential_fn=my_potential)
-        shaped = shaper.shape(1.0, {"score": 0.5}, {"score": 0.8})
-        expected = 1.0 + 0.9 * 0.8 - 0.5
-        assert abs(shaped - expected) < 1e-6
+# RewardShaper 因势函数 policy-invariance 保证失效被删除，相关测试一并移除。
 
 
 # ===========================================================================
@@ -304,7 +280,8 @@ class TestActionSampler:
         logits = np.array([1.0, 5.0, 2.0, 0.5], dtype=np.float32)
         rng = np.random.default_rng(42)
         for _ in range(10):
-            tid = ActionSampler.epsilon_greedy(logits, epsilon=0.0, rng=rng)
+            # Part5K1.7：子方法返回 (token_id, logprob) 元组
+            tid, _ = ActionSampler.epsilon_greedy(logits, epsilon=0.0, rng=rng)
             assert tid == 1  # argmax 是 index 1
 
     def test_epsilon_greedy_random(self):
@@ -313,7 +290,7 @@ class TestActionSampler:
         rng = np.random.default_rng(42)
         tids = set()
         for _ in range(50):
-            tid = ActionSampler.epsilon_greedy(logits, epsilon=1.0, rng=rng)
+            tid, _ = ActionSampler.epsilon_greedy(logits, epsilon=1.0, rng=rng)
             tids.add(tid)
         # 应该有多个不同的 token（随机性）
         assert len(tids) > 1
@@ -324,7 +301,7 @@ class TestActionSampler:
         rng = np.random.default_rng(42)
         counts = [0] * 4
         for _ in range(1000):
-            tid = ActionSampler.softmax(logits, temperature=1.0, rng=rng)
+            tid, _ = ActionSampler.softmax(logits, temperature=1.0, rng=rng)
             counts[tid] += 1
         # index 1 应该最频繁
         assert counts[1] > counts[0]
@@ -336,7 +313,7 @@ class TestActionSampler:
         rng = np.random.default_rng(42)
         tids = set()
         for _ in range(50):
-            tid = ActionSampler.nucleus(logits, top_p=0.9, rng=rng)
+            tid, _ = ActionSampler.nucleus(logits, top_p=0.9, rng=rng)
             tids.add(tid)
         # top-p=0.9 应主要在 index 1 和 2
         assert tids.issubset({1, 2, 0, 3})  # 都在范围内
@@ -347,7 +324,7 @@ class TestActionSampler:
         rng = np.random.default_rng(42)
         tids = set()
         for _ in range(50):
-            tid = ActionSampler.topk(logits, k=2, rng=rng)
+            tid, _ = ActionSampler.topk(logits, k=2, rng=rng)
             tids.add(tid)
         # k=2 → 只在 index 1 和 2
         assert tids.issubset({1, 2})
@@ -509,7 +486,13 @@ class TestParallelRolloutCollector:
         )
         assert len(rollouts) == 2
         for r in rollouts:
-            assert len(r.values) == len(r.generated_tokens)
+            # max_new_tokens=4 且无 eos_id → 必然截断，truncated=True
+            # 截断时 collector 多采集一个 V(s_T) bootstrap，values 长度为 T+1
+            assert r.truncated is True
+            if r.truncated:
+                assert len(r.values) == len(r.generated_tokens) + 1
+            else:
+                assert len(r.values) == len(r.generated_tokens)
 
     def test_collect_batched(self):
         """batched 并行采集。"""
@@ -739,10 +722,10 @@ class TestNexAgent:
         model = _tiny_model()
         agent = NexAgent(policy=model)
         state = NexState(prompt="hello", prompt_tokens=_encode("hello"))
-        action, logits = agent.act(state, strategy="softmax", temperature=1.0)
-        assert isinstance(action, NexAction)
-        assert 0 <= action.token_id < 256
-        assert action.logprob <= 0.0
+        # Part5K1.7：agent.act 现返回 (token_id, logprob, logits) 元组
+        token_id, logprob, logits = agent.act(state, strategy="softmax", temperature=1.0)
+        assert 0 <= token_id < 256
+        assert logprob <= 0.0
 
     def test_ref_model_frozen(self):
         """参考网络被冻结。"""

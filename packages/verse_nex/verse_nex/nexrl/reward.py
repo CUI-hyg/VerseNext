@@ -1,16 +1,18 @@
-"""NexReward: 多维奖励 + 奖励归一化 + 奖励塑形。
+"""NexReward: 多维奖励 + 奖励归一化。
 
 包含：
 - NexReward: 多维奖励计算（correctness / fluency / safety / length_penalty）
 - RewardNormalizer: running mean/std 归一化（Welford 算法）
-- RewardShaper: potential-based reward shaping（γ 折扣）
+
+Note: RewardShaper（potential-based reward shaping）已在 Part5K1.7 移除，
+原实现只对终末 reward 做一次 shaping，势函数 policy-invariance 保证失效。
 """
 
 from __future__ import annotations
 
 import math
 from collections.abc import Iterable
-from typing import Callable, Dict, List, Optional
+from typing import Dict, List, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -277,80 +279,3 @@ class RewardNormalizer:
         self.count = 0
         self.mean = 0.0
         self.m2 = 0.0
-
-
-# ---------------------------------------------------------------------------
-# RewardShaper: potential-based reward shaping
-# ---------------------------------------------------------------------------
-
-
-class RewardShaper:
-    """Potential-based reward shaping。
-
-    F(s', s) = γ * Φ(s') - Φ(s)
-
-    其中 Φ 是势函数（potential function），用于评估状态的质量。
-    塑形后的 reward = original_reward + F(s', s)。
-
-    势函数选择：
-    - "fluency": 用 fluency 奖励作为势函数
-    - "length": 用长度接近度作为势函数
-    - 自定义 callable
-
-    Args:
-        gamma: 折扣因子
-        potential_fn: 势函数，接受 state_info dict 返回 float
-            None 时用内置 fluency 势函数
-    """
-
-    def __init__(
-        self,
-        gamma: float = 0.99,
-        potential_fn: Optional[Callable] = None,
-    ):
-        self.gamma = float(gamma)
-        if potential_fn is not None:
-            self.potential_fn = potential_fn
-        else:
-            self.potential_fn = self._default_potential
-
-    def _default_potential(self, state_info: dict) -> float:
-        """默认势函数：基于 fluency 的简化版本。
-
-        Args:
-            state_info: dict，含：
-                - logprobs: list[float]
-                - generated_len: int
-                - target_len: int
-
-        Returns:
-            势函数值（0-1 范围）
-        """
-        logprobs = state_info.get("logprobs", [])
-        if not logprobs:
-            return 0.0
-        mean_neg_lp = -sum(float(v) for v in logprobs) / max(len(logprobs), 1)
-        return 1.0 / (1.0 + mean_neg_lp)
-
-    def shape(
-        self,
-        reward: float,
-        prev_state_info: dict,
-        curr_state_info: dict,
-    ) -> float:
-        """对 reward 进行塑形。
-
-        shaped_reward = reward + γ * Φ(s') - Φ(s)
-
-        Args:
-            reward: 原始 reward
-            prev_state_info: 前一状态的信息 dict
-            curr_state_info: 当前状态的信息 dict
-
-        Returns:
-            塑形后的 reward
-        """
-        phi_prev = self.potential_fn(prev_state_info)
-        phi_curr = self.potential_fn(curr_state_info)
-        shaped = float(reward) + self.gamma * phi_curr - phi_prev
-        return float(shaped)

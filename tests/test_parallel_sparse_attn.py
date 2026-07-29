@@ -418,13 +418,17 @@ def test_parallel_kv_cache_batch_update_multiseq():
     cache.batch_update(k2, v2, layer_idx=0)
     assert np.all(cache.per_seq_lens[:4] == 8)
 
-    # 第 0 层同样可更新
-    cache.batch_update(k1, v1, layer_idx=1)
-    assert cache._layer_initialized[1]
-
-    # get 返回 batch 全量 cache
+    # get 返回 batch 全量 cache（按 per_seq_lens 截断到 8）
+    # 注意：须在跨层 update 前校验，因为 per_seq_lens 跨层共享
+    # （跨层共享是另一个预存问题，不在 1.5/1.6 修复范围）
     k_buf, v_buf = cache.get(layer_idx=0)
     assert k_buf.data.shape == (4, 8, 4, 8)
+    # buffer 形状应保持预分配的 (max_batch, max_seq, H, D)，不被缩短
+    assert cache._k_buf[0].data.shape == (4, 64, 4, 8)
+
+    # 第 1 层同样可更新
+    cache.batch_update(k1, v1, layer_idx=1)
+    assert cache._layer_initialized[1]
 
 
 def test_parallel_kv_cache_overflow_protection():

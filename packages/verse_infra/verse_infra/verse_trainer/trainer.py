@@ -740,41 +740,54 @@ def _auto_build_tokenizer(kind: str, save_dir: str):
 
 
 def _load_tokenizer(tok_cfg: dict, base_dir: str, save_dir: str):
-    """加载 tokenizer（兼容 data/demo/model/tokenizer.py 与 verse_tokenizer）。
+    """加载 tokenizer（委托 verse_infra.verse_tokenizer）。
 
     Part4K2.6 Task 3: 当 tokenizer 文件不存在且 kind 非 byte 时，自动构建。
+    Part5K1.7：所有分支显式返回 tokenizer 或抛 RuntimeError，不得返回 None。
     """
+    from verse_infra.verse_tokenizer import load_tokenizer as _vload
     tok_kind = str(tok_cfg.get("kind", "byte"))
     tok_path = os.path.join(save_dir, "tokenizer.json")
-    if not os.path.exists(tok_path):
-        alt = _resolve_path(base_dir, "tokenizer.json")
-        if os.path.exists(alt):
-            tok_path = alt
-        elif tok_kind == "byte":
-            # byte tokenizer 无需训练文件（vocab 259 确定），即时构造即可，
-            # 让 ``verse-train`` 对 byte 配置开箱即用（small 调试配置场景）。
-            from verse_infra.verse_tokenizer import load_tokenizer as _vload
-            return _vload(kind="byte")
-        else:
-            # Part4K2.6: 自动构建 tokenizer
-            print(f"[train] tokenizer 文件不存在，自动构建 {tok_kind}...", flush=True)
-            tok = _auto_build_tokenizer(tok_kind, save_dir)
-            print(f"[train] tokenizer 构建完成 vocab_size={len(tok)}", flush=True)
-            return tok
+
+    # 1. save_dir 下的 tokenizer.json 存在：直接加载
+    if os.path.exists(tok_path):
+        try:
+            return _vload(kind=tok_kind, path=tok_path)
+        except Exception as e:
+            raise RuntimeError(
+                f"加载 tokenizer 失败: kind={tok_kind}, path={tok_path}, error={e}"
+            ) from e
+
+    # 2. 文件不存在：尝试 base_dir 下的 tokenizer.json
+    alt = _resolve_path(base_dir, "tokenizer.json")
+    if os.path.exists(alt):
+        try:
+            return _vload(kind=tok_kind, path=alt)
+        except Exception as e:
+            raise RuntimeError(
+                f"加载 tokenizer 失败: kind={tok_kind}, path={alt}, error={e}"
+            ) from e
+
+    # 3. byte tokenizer：无需训练文件（vocab 259 确定），即时构造即可，
+    # 让 ``verse-train`` 对 byte 配置开箱即用（small 调试配置场景）。
+    if tok_kind == "byte":
+        return _vload(kind="byte")
+
+    # 4. 其他 kind：自动构建 tokenizer
+    print(f"[train] tokenizer 文件不存在，自动构建 {tok_kind}...", flush=True)
     try:
-        from verse_infra.verse_tokenizer import load_tokenizer as _vload
-        return _vload(kind=tok_kind, path=tok_path)
-    except Exception:
-        # 兜底：data/demo/model/tokenizer.py
-        import sys as _sys
-        demo_dir = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(_sys.modules[__name__].__file__))),
-            "data", "demo",
-        )
-        if demo_dir not in _sys.path:
-            _sys.path.insert(0, demo_dir)
-        from model.tokenizer import load_tokenizer
-        return load_tokenizer(tok_path, kind=tok_kind)
+        tok = _auto_build_tokenizer(tok_kind, save_dir)
+        if tok is None:
+            raise RuntimeError(f"自动构建 tokenizer 返回 None: kind={tok_kind}")
+        print(f"[train] tokenizer 构建完成 vocab_size={len(tok)}", flush=True)
+        return tok
+    except RuntimeError:
+        raise
+    except Exception as e:
+        raise RuntimeError(
+            f"无法加载 tokenizer: kind={tok_kind}, "
+            f"已尝试路径: {tok_path}, {alt}, error={e}"
+        ) from e
 
 
 # ---------------------------------------------------------------------------
@@ -987,6 +1000,8 @@ def train(
     os.makedirs(save_dir, exist_ok=True)
     print(f"[train] 加载 tokenizer", flush=True)
     tok = _load_tokenizer(tok_cfg, base_dir, save_dir)
+    if tok is None:
+        raise RuntimeError("_load_tokenizer 返回 None，这是内部错误")
     vocab_size = len(tok)
     print(f"[train] vocab_size = {vocab_size}", flush=True)
 

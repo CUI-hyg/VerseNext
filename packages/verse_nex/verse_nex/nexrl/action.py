@@ -1,32 +1,22 @@
-"""NexAction: RL 动作抽象与采样策略。
+"""ActionSampler: RL 动作采样策略。
 
 包含：
-- NexAction: 动作数据类（token_id + logprob）
 - ActionSampler: 多种采样策略（ε-greedy / softmax / nucleus / top-k）
+  每个策略返回 (token_id, logprob)，logprob 与实际采样分布一致。
 - ExplorationSchedule: 探索率衰减 schedule（linear / cosine / exponential）
 - repeat_penalty: 对已生成 token 的 logits 施加惩罚
+
+Part5K1.7（1.12）：nucleus/topk/epsilon_greedy 的 logprob 改为取自
+截断+重归一化后的实际采样分布，而非原始 log_softmax，修复 PPO IS 假设。
+Part5K1.7（1.13）：NexAction 数据类已删除，采样直接返回元组。
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
-
-
-@dataclass
-class NexAction:
-    """RL 动作数据类。
-
-    Attributes:
-        token_id: 选择的 token id
-        logprob: 该 token 的对数概率
-    """
-
-    token_id: int = 0
-    logprob: float = 0.0
 
 
 def _softmax_np(logits: np.ndarray, temperature: float = 1.0) -> np.ndarray:
@@ -56,7 +46,8 @@ def _log_softmax_np(logits: np.ndarray) -> np.ndarray:
 class ActionSampler:
     """动作采样器：支持多种采样策略。
 
-    所有方法接受 logits（numpy ndarray）并返回采样的 token id。
+    所有方法接受 logits（numpy ndarray）并返回 (token_id, logprob) 元组。
+    logprob 取自实际采样分布（截断+重归一化后），与 PPO IS 假设一致。
     """
 
     @staticmethod
@@ -64,10 +55,11 @@ class ActionSampler:
         logits: np.ndarray,
         epsilon: float = 0.1,
         rng: Optional[np.random.Generator] = None,
-    ) -> int:
+    ) -> tuple:
         """ε-greedy 采样。
 
         以 ε 概率随机采样，否则选 argmax。
+        logprob 取自混合分布 P(t) = (1-ε)·[t==argmax] + ε·(1/n)。
 
         Args:
             logits: (vocab,) 或 (..., vocab) 的 logits，取最后一维
@@ -75,7 +67,7 @@ class ActionSampler:
             rng: 随机数生成器
 
         Returns:
-            采样的 token id
+            (token_id, logprob) 元组
         """
         if rng is None:
             rng = np.random.default_rng()
@@ -84,17 +76,26 @@ class ActionSampler:
             logits_1d = logits.reshape(-1)[-logits.shape[-1]:]
         else:
             logits_1d = logits
+        n = len(logits_1d)
+        argmax_id = int(np.argmax(logits_1d))
         if rng.random() < epsilon:
-            return int(rng.integers(0, len(logits_1d)))
-        return int(np.argmax(logits_1d))
+            token_id = int(rng.integers(0, n))
+        else:
+            token_id = argmax_id
+        # 混合分布: P(t) = (1-ε) * [t == argmax] + ε * (1/n)
+        prob = (1.0 - epsilon) * (1.0 if token_id == argmax_id else 0.0) + epsilon / n
+        logprob = float(np.log(prob + 1e-12))
+        return token_id, logprob
 
     @staticmethod
     def softmax(
         logits: np.ndarray,
         temperature: float = 1.0,
         rng: Optional[np.random.Generator] = None,
-    ) -> int:
+    ) -> tuple:
         """温度缩放 softmax 采样。
+
+        logprob = log_softmax(logits/temperature)[token_id]，与采样分布一致。
 
         Args:
             logits: (vocab,) 的 logits
@@ -102,7 +103,7 @@ class ActionSampler:
             rng: 随机数生成器
 
         Returns:
-            采样的 token id
+            (token_id, logprob) 元组
         """
         if rng is None:
             rng = np.random.default_rng()
@@ -111,7 +112,11 @@ class ActionSampler:
         else:
             logits_1d = logits
         probs = _softmax_np(logits_1d, temperature)
-        return int(rng.choice(len(probs), p=probs))
+        token_id = int(rng.choice(len(probs), p=probs))
+        # log_softmax（含温度），与采样分布一致
+        log_probs = _log_softmax_np(logits_1d / max(temperature, 1e-8))
+        logprob = float(log_probs[token_id])
+        return token_id, logprob
 
     @staticmethod
     def nucleus(
@@ -119,10 +124,11 @@ class ActionSampler:
         top_p: float = 0.9,
         temperature: float = 1.0,
         rng: Optional[np.random.Generator] = None,
-    ) -> int:
+    ) -> tuple:
         """Nucleus (top-p) 采样。
 
         选择累积概率达到 top_p 的最小 token 集合，从中采样。
+        logprob 取自截断+重归一化后的分布，与采样分布一致。
 
         Args:
             logits: (vocab,) 的 logits
@@ -131,7 +137,7 @@ class ActionSampler:
             rng: 随机数生成器
 
         Returns:
-            采样的 token id
+            (token_id, logprob) 元组
         """
         if rng is None:
             rng = np.random.default_rng()
@@ -149,11 +155,14 @@ class ActionSampler:
         # 找到累积概率 >= top_p 的最小集合
         cutoff = int(np.searchsorted(cumsum, top_p)) + 1
         cutoff = min(cutoff, len(sorted_probs))
-        # 在 top-p 集合内采样
+        # 截断后重归一化（实际采样分布）
         nucleus_probs = sorted_probs[:cutoff]
         nucleus_probs = nucleus_probs / nucleus_probs.sum()  # 归一化
         choice = rng.choice(cutoff, p=nucleus_probs)
-        return int(sorted_idx[choice])
+        token_id = int(sorted_idx[choice])
+        # logprob 来自重归一化后的截断分布（与采样分布一致）
+        logprob = float(np.log(nucleus_probs[choice] + 1e-12))
+        return token_id, logprob
 
     @staticmethod
     def topk(
@@ -161,10 +170,11 @@ class ActionSampler:
         k: int = 10,
         temperature: float = 1.0,
         rng: Optional[np.random.Generator] = None,
-    ) -> int:
+    ) -> tuple:
         """Top-k 采样。
 
         从概率最高的 k 个 token 中按概率采样。
+        logprob 取自截断+重归一化后的分布，与采样分布一致。
 
         Args:
             logits: (vocab,) 的 logits
@@ -173,7 +183,7 @@ class ActionSampler:
             rng: 随机数生成器
 
         Returns:
-            采样的 token id
+            (token_id, logprob) 元组
         """
         if rng is None:
             rng = np.random.default_rng()
@@ -184,11 +194,14 @@ class ActionSampler:
         k = min(k, len(logits_1d))
         # 找 top-k 的索引
         top_idx = np.argpartition(-logits_1d, kth=k - 1)[:k]
-        # 在 top-k 中按 softmax 概率采样
+        # 在 top-k 中按 softmax 概率采样（截断后重归一化）
         top_logits = logits_1d[top_idx]
         top_probs = _softmax_np(top_logits, temperature)
         choice = rng.choice(k, p=top_probs)
-        return int(top_idx[choice])
+        token_id = int(top_idx[choice])
+        # logprob 来自重归一化后的截断分布（与采样分布一致）
+        logprob = float(np.log(top_probs[choice] + 1e-12))
+        return token_id, logprob
 
     @staticmethod
     def sample(
@@ -198,6 +211,10 @@ class ActionSampler:
         **kwargs,
     ) -> tuple:
         """通用采样入口。
+
+        每个策略子方法返回 (token_id, logprob)，logprob 取自实际采样分布
+        （softmax: log_softmax；nucleus/topk: 截断+重归一化 log；
+        epsilon_greedy: 混合分布 log），保证 PPO IS 假设成立。
 
         Args:
             logits: (vocab,) 的 logits
@@ -212,33 +229,25 @@ class ActionSampler:
         if rng is None:
             rng = np.random.default_rng()
         if strategy == "epsilon_greedy":
-            token_id = ActionSampler.epsilon_greedy(
+            token_id, logprob = ActionSampler.epsilon_greedy(
                 logits, epsilon=kwargs.get("epsilon", 0.1), rng=rng,
             )
         elif strategy == "softmax":
-            token_id = ActionSampler.softmax(
+            token_id, logprob = ActionSampler.softmax(
                 logits, temperature=kwargs.get("temperature", 1.0), rng=rng,
             )
         elif strategy == "nucleus":
-            token_id = ActionSampler.nucleus(
+            token_id, logprob = ActionSampler.nucleus(
                 logits, top_p=kwargs.get("top_p", 0.9),
                 temperature=kwargs.get("temperature", 1.0), rng=rng,
             )
         elif strategy == "topk":
-            token_id = ActionSampler.topk(
+            token_id, logprob = ActionSampler.topk(
                 logits, k=kwargs.get("k", 10),
                 temperature=kwargs.get("temperature", 1.0), rng=rng,
             )
         else:
             raise ValueError(f"未知采样策略: {strategy!r}")
-
-        # 计算对数概率
-        if logits.ndim > 1:
-            logits_1d = logits.reshape(-1)[-logits.shape[-1]:]
-        else:
-            logits_1d = logits
-        log_probs = _log_softmax_np(logits_1d)
-        logprob = float(log_probs[token_id])
         return token_id, logprob
 
 

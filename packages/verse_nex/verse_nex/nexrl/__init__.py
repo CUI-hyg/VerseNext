@@ -1,10 +1,9 @@
 """NexRL: VerseNex 强化学习算法包（Part4K1 Task 4）。
 
-定义 RL 五要素抽象：
+定义 RL 四要素抽象：
 - NexAgent: 策略网络（VerseNexLM）+ 参考网络（KL 约束）
 - NexEnv: 任务环境抽象（observation + reward）
 - NexState: RL 状态（prompt + tokens + KV cache）
-- NexAction: RL 动作（token + 采样策略）
 - NexReward: 多维奖励（correctness + fluency + safety + length_penalty）
 
 训练组件：
@@ -20,7 +19,6 @@
 
 from .state import NexState, batch_states
 from .action import (
-    NexAction,
     ActionSampler,
     ExplorationSchedule,
     repeat_penalty,
@@ -28,7 +26,6 @@ from .action import (
 from .reward import (
     NexReward,
     RewardNormalizer,
-    RewardShaper,
 )
 from .env import (
     NexEnv,
@@ -48,7 +45,6 @@ __all__ = [
     "NexAgent",
     "NexEnv",
     "NexState",
-    "NexAction",
     "NexReward",
     # 环境
     "ChatEnv",
@@ -60,7 +56,6 @@ __all__ = [
     "repeat_penalty",
     # 奖励
     "RewardNormalizer",
-    "RewardShaper",
     # 采集与训练
     "Rollout",
     "ParallelRolloutCollector",
