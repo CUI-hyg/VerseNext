@@ -13,9 +13,12 @@
 | 严重程度 | 数量 | 说明 |
 |---------|------|------|
 | 高危 | 0 | Part5K1.7 已全部修复 |
-| 中危 | 35 | 影响数值一致性 / 性能 / 接口冲突 |
+| 中危 | 39 | 影响数值一致性 / 性能 / 接口冲突（Part5K1.8 新增 4：7.3 / 7.5 / 8.1 / 8.3） |
 | 低危 | 25 | 死代码 / 命名误导 / 文档错误 / 微小性能 |
-| **合计** | **60** | — |
+| **合计** | **64** | — |
+
+> Part5K1.8 新增：第七章 verse_infra 审计（7.1–7.5，其中 7.1 / 7.2 / 7.4 已修复）、
+> 第八章 spark/run.py 审计（8.1–8.3，其中 8.2 已修复）。已修复条目不计入未修复数量。
 
 **核心结论**（Part5K1.5 审计时的原始判断，1-3 已在 Part5K1.7 修复）：
 1. ~~`mod.py`（原 `moe.py`）的 EMA 平滑和熵正则化**实际未生效**（死代码 + 梯度断裂），MoD 架构的核心辅助损失实现有严重缺陷。~~ ✅ Part5K1.7 已修复
@@ -450,21 +453,84 @@
 10. **`mamba2`/`rwkv7` SSD `L_data` 内存爆炸（2.7、2.10）** —— ❌ 未修复（长序列训练 OOM）
 11. ~~`nexrl` GAE bootstrap（1.8）~~ ✅ 已修复（`Rollout.truncated` + bootstrap）
 12. ~~`nexrl` reward shaping 失效（1.10）~~ ✅ 已删除（`RewardShaper` 移除）
+13. ~~`giga.py` `.json` 文件路径处理错误（7.1）~~ ✅ Part5K1.8 已修复（走 `self.load(path)`）
+14. ~~`bpe.py` `load_tokenizer` giga 路径分发缺失（7.2）~~ ✅ Part5K1.8 已修复（按 path 类型分发）
+15. ~~`trainer.py` `_auto_generate_test_data` 格式陈旧（7.4）~~ ✅ Part5K1.8 已修复（prompt-completion 格式）
+16. ~~`spark/run.py` `cmd_finetune`/`cmd_posttrain` 未做 tokenizer.json 检查（8.2）~~ ✅ Part5K1.8 已修复（`_prompt_tokenizer_action` 交互式选择）
+17. **`trainer.py` `_auto_build_tokenizer` 不支持 giga/verse（7.5）** —— ❌ 未修复（静默降级 byte 导致 vocab_size 与模型 embedding 不匹配）
 
 ### P2 — 中期重构（架构清理）
 
-13. 统一 KV Cache 接口（问题 4.1）。
-14. 删除 `hybrid.py`、`sparse_attention.py`（问题 3.13、3.14、2.17）。
-15. `NexTrainer` 继承 `VerseNexTrainer`（问题 2.23）。
-16. 抽 `SSDBlock` 基类（问题 3.9）。
-17. 统一 RoPE / softmax / softplus 公共函数（问题 3.2、3.7、3.11）。
+18. 统一 KV Cache 接口（问题 4.1）。
+19. 删除 `hybrid.py`、`sparse_attention.py`（问题 3.13、3.14、2.17）。
+20. `NexTrainer` 继承 `VerseNexTrainer`（问题 2.23）。
+21. 抽 `SSDBlock` 基类（问题 3.9）。
+22. 统一 RoPE / softmax / softplus 公共函数（问题 3.2、3.7、3.11）。
+23. 统一 `_load_tokenizer_for_config` 委托 `trainer._load_tokenizer`（问题 7.3、8.1）——消除两套 tokenizer 加载策略并存。
+24. `cometspark_small.yml` 将 `tokenizer_repo` 从 `model:` 段迁移到 `tokenizer:` 段（问题 8.3）。
 
 ### P3 — 长期清理（死代码 + 命名）
 
-18. 删除 `ParallelKVCache`、`_select_chunks`、`_decay_matrix_log`、`get_hidden_states`、`ExplorationSchedule` 等死代码。
-19. 删除 `rwkv7.py` 的 `x_a`/`x_b` 死参数。
-20. 修复 `cometspark.py` 的 `load`/`save_pretrained` 接口不一致。
-21. 合并 `nexrl/state.py` 到 `env.py`。
+25. 删除 `ParallelKVCache`、`_select_chunks`、`_decay_matrix_log`、`get_hidden_states`、`ExplorationSchedule` 等死代码。
+26. 删除 `rwkv7.py` 的 `x_a`/`x_b` 死参数。
+27. 修复 `cometspark.py` 的 `load`/`save_pretrained` 接口不一致。
+28. 合并 `nexrl/state.py` 到 `env.py`。
+
+---
+
+## 七、verse_infra 审计（Part5K1.8 新增）
+
+### 7.1 `giga.py` — `GigaTokenizerWrapper.__init__` 对 `.json` 文件路径处理错误 ✅ 已修复
+- **位置**：[giga.py](file:///workspace/packages/verse_infra/verse_infra/verse_tokenizer/giga.py) L120-L170
+- **类型**：Bug / 兼容性
+- **描述**：`__init__` 收到 `.json` 元信息文件路径时，错误地走 `AutoTokenizer.from_pretrained(json_path)`，HF 不接受 `.json` 文件路径作为 repo_id，抛 `Repo id must be in the form 'repo_name' or 'namespace/repo_name'`。导致 small 模型训练时 `kind=giga` + `tokenizer.json` 已存在的场景全部失败。
+- **修复**：Part5K1.8 已修复——`.json` 文件路径走 `self.load(path)` 复用元信息加载逻辑。
+
+### 7.2 `bpe.py` — `load_tokenizer` 工厂函数 `kind="giga"` 路径分发缺失 ✅ 已修复
+- **位置**：[bpe.py](file:///workspace/packages/verse_infra/verse_infra/verse_tokenizer/bpe.py) L1725-L1737
+- **类型**：Bug / 接口不一致
+- **描述**：`load_tokenizer(kind="giga", path=...)` 不区分 path 类型（.json 文件 / 目录 / repo_id），统一传给 `GigaTokenizerWrapper(model_id_or_tokenizer=path)`，导致 .json 文件路径触发 7.1 的 Bug。
+- **修复**：Part5K1.8 已修复——按 path 类型分发：.json 文件走 `wrapper.load(path)`；目录/repo_id 走原构造。
+
+### 7.3 `trainer.py` — `_load_tokenizer_for_config` 与 `_load_tokenizer` 逻辑重复（中危）
+- **位置**：[spark/run.py](file:///workspace/spark/run.py) L391-L445 vs [trainer.py](file:///workspace/packages/verse_infra/verse_infra/verse_trainer/trainer.py) L742-L790
+- **类型**：蜘蛛丝 / 重复代码
+- **描述**：spark/run.py 的 `_load_tokenizer_for_config` 与 trainer.py 的 `_load_tokenizer` 实现类似的 tokenizer 加载逻辑（读 config → 按 kind 分发 → 兜底 ByteTokenizer），但策略不一致：前者只支持 byte/hf/bpe，后者支持 giga/verse/hf/bpe/byte。两者无复用关系，维护时易遗漏。
+- **修复方向**：让 `_load_tokenizer_for_config` 委托 `trainer._load_tokenizer`，统一加载策略。
+
+### 7.4 `trainer.py` — `_auto_generate_test_data` 格式陈旧 ✅ 已修复
+- **位置**：[trainer.py](file:///workspace/packages/verse_infra/verse_infra/verse_trainer/trainer.py) L812-L892
+- **类型**：Bug / 数据格式不一致
+- **描述**：`_auto_generate_test_data` 生成 `{"text":"..."}` 格式，与 `SingleSampleDataset` 的 prompt-completion 模式不对齐，训练时需要额外转换。`_TEST_TEXTS` 仅 20 条纯文本，重复 5 次 = 100 条，多样性严重不足。
+- **修复**：Part5K1.8 已修复——改为 `{"prompt":"...", "completion":"..."}` 格式，扩充到 30 条 prompt-completion 对，150 条训练数据。
+
+### 7.5 `trainer.py` — `_auto_build_tokenizer` 不支持 giga/verse（中危）
+- **位置**：[trainer.py](file:///workspace/packages/verse_infra/verse_infra/verse_trainer/trainer.py) L712-L739
+- **类型**：Bug / 功能缺失
+- **描述**：`_auto_build_tokenizer` 只支持 byte/char/charlevel/character，对 giga/verse/hf 统一降级为 byte。当用户配置 `kind=giga` 但无 tokenizer.json 时，静默降级为 byte tokenizer（vocab=259），与用户期望的 giga vocab 不符，导致训练 vocab_size 与模型 embedding 不匹配。
+- **修复方向**：对 giga/verse 调用 `load_tokenizer(kind=kind, path=repo)` 尝试下载；失败时显式报错而非静默降级。
+
+---
+
+## 八、spark/run.py 审计（Part5K1.8 新增）
+
+### 8.1 `_load_tokenizer_for_config` 与 `trainer._load_tokenizer` 重复（中危）
+- **位置**：[run.py](file:///workspace/spark/run.py) L391-L445
+- **类型**：蜘蛛丝 / 重复代码
+- **描述**：实现独立的 tokenizer 加载逻辑（按 kind/from_hf/vocab_size 推断），与 `trainer._load_tokenizer` 策略不一致，且不支持 giga/verse。两套逻辑并存导致维护成本高，且行为不一致（spark/run.py 的 eval/generate/chat 走一套，train/finetune 走另一套）。
+- **修复方向**：统一委托 `trainer._load_tokenizer`。
+
+### 8.2 `cmd_finetune / cmd_posttrain` 未做 tokenizer.json 检查（中危）✅ 已修复
+- **位置**：[run.py](file:///workspace/spark/run.py) L856-L933（finetune）、L934-L1016（posttrain）
+- **类型**：Bug / 健壮性
+- **描述**：cmd_finetune 和 cmd_posttrain 委托 `verse_trainer.train()`，但未显式检查 tokenizer.json 是否存在。当 tokenizer.json 缺失时，`_load_tokenizer` 原走自动构建（静默降级为 byte），用户无感知。
+- **修复**：Part5K1.8 已修复——`_load_tokenizer` 新增交互式选择（`_prompt_tokenizer_action`），train/finetune/posttrain/continue 均经过该分支。
+
+### 8.3 `small/config` 中 `tokenizer_repo` 放在 `model` 段而非 `tokenizer` 段（中危）
+- **位置**：[cometspark_small.yml](file:///workspace/spark/small/config/cometspark_small.yml) L46
+- **类型**：冲突 / 命名不一致
+- **描述**：`tokenizer_repo: Qwen/Qwen3.5-35B-A3B` 放在 `model:` 段下，但 `tokenizer:` 段也有 `kind: giga` / `vocab_size: 259`。`tokenizer_repo` 语义上属于 tokenizer 配置，放错位置导致 `_prompt_tokenizer_action` 需要同时读 `tok_cfg` 和 `model_cfg` 兜底。
+- **修复方向**：将 `tokenizer_repo` 迁移到 `tokenizer:` 段；同时在 `_load_tokenizer` 中统一从 `tok_cfg` 读取。
 
 ---
 
@@ -493,18 +559,23 @@
 | nexrl/env.py | 0 | 1 | 0 | 1 |
 | nexrl/state.py | 0 | 0 | 1 | 1 |
 | 跨文件 | 0 | 0 | 4 | 4 |
-| **合计** | **0** | **35** | **25** | **60** |
+| verse_infra（giga.py / bpe.py / trainer.py） | 0 | 2 | 0 | 2 |
+| spark/run.py（run.py / cometspark_small.yml） | 0 | 2 | 0 | 2 |
+| **合计** | **0** | **39** | **25** | **64** |
 
 ### 按类型分布
 
 | 类型 | 数量 |
 |------|------|
-| Bug（数值/逻辑/资源） | 38 |
-| 冲突（接口/语义不一致） | 15 |
-| 蜘蛛丝（重复/死代码/低效） | 20 |
+| Bug（数值/逻辑/资源） | 39 |
+| 冲突（接口/语义不一致） | 16 |
+| 蜘蛛丝（重复/死代码/低效） | 22 |
+
+> Part5K1.8 新增未修复类型增量：Bug +1（7.5）、蜘蛛丝 +2（7.3 / 8.1）、冲突 +1（8.3）。
+> 已修复条目（7.1 / 7.2 / 7.4 / 8.2，均为 Bug）不计入。
 
 ---
 
-**审计人**：Part5K1.5 自动审计
+**审计人**：Part5K1.5 自动审计（Part5K1.8 补充 verse_infra / spark-run 审计）
 **审计方法**：3 个并行 subagent 分模块深入阅读 + 交叉验证
-**审计覆盖**：18 个文件，8834 行代码，100% 覆盖
+**审计覆盖**：原 18 个文件 8834 行（verse_nex）+ Part5K1.8 新增 verse_infra（giga.py / bpe.py / trainer.py）与 spark/run.py

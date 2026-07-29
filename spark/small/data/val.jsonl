@@ -1,0 +1,500 @@
+{"prompt": "请完成下面这段：旅行开始了，", "completion": "行李装好，出发去机场。"}
+{"prompt": "请把这段续写：轮船鸣笛，", "completion": "缓缓驶离港口。"}
+{"prompt": "160 + 539 等于多少", "completion": "160 + 539 = 699"}
+{"prompt": "请将阿拉伯数字 1754 转换为中文", "completion": "1754 的中文是 一千七百五十四"}
+{"prompt": "请定义高阶函数", "completion": "高阶函数是接受函数作为参数或返回函数的函数。"}
+{"prompt": "从 997 中减去 364", "completion": "997 - 364 = 633"}
+{"prompt": "中译：Please sit down", "completion": "请坐"}
+{"prompt": "请把阿拉伯数字 4318 转成中文数字", "completion": "4318 的中文是 四千三百十八"}
+{"prompt": "请简要说明什么是回溯算法？", "completion": "回溯算法通过尝试所有可能并回退无效选择来搜索解空间。"}
+{"prompt": "对话：我该怎么处理复杂", "completion": "化繁为简，逐步解决。"}
+{"prompt": "请实现：用 Python 实现线性查找", "completion": "def linear_search(arr, target):\n    for i, x in enumerate(arr):\n        if x == target:\n            return i\n    return -1"}
+{"prompt": "请译为英文：书籍是人类进步的阶梯", "completion": "Books are the ladder of human progress"}
+{"prompt": "对话——用户：你喜欢什么季节", "completion": "我喜欢秋天，凉爽舒适。"}
+{"prompt": "请把数字 6047 转换成中文表示", "completion": "6047 的中文是 六千零四十七"}
+{"prompt": "请给出中文翻译：Harmony in diversity", "completion": "和而不同"}
+{"prompt": "聊天：我该怎么学编程\n回应：", "completion": "从基础语法开始，多动手实践。"}
+{"prompt": "请完成下面这段：接天莲叶无穷碧，", "completion": "映日荷花别样红。"}
+{"prompt": "请告诉我，希腊的首都名称是什么？", "completion": "希腊的首都是雅典。"}
+{"prompt": "请把 9983 翻译成中文数字", "completion": "9983 的中文是 九千九百八十三"}
+{"prompt": "34 乘以 71 等于", "completion": "34 × 71 = 2414"}
+{"prompt": "请说出突尼斯的首都名称。", "completion": "突尼斯的首都是突尼斯市。"}
+{"prompt": "请计算 917 + 308", "completion": "917 + 308 = 1225"}
+{"prompt": "请回复：我渴了", "completion": "喝杯水吧。"}
+{"prompt": "请续写接下来的内容：春草明年绿，", "completion": "王孙归不归？"}
+{"prompt": "续写下面的句子：秋天是", "completion": "凉爽的，硕果累累，金风送爽。"}
+{"prompt": "请帮我介绍一下什么是损失函数？", "completion": "损失函数是衡量模型预测值与真实值差异的函数，用于指导模型优化。"}
+{"prompt": "请回答拉脱维亚的首都是什么。", "completion": "拉脱维亚的首都是里加。"}
+{"prompt": "请帮我回答什么是云计算？", "completion": "云计算是一种通过互联网提供计算服务的模式，包括服务器、存储、数据库等。"}
+{"prompt": "计算：55 × 569", "completion": "55 × 569 = 31295"}
+{"prompt": "中译如下英文：I am learning geography", "completion": "我在学地理"}
+{"prompt": "我想了解白俄罗斯的首都。", "completion": "白俄罗斯的首都是明斯克。"}
+{"prompt": "问题：氢的元素符号是什么？", "completion": "氢的元素符号是 H。"}
+{"prompt": "聊天：我很伤心\n回应：", "completion": "别难过，事情会好起来的。"}
+{"prompt": "翻译成中文：This teacher is good", "completion": "这个老师很好"}
+{"prompt": "英→中：I like eating dumplings", "completion": "我喜欢吃饺子"}
+{"prompt": "英→中：Have you been to Beijing", "completion": "你去过北京吗"}
+{"prompt": "请完成以下任务：把以下数字转成中文：10000", "completion": "一万"}
+{"prompt": "请回复：我该怎么处理挑战", "completion": "勇敢面对，逐一解决。"}
+{"prompt": "消息：我该怎么拒绝别人\n回复：", "completion": "礼貌但坚定地说明原因。"}
+{"prompt": "请把 4424 写成中文", "completion": "4424 的中文是 四千四百二十四"}
+{"prompt": "请解释一下什么是计算机视觉？", "completion": "计算机视觉是研究如何使计算机从图像或多维数据中获取理解的人工智能领域。"}
+{"prompt": "请帮我解释什么是循环神经网络？", "completion": "循环神经网络是一种处理序列数据的神经网络，具有记忆能力。"}
+{"prompt": "请续写下面这句话：从前有一座山，", "completion": "山上有一座庙，庙里有一个老和尚和一个小和尚。"}
+{"prompt": "请计算 200 + 232", "completion": "200 + 232 = 432"}
+{"prompt": "请回答：波黑的首都是？", "completion": "波黑的首都是萨拉热窝。"}
+{"prompt": "口算：210 ÷ 30", "completion": "210 ÷ 30 = 7"}
+{"prompt": "计算：7879 + 1613", "completion": "7879 + 1613 = 9492"}
+{"prompt": "请完成指令：摘要：虚拟现实是一种可以创建和体验虚拟世界的计算机仿真系统。", "completion": "虚拟现实创建可体验的虚拟世界。"}
+{"prompt": "麻烦说明一下什么是 IP 地址", "completion": "IP 地址是分配给网络设备的数字标识，用于在网络中定位设备。"}
+{"prompt": "对话——用户：我该怎么处理喜事", "completion": "分享快乐，再接再厉。"}
+{"prompt": "请帮我解释什么是测试驱动开发", "completion": "测试驱动开发是先写测试再写代码的开发方法，确保代码质量。"}
+{"prompt": "我该怎么提高英语\n怎么回复", "completion": "多听多说多读多写。"}
+{"prompt": "请续写下面这句话：千磨万击还坚劲，", "completion": "任尔东西南北风。"}
+{"prompt": "请将此句翻译为英文：这是我的书", "completion": "This is my book"}
+{"prompt": "请给出英文翻译：你会说什么语言", "completion": "What languages do you speak"}
+{"prompt": "请帮我说明什么是 CI/CD", "completion": "CI/CD 是持续集成和持续交付/部署的缩写，自动化软件发布流程。"}
+{"prompt": "你喜欢什么动物——回复", "completion": "我喜欢猫，很可爱。"}
+{"prompt": "请完成：用 Python 实现哈希表", "completion": "class HashTable:\n    def __init__(self, size=100):\n        self.size = size\n        self.table = [[] for _ in range(size)]\n    def put(self, key, value):\n        h = hash(key) % self.size\n        for i, (k, v) in enumerate(self.table[h]):\n            if k == key:\n                self.table[h][i] = (key, value)\n                return\n        self.table[h].append((key, value))"}
+{"prompt": "植物进行光合作用的主要色素是什么？", "completion": "植物进行光合作用的主要色素是叶绿素。"}
+{"prompt": "请告诉我，蒸汽机是谁改良的？", "completion": "蒸汽机是瓦特改良的。"}
+{"prompt": "请实现：用 Python 写一个gcd函数，求最大公约数", "completion": "def gcd(a, b):\n    while b:\n        a, b = b, a % b\n    return a"}
+{"prompt": "英文怎么说：自助者天助之", "completion": "God helps those who help themselves"}
+{"prompt": "我想知道电灯是谁发明的？", "completion": "电灯是爱迪生发明的。"}
+{"prompt": "请接着这句继续：君自故乡来，", "completion": "应知故乡事。"}
+{"prompt": "对方：我该怎么提高创造力\n我：", "completion": "多接触新事物，发散思考。"}
+{"prompt": "请完成续写：飞机起飞了，", "completion": "城市在脚下越来越小。"}
+{"prompt": "求中文翻译：That is your pen", "completion": "那是你的笔"}
+{"prompt": "数学题：2449 ÷ 31", "completion": "2449 ÷ 31 = 79"}
+{"prompt": "请把这段英文翻译为中文：Only then can you succeed", "completion": "方得始终"}
+{"prompt": "33 加 2 = ?", "completion": "33 + 2 = 35"}
+{"prompt": "请接着下面写：会议开始了，", "completion": "主持人走上台发言。"}
+{"prompt": "聊天气泡：你在做什么\n回复：", "completion": "在看书，你呢？"}
+{"prompt": "数字 7776 的中文是什么", "completion": "7776 的中文是 七千七百七十六"}
+{"prompt": "数学题：180 + 776", "completion": "180 + 776 = 956"}
+{"prompt": "Q：电磁波的传播需要介质吗？", "completion": "电磁波可以在真空中传播，不需要介质。"}
+{"prompt": "请回答什么是 SQL", "completion": "SQL（结构化查询语言）是用于管理关系数据库的标准语言。"}
+{"prompt": "翻译成中文：I am an engineer", "completion": "我是一名工程师"}
+{"prompt": "续写下面的句子：春眠不觉晓，", "completion": "处处闻啼鸟。"}
+{"prompt": "请回答 63 × 22", "completion": "63 × 22 = 1386"}
+{"prompt": "请定义 Git", "completion": "Git 是一个分布式版本控制系统，用于跟踪文件变化和协作开发。"}
+{"prompt": "464 - 447 等于多少", "completion": "464 - 447 = 17"}
+{"prompt": "请说明古希腊奥运会始于哪一年？", "completion": "古代奥运会始于公元前 776 年。"}
+{"prompt": "续写：来日绮窗前，", "completion": "寒梅著花未？"}
+{"prompt": "请把数字 5280 转换成中文表示", "completion": "5280 的中文是 五千二百八十"}
+{"prompt": "请将 1678 转为中文数字", "completion": "1678 的中文是 一千六百七十八"}
+{"prompt": "用户：我渴了\nAI：", "completion": "喝杯水吧。"}
+{"prompt": "请用一句话回答：植物呼吸作用产生什么气体？", "completion": "植物呼吸作用产生二氧化碳。"}
+{"prompt": "请把它译成汉语：What are you doing", "completion": "你在做什么"}
+{"prompt": "对话：我该看什么电影", "completion": "可以试试经典影片。"}
+{"prompt": "聊天：你吃饭了吗\n回应：", "completion": "吃过了，你呢？"}
+{"prompt": "解方程：5x + 3 = 193", "completion": "x = 38"}
+{"prompt": "把这句译为中文：Please help me", "completion": "请帮帮我"}
+{"prompt": "请续写下面这句：花园是", "completion": "美丽的，百花齐放，香气扑鼻。"}
+{"prompt": "用 Python 实现日期时间", "completion": "from datetime import datetime\nnow = datetime.now()"}
+{"prompt": "请用代码完成：用 Python 实现线程", "completion": "import threading\ndef worker():\n    print('working')\nt = threading.Thread(target=worker)\nt.start()"}
+{"prompt": "1311 除以 19 等于", "completion": "1311 ÷ 19 = 69"}
+{"prompt": "请写出代码：用 Python 实现线性查找", "completion": "def linear_search(arr, target):\n    for i, x in enumerate(arr):\n        if x == target:\n            return i\n    return -1"}
+{"prompt": "请将 5095 转为中文写法", "completion": "5095 的中文是 五千零九十五"}
+{"prompt": "请问，明朝的建立者是谁？", "completion": "明朝的建立者是朱元璋。"}
+{"prompt": "我心情不好——回复", "completion": "想聊聊吗？我会倾听的。"}
+{"prompt": "请简要定义 SQL", "completion": "SQL（结构化查询语言）是用于管理关系数据库的标准语言。"}
+{"prompt": "我该怎么处理失望\n你怎么回", "completion": "调整期望，重新出发。"}
+{"prompt": "聊天：我该怎么减肥\n回应：", "completion": "合理饮食和规律运动。"}
+{"prompt": "求 10 乘以 29", "completion": "10 × 29 = 290"}
+{"prompt": "请问玻利维亚的首都是什么城市？", "completion": "玻利维亚的首都是苏克雷。"}
+{"prompt": "请回复：我该怎么找工作", "completion": "准备好简历，多投递多面试。"}
+{"prompt": "1962 用中文怎么写", "completion": "1962 的中文是 一千九百六十二"}
+{"prompt": "捷克的首都是哪一座城市？", "completion": "捷克的首都是布拉格。"}
+{"prompt": "翻译（英译中）：Well done", "completion": "干得好"}
+{"prompt": "请回应对方：今天天气真好", "completion": "是的，适合出门散步。"}
+{"prompt": "请问什么是递归？", "completion": "递归是函数直接或间接调用自身的方法，常用于分治问题。"}
+{"prompt": "求商：273 ÷ 7", "completion": "273 ÷ 7 = 39"}
+{"prompt": "请简要说明什么是 Kubernetes", "completion": "Kubernetes 是容器编排系统，用于自动化部署、扩展和管理容器化应用。"}
+{"prompt": "请将 4443 转为中文数字", "completion": "4443 的中文是 四千四百四十三"}
+{"prompt": "续写下面的句子：世界是", "completion": "多彩的，文化多元，万象更新。"}
+{"prompt": "请用 Python 编写：用 Python 写一个gcd函数，求最大公约数", "completion": "def gcd(a, b):\n    while b:\n        a, b = b, a % b\n    return a"}
+{"prompt": "请说明酸雨的主要成分是什么？", "completion": "酸雨的主要成分是硫酸和硝酸。"}
+{"prompt": "请用 Python 写一个difference函数，求两个列表的差集", "completion": "def difference(a, b):\n    return list(set(a) - set(b))"}
+{"prompt": "计算：26171 - 1715", "completion": "26171 - 1715 = 24456"}
+{"prompt": "请转换1 千克", "completion": "1 千克 = 1000 克"}
+{"prompt": "请将以下中文翻译成英文：有备无患", "completion": "Better safe than sorry"}
+{"prompt": "请简要说明什么是 TCP？", "completion": "TCP（传输控制协议）是一种面向连接的、可靠的传输层协议。"}
+{"prompt": "我该怎么处理人际关系——回复", "completion": "真诚待人，换位思考。"}
+{"prompt": "请续写下面的内容：老师走进教室，", "completion": "同学们起立问好。"}
+{"prompt": "聊天气泡：我该怎么处理未知\n回复：", "completion": "保持好奇，勇敢探索。"}
+{"prompt": "请用代码实现：写一个 Python 函数实现字符串去重", "completion": "def dedup(s):\n    return ''.join(dict.fromkeys(s))"}
+{"prompt": "请回答蒙古的首都是什么。", "completion": "蒙古的首都是乌兰巴托。"}
+{"prompt": "答：酸雨的主要成分是什么？", "completion": "酸雨的主要成分是硫酸和硝酸。"}
+{"prompt": "请用 Python 实现：用 Python 实现三元运算", "completion": "result = x if x > 0 else 0"}
+{"prompt": "请用代码解决：用 Python 实现哈希表", "completion": "class HashTable:\n    def __init__(self, size=100):\n        self.size = size\n        self.table = [[] for _ in range(size)]\n    def put(self, key, value):\n        h = hash(key) % self.size\n        for i, (k, v) in enumerate(self.table[h]):\n            if k == key:\n                self.table[h][i] = (key, value)\n                return\n        self.table[h].append((key, value))"}
+{"prompt": "请回答肯尼亚的首都是什么。", "completion": "肯尼亚的首都是内罗毕。"}
+{"prompt": "我该怎么存钱", "completion": "制定预算，理性消费。"}
+{"prompt": "消息：我该怎么处理甜事\n回复：", "completion": "珍惜美好，感恩生活。"}
+{"prompt": "斯洛伐克的首都，请回答。", "completion": "斯洛伐克的首都是布拉迪斯拉发。"}
+{"prompt": "请完成续写：青海长云暗雪山，", "completion": "孤城遥望玉门关。"}
+{"prompt": "你能告诉我纳米比亚的首都是哪吗？", "completion": "纳米比亚的首都是温得和克。"}
+{"prompt": "对话：我该怎么处理悲伤", "completion": "允许自己悲伤，找人倾诉。"}
+{"prompt": "请回答下面的问题：盐酸的化学式是什么？", "completion": "盐酸是 HCl 的水溶液。"}
+{"prompt": "聊天：我该怎么提高创造力\n回应：", "completion": "多接触新事物，发散思考。"}
+{"prompt": "请执行以下：把以下数字转成中文：888", "completion": "八百八十八"}
+{"prompt": "请定义：什么是迁移学习？", "completion": "迁移学习是将一个任务上学到的知识应用到另一个相关任务的方法。"}
+{"prompt": "请把数字 3940 转换成中文表示", "completion": "3940 的中文是 三千九百四十"}
+{"prompt": "请解释一下什么是 Kubernetes？", "completion": "Kubernetes 是容器编排系统，用于自动化部署、扩展和管理容器化应用。"}
+{"prompt": "请用代码完成：用 Python 实现协程", "completion": "async def hello():\n    print('hello')\n    await asyncio.sleep(1)"}
+{"prompt": "中文翻译英文：这本书很有趣", "completion": "This book is very interesting"}
+{"prompt": "英文翻译中文：Among any three, there must be a teacher for me", "completion": "三人行必有我师"}
+{"prompt": "请将 962 转为中文数字", "completion": "962 的中文是 九百六十二"}
+{"prompt": "请帮我回答什么是机器学习中的强化学习", "completion": "强化学习是通过与环境交互、根据奖励信号学习策略的机器学习方法。"}
+{"prompt": "请完成续写：旅行开始了，", "completion": "行李装好，出发去机场。"}
+{"prompt": "请详细解释什么是 Rust？", "completion": "Rust 是一种系统编程语言，专注于内存安全和并发性能。"}
+{"prompt": "翻译（英译中）：Heaven rewards the diligent", "completion": "天道酬勤"}
+{"prompt": "用户：我该怎么提高口语\n助手：", "completion": "多开口，不怕犯错。"}
+{"prompt": "请用汉语表达：Never forget why you started", "completion": "不忘初心"}
+{"prompt": "乌兹别克斯坦的首都，请回答。", "completion": "乌兹别克斯坦的首都是塔什干。"}
+{"prompt": "请介绍一下什么是 5G？", "completion": "5G 是第五代移动通信技术，具有高速率、低时延、大连接的特点。"}
+{"prompt": "请接着这句继续：冬天是", "completion": "寒冷的，白雪皑皑，银装素裹。"}
+{"prompt": "用户：我该怎么提高专注力\nAI：", "completion": "减少干扰，番茄工作法。"}
+{"prompt": "请把 8467 写成中文", "completion": "8467 的中文是 八千四百六十七"}
+{"prompt": "请把列表 [3, 1, 2] 降序排列", "completion": "[3, 2, 1]"}
+{"prompt": "请回答问题：DNA 的全称是什么？", "completion": "DNA 的全称是脱氧核糖核酸。"}
+{"prompt": "请写出代码：用 Python 实现迭代器", "completion": "class Counter:\n    def __init__(self, n):\n        self.n = n\n        self.i = 0\n    def __iter__(self):\n        return self\n    def __next__(self):\n        if self.i < self.n:\n            self.i += 1\n            return self.i\n        raise StopIteration"}
+{"prompt": "数字 3130 的中文是什么", "completion": "3130 的中文是 三千一百三十"}
+{"prompt": "请告诉我，水的化学式是什么？", "completion": "水的化学式是 H₂O。"}
+{"prompt": "请将以下中文翻译成英文：让我想想", "completion": "Let me think"}
+{"prompt": "请描述什么是算法？", "completion": "算法是解决特定问题的一系列明确指令或步骤的有限序列。"}
+{"prompt": "代码示例：用 Python 实现斐波那契数列（递归）", "completion": "def fib(n):\n    if n < 2:\n        return n\n    return fib(n - 1) + fib(n - 2)"}
+{"prompt": "99 × 13 = ?", "completion": "99 × 13 = 1287"}
+{"prompt": "请将此句翻译为英文：人生苦短", "completion": "Life is short"}
+{"prompt": "请阐述什么是链表", "completion": "链表是通过指针连接节点的线性数据结构，支持高效插入删除。"}
+{"prompt": "请把这段续写：自行车骑过小巷，", "completion": "发出清脆的铃声。"}
+{"prompt": "请将1 千米换算", "completion": "1 千米 = 0.621371 英里"}
+{"prompt": "请简要回答铜的元素符号是什么？", "completion": "铜的元素符号是 Cu。"}
+{"prompt": "请接着这段写：鱼是", "completion": "灵动的，水中嬉戏，自由自在。"}
+{"prompt": "英文翻译中文：Live in the moment", "completion": "活在当下"}
+{"prompt": "请将\"Time is money\"译为中文", "completion": "时间就是金钱"}
+{"prompt": "请接着这段写：千山鸟飞绝，", "completion": "万径人踪灭。"}
+{"prompt": "任务：把以下数字转成中文：88", "completion": "八十八"}
+{"prompt": "我说：我该怎么投资\n你说：", "completion": "先学习理财知识，分散风险。"}
+{"prompt": "请把 7286 翻译成中文数字", "completion": "7286 的中文是 七千二百八十六"}
+{"prompt": "麻烦解答：1 摩尔物质包含多少个粒子？", "completion": "1 摩尔物质包含约 6.02×10²³ 个粒子。"}
+{"prompt": "请接着写：孤舟蓑笠翁，", "completion": "独钓寒江雪。"}
+{"prompt": "请告诉我，捷克的首都名称是什么？", "completion": "捷克的首都是布拉格。"}
+{"prompt": "请用中文表达下面这句话：Time is money", "completion": "时间就是金钱"}
+{"prompt": "请介绍一下什么是自然语言处理", "completion": "自然语言处理是人工智能和语言学的交叉领域，研究计算机如何理解和处理人类语言。"}
+{"prompt": "消息：我该怎么提高学习能力\n回复：", "completion": "找到方法，持续练习。"}
+{"prompt": "240 ÷ 20 = ?", "completion": "240 ÷ 20 = 12"}
+{"prompt": "把 5 和 717 加起来", "completion": "5 + 717 = 722"}
+{"prompt": "请把数字 7356 转换成中文表示", "completion": "7356 的中文是 七千三百五十六"}
+{"prompt": "请续写这句：向晚意不适，", "completion": "驱车登古原。"}
+{"prompt": "请用代码实现：用 Python 写一个count_occurrences函数，统计元素出现次数", "completion": "def count_occurrences(lst, x):\n    return lst.count(x)"}
+{"prompt": "问：三国时期魏国的建立者是谁？", "completion": "三国时期魏国的建立者是曹丕。"}
+{"prompt": "请详细解释什么是面向对象编程？", "completion": "面向对象编程是以对象为基础的编程范式，包含封装、继承、多态特性。"}
+{"prompt": "请用英文表达下面这句话：不要把所有鸡蛋放在一个篮子里", "completion": "Don't put all your eggs in one basket"}
+{"prompt": "任务：把列表 [10, 20, 30] 求和", "completion": "60"}
+{"prompt": "请回答：什么是闭包？", "completion": "闭包是捕获外部变量并保持其引用的函数对象。"}
+{"prompt": "请把 8933 翻译成中文数字", "completion": "8933 的中文是 八千九百三十三"}
+{"prompt": "请把这段续写：冬天是", "completion": "寒冷的，白雪皑皑，银装素裹。"}
+{"prompt": "请解释什么是高阶函数", "completion": "高阶函数是接受函数作为参数或返回函数的函数。"}
+{"prompt": "麻烦解答：马克思主义的创立者是谁？", "completion": "马克思主义的创立者是马克思和恩格斯。"}
+{"prompt": "请把 1683 翻译成中文数字", "completion": "1683 的中文是 一千六百八十三"}
+{"prompt": "请把下面这句续写下去：人是", "completion": "智慧的，创造文明，探索未知。"}
+{"prompt": "对方说：我该怎么表达感谢\n如何回应", "completion": "真诚地说谢谢，必要时送小礼物。"}
+{"prompt": "续：故事开始了，", "completion": "让我们一同进入这个奇妙的世界。"}
+{"prompt": "乘法运算：47 × 87", "completion": "47 × 87 = 4089"}
+{"prompt": "我想了解什么是 RESTful API", "completion": "RESTful API 是遵循 REST 架构风格的 API，使用 HTTP 方法操作资源。"}
+{"prompt": "请问，钙的元素符号是什么？", "completion": "钙的元素符号是 Ca。"}
+{"prompt": "请把它译成英语：我是一名程序员", "completion": "I am a programmer"}
+{"prompt": "代码实现：用 Python 实现插入排序", "completion": "def insertion_sort(arr):\n    for i in range(1, len(arr)):\n        key = arr[i]\n        j = i - 1\n        while j >= 0 and arr[j] > key:\n            arr[j + 1] = arr[j]\n            j -= 1\n        arr[j + 1] = key\n    return arr"}
+{"prompt": "请教一下什么是 C 语言", "completion": "C 语言是一种通用的、过程式的编程语言，具有高效和灵活的特点。"}
+{"prompt": "你知道大气层最底层叫什么？", "completion": "大气层最底层叫对流层。"}
+{"prompt": "我：我该怎么提升自己\n你：", "completion": "持续学习，反思总结。"}
+{"prompt": "请回答：植物呼吸作用产生什么气体？", "completion": "植物呼吸作用产生二氧化碳。"}
+{"prompt": "请回复：下班了", "completion": "辛苦了，好好休息。"}
+{"prompt": "我想知道巴拉圭的首都。", "completion": "巴拉圭的首都是亚松森。"}
+{"prompt": "请编写一段 Python 代码：用 Python 写一个is_prime函数，判断质数", "completion": "def is_prime(n):\n    if n < 2:\n        return False\n    for i in range(2, int(n ** 0.5) + 1):\n        if n % i == 0:\n            return False\n    return True"}
+{"prompt": "用户：你好啊\nAI：", "completion": "你好！很高兴见到你。"}
+{"prompt": "请给出 CI/CD的定义", "completion": "CI/CD 是持续集成和持续交付/部署的缩写，自动化软件发布流程。"}
+{"prompt": "求 1650 除以 25", "completion": "1650 ÷ 25 = 66"}
+{"prompt": "请提供代码：用 Python 实现快速排序", "completion": "def quick_sort(arr):\n    if len(arr) <= 1:\n        return arr\n    pivot = arr[len(arr) // 2]\n    left = [x for x in arr if x < pivot]\n    middle = [x for x in arr if x == pivot]\n    right = [x for x in arr if x > pivot]\n    return quick_sort(left) + middle + quick_sort(right)"}
+{"prompt": "请接着下面写：君问归期未有期，", "completion": "巴山夜雨涨秋池。"}
+{"prompt": "请将 5335 转为中文数字", "completion": "5335 的中文是 五千三百三十五"}
+{"prompt": "英译如下中文：不劳无获", "completion": "No pain, no gain"}
+{"prompt": "帮我回答汞的元素符号是什么？", "completion": "汞的元素符号是 Hg。"}
+{"prompt": "请翻译下面的中文：博学之审问之", "completion": "Learn widely and inquire carefully"}
+{"prompt": "请用代码解决：用 Python 实现二叉树中序遍历", "completion": "def inorder(root):\n    if root:\n        inorder(root.left)\n        print(root.val)\n        inorder(root.right)"}
+{"prompt": "求积：34 × 4", "completion": "34 × 4 = 136"}
+{"prompt": "计算：63481 - 19063", "completion": "63481 - 19063 = 44418"}
+{"prompt": "续：山外青山楼外楼，", "completion": "西湖歌舞几时休。"}
+{"prompt": "请将1 亩转换", "completion": "1 亩 = 666.67 平方米"}
+{"prompt": "请回答什么是 Docker", "completion": "Docker 是一个容器化平台，将应用及其依赖打包到容器中运行。"}
+{"prompt": "代码示例：用 Python 实现抽象类", "completion": "from abc import ABC, abstractmethod\nclass Shape(ABC):\n    @abstractmethod\n    def area(self):\n        pass"}
+{"prompt": "请翻译下面的英文：I'm tired", "completion": "我累了"}
+{"prompt": "中译：I'm hungry", "completion": "我饿了"}
+{"prompt": "麻烦解释一下什么是激活函数", "completion": "激活函数是神经网络中引入非线性的函数，如 ReLU、Sigmoid、Tanh 等。"}
+{"prompt": "请把阿拉伯数字 519 转成中文数字", "completion": "519 的中文是 五百十九"}
+{"prompt": "英翻中：A small leak will sink a great ship", "completion": "千里之堤毁于蚁穴"}
+{"prompt": "4268-306=?", "completion": "4268 - 306 = 3962"}
+{"prompt": "消息：你真聪明\n回复：", "completion": "谢谢夸奖。"}
+{"prompt": "请解释一下什么是贪心算法？", "completion": "贪心算法在每一步选择当前最优解，期望得到全局最优解。"}
+{"prompt": "请计算：求边长为 4 的正方形周长", "completion": "正方形周长 = 4 × 4 = 16"}
+{"prompt": "请帮我写一段代码：用 Python 写一个gcd函数，求最大公约数", "completion": "def gcd(a, b):\n    while b:\n        a, b = b, a % b\n    return a"}
+{"prompt": "请解释一下明朝的建立者是谁？", "completion": "明朝的建立者是朱元璋。"}
+{"prompt": "介绍一下柬埔寨的首都。", "completion": "柬埔寨的首都是金边。"}
+{"prompt": "任务：把单词 dog, cat, bird 按字母顺序排列", "completion": "bird, cat, dog"}
+{"prompt": "求和：655 + 977", "completion": "655 + 977 = 1632"}
+{"prompt": "请用代码实现：用 Python 实现文件逐行读取", "completion": "with open('file.txt', 'r', encoding='utf-8') as f:\n    for line in f:\n        print(line.strip())"}
+{"prompt": "解方程：13x + 41 = 561", "completion": "x = 40"}
+{"prompt": "求中文翻译：Please speak softly", "completion": "请小声一点"}
+{"prompt": "请编写一段 Python 代码：用 Python 实现工厂模式", "completion": "class Dog:\n    def speak(self):\n        return 'Woof'\nclass Cat:\n    def speak(self):\n        return 'Meow'\ndef factory(kind):\n    if kind == 'dog':\n        return Dog()\n    elif kind == 'cat':\n        return Cat()"}
+{"prompt": "请将 6859 转为中文数字", "completion": "6859 的中文是 六千八百五十九"}
+{"prompt": "请用英文表达下面这句话：我喜欢夏天", "completion": "I like summer"}
+{"prompt": "7843 比 1162 多多少", "completion": "7843 - 1162 = 6681"}
+{"prompt": "请描述什么是 C 语言？", "completion": "C 语言是一种通用的、过程式的编程语言，具有高效和灵活的特点。"}
+{"prompt": "中文翻译英文：这条河很长", "completion": "This river is long"}
+{"prompt": "解方程：17x + 7 = 687", "completion": "x = 40"}
+{"prompt": "请回答 1482 ÷ 39", "completion": "1482 ÷ 39 = 38"}
+{"prompt": "我该怎么处理分歧\n怎么回复", "completion": "尊重差异，求同存异。"}
+{"prompt": "祝你生日快乐——回复", "completion": "谢谢你的祝福。"}
+{"prompt": "请回答：汞的元素符号是什么？", "completion": "汞的元素符号是 Hg。"}
+{"prompt": "请续写下面这句：电影开始了，", "completion": "大银幕上出现了第一幕。"}
+{"prompt": "请用 Python 解决：用 Python 写一个count_occurrences函数，统计元素出现次数", "completion": "def count_occurrences(lst, x):\n    return lst.count(x)"}
+{"prompt": "对方说：我饿了\n如何回应", "completion": "那就去吃点东西吧。"}
+{"prompt": "对方：我要去上班了\n我：", "completion": "路上注意安全，工作顺利。"}
+{"prompt": "请用 Python 完成：用 Python 实现二叉树中序遍历", "completion": "def inorder(root):\n    if root:\n        inorder(root.left)\n        print(root.val)\n        inorder(root.right)"}
+{"prompt": "请用 Python 写一个mile_to_km函数，英里转公里", "completion": "def mile_to_km(mile):\n    return mile * 1.60934"}
+{"prompt": "请续写下面这句：孤舟蓑笠翁，", "completion": "独钓寒江雪。"}
+{"prompt": "请用 Python 实现以下功能：用 Python 实现二叉树前序遍历", "completion": "def preorder(root):\n    if root:\n        print(root.val)\n        preorder(root.left)\n        preorder(root.right)"}
+{"prompt": "中→英：很高兴认识你", "completion": "Nice to meet you"}
+{"prompt": "7605 用中文怎么写", "completion": "7605 的中文是 七千六百零五"}
+{"prompt": "请将此句翻译为中文：Excuse me, how can I get to the train station", "completion": "请问怎么去火车站"}
+{"prompt": "消息：我该怎么提高专注力\n回复：", "completion": "减少干扰，番茄工作法。"}
+{"prompt": "请补全：风是", "completion": "自由的，无拘无束，随处可至。"}
+{"prompt": "中文怎么说：Opportunity knocks but once", "completion": "机不可失时不再来"}
+{"prompt": "请回答 3178 - 1663", "completion": "3178 - 1663 = 1515"}
+{"prompt": "请接着写：谁知盘中餐，", "completion": "粒粒皆辛苦。"}
+{"prompt": "水的沸点是多少？答案是什么？", "completion": "在标准大气压下，水的沸点是 100℃。"}
+{"prompt": "请将 472 转为中文写法", "completion": "472 的中文是 四百七十二"}
+{"prompt": "请帮我用 Python 实现向上取整", "completion": "import math\nprint(math.ceil(3.2))"}
+{"prompt": "请将 8231 转为中文数字", "completion": "8231 的中文是 八千二百三十一"}
+{"prompt": "巴拉圭这个国家的首都是？", "completion": "巴拉圭的首都是亚松森。"}
+{"prompt": "我：我想学画画\n你：", "completion": "兴趣是最好的老师，加油。"}
+{"prompt": "请简要回答《水浒传》的作者是谁？", "completion": "《水浒传》的作者是施耐庵。"}
+{"prompt": "接下去：墙角数枝梅，", "completion": "凌寒独自开。"}
+{"prompt": "解方程：10x + 30 = 320", "completion": "x = 29"}
+{"prompt": "帮我回答《三国演义》的作者是谁？", "completion": "《三国演义》的作者是罗贯中。"}
+{"prompt": "我很紧张\n你怎么回", "completion": "放轻松，相信你能行。"}
+{"prompt": "请回答什么是计算机视觉", "completion": "计算机视觉是研究如何使计算机从图像或多维数据中获取理解的人工智能领域。"}
+{"prompt": "请处理任务：把列表 [3, 1, 2] 升序排列", "completion": "[1, 2, 3]"}
+{"prompt": "请回答下面的问题：工业革命起源于哪个国家？", "completion": "工业革命起源于英国。"}
+{"prompt": "1935 用中文怎么写", "completion": "1935 的中文是 一千九百三十五"}
+{"prompt": "把这句中文翻成英文：早上好", "completion": "Good morning"}
+{"prompt": "用户：我感冒了\nAI：", "completion": "多喝水，注意保暖。"}
+{"prompt": "请说明摩尔多瓦的首都是什么城市。", "completion": "摩尔多瓦的首都是基希讷乌。"}
+{"prompt": "请续写：今春看又过，", "completion": "何日是归年。"}
+{"prompt": "答：秦始皇的名字叫什么？", "completion": "秦始皇名叫嬴政。"}
+{"prompt": "请回答什么是敏捷开发", "completion": "敏捷开发是一种迭代、增量的软件开发方法，强调快速响应变化。"}
+{"prompt": "计算：925 × 134", "completion": "925 × 134 = 123950"}
+{"prompt": "请帮我回答什么是 C++？", "completion": "C++ 是在 C 语言基础上发展而来的面向对象编程语言。"}
+{"prompt": "把这句英文翻成中文：This is my book", "completion": "这是我的书"}
+{"prompt": "Python 代码：用 Python 实现向下取整", "completion": "import math\nprint(math.floor(3.8))"}
+{"prompt": "Q：文景之治是哪个朝代的治世？", "completion": "文景之治是西汉文帝、景帝时期的治世。"}
+{"prompt": "翻译（英译中）：I like drinking tea", "completion": "我喜欢喝茶"}
+{"prompt": "请接着写：春天是", "completion": "温暖的，万物复苏，充满希望。"}
+{"prompt": "请用一句话回答：日心说是谁提出的？", "completion": "日心说是哥白尼提出的。"}
+{"prompt": "请描述什么是 CI/CD？", "completion": "CI/CD 是持续集成和持续交付/部署的缩写，自动化软件发布流程。"}
+{"prompt": "请用代码实现：用 Python 写一个flatten_list函数，扁平化列表", "completion": "def flatten_list(lst):\n    result = []\n    for x in lst:\n        if isinstance(x, list):\n            result.extend(flatten_list(x))\n        else:\n            result.append(x)\n    return result"}
+{"prompt": "请介绍一下什么是回溯算法？", "completion": "回溯算法通过尝试所有可能并回退无效选择来搜索解空间。"}
+{"prompt": "请继续：河流是", "completion": "蜿蜒的，流水潺潺，源远流长。"}
+{"prompt": "请将\"这个湖很清\"译为英文", "completion": "This lake is clear"}
+{"prompt": "请译为英文：我喜欢音乐", "completion": "I like music"}
+{"prompt": "请译为中文：Hello World", "completion": "你好世界"}
+{"prompt": "我该怎么处理挫折\n请给出回应", "completion": "总结经验，继续前行。"}
+{"prompt": "请回答：印度的首都是？", "completion": "印度的首都是新德里。"}
+{"prompt": "古希腊奥运会始于哪一年？请给出答案。", "completion": "古代奥运会始于公元前 776 年。"}
+{"prompt": "请用 Python 解决：用 Python 实现去除重复元素", "completion": "def unique(lst):\n    return list(dict.fromkeys(lst))"}
+{"prompt": "求中文翻译：God helps those who help themselves", "completion": "自助者天助之"}
+{"prompt": "请给出代码：用 Python 实现字符串连接", "completion": "def join_str(lst, sep):\n    return sep.join(lst)"}
+{"prompt": "1944÷24=?", "completion": "1944 ÷ 24 = 81"}
+{"prompt": "帮我回答金的元素符号是什么？", "completion": "金的元素符号是 Au。"}
+{"prompt": "请问沙特阿拉伯的首都是什么城市？", "completion": "沙特阿拉伯的首都是利雅得。"}
+{"prompt": "请解释一下什么是 RESTful API", "completion": "RESTful API 是遵循 REST 架构风格的 API，使用 HTTP 方法操作资源。"}
+{"prompt": "请用代码实现：用 Python 写一个sort_list函数，列表排序", "completion": "def sort_list(lst):\n    return sorted(lst)"}
+{"prompt": "请接着这句继续：海上生明月，", "completion": "天涯共此时。"}
+{"prompt": "求中文翻译：One is never too old to learn", "completion": "活到老学到老"}
+{"prompt": "计算：308 + 481", "completion": "308 + 481 = 789"}
+{"prompt": "麻烦解答：圆周率大约是多少？", "completion": "圆周率 π 大约是 3.14159。"}
+{"prompt": "请处理任务：把列表 [1, 2, 3, 4, 5] 去重", "completion": "[1, 2, 3, 4, 5]"}
+{"prompt": "我想知道什么是 Go 语言", "completion": "Go 是 Google 开发的静态类型、编译型语言，具有并发编程优势。"}
+{"prompt": "请帮我解释什么是单例模式？", "completion": "单例模式确保一个类只有一个实例，并提供全局访问点。"}
+{"prompt": "计算：4950 ÷ 50", "completion": "4950 ÷ 50 = 99"}
+{"prompt": "把这句中文翻成英文：你住在哪里", "completion": "Where do you live"}
+{"prompt": "我该怎么处理竞争\n怎么回复", "completion": "公平竞争，共同进步。"}
+{"prompt": "用户说：我想戒烟\n请回应", "completion": "戒烟有益健康，加油。"}
+{"prompt": "请用 Python 解决：用 Python 实现上下文管理器", "completion": "class MyContext:\n    def __enter__(self):\n        return self\n    def __exit__(self, *args):\n        pass"}
+{"prompt": "请用汉语表达：What book do you like", "completion": "你喜欢什么书"}
+{"prompt": "求 98 与 10 的积", "completion": "98 × 10 = 980"}
+{"prompt": "中译：One is never too old to learn", "completion": "活到老学到老"}
+{"prompt": "请回复：我该怎么处理竞争", "completion": "公平竞争，共同进步。"}
+{"prompt": "计算下面算式：504 ÷ 14", "completion": "504 ÷ 14 = 36"}
+{"prompt": "对话——一路顺风", "completion": "谢谢，我会的。"}
+{"prompt": "对话——我喜欢摄影", "completion": "用镜头记录美好瞬间，很有意义。"}
+{"prompt": "请将 8875 转为中文写法", "completion": "8875 的中文是 八千八百七十五"}
+{"prompt": "请补全：草原是", "completion": "碧绿的，牛羊成群，生机盎然。"}
+{"prompt": "数学题：求底为 6 高为 4 的平行四边形面积", "completion": "平行四边形面积 = 6 × 4 = 24"}
+{"prompt": "请帮我介绍一下什么是数据库", "completion": "数据库是按照数据结构来存储和管理数据的仓库。"}
+{"prompt": "蒙古的首都叫什么名字？", "completion": "蒙古的首都是乌兰巴托。"}
+{"prompt": "翻译成英文：我喜欢吃饺子", "completion": "I like eating dumplings"}
+{"prompt": "请把 7196 写成中文", "completion": "7196 的中文是 七千一百九十六"}
+{"prompt": "请把数字 5889 转换成中文表示", "completion": "5889 的中文是 五千八百八十九"}
+{"prompt": "请将此句翻译为英文：不要把所有鸡蛋放在一个篮子里", "completion": "Don't put all your eggs in one basket"}
+{"prompt": "请接着下面写：深夜里，", "completion": "月光洒在窗前，照亮了书桌上的书。"}
+{"prompt": "请用 Python 实现以下功能：用 Python 写一个square函数，求一个数的平方", "completion": "def square(x):\n    return x ** 2"}
+{"prompt": "我想知道老挝首都是哪座城市？", "completion": "老挝的首都是万象。"}
+{"prompt": "接下去：雪飘落，", "completion": "为大地披上银装。"}
+{"prompt": "请解释什么是什么是编程语言？", "completion": "编程语言是用来定义计算机程序的形式语言，用于人与计算机之间的通信。"}
+{"prompt": "麻烦解答：五四运动发生在哪一年？", "completion": "五四运动发生在 1919 年。"}
+{"prompt": "请将\"入乡随俗\"译为英文", "completion": "When in Rome, do as the Romans do"}
+{"prompt": "请接着下面写：随意春芳歇，", "completion": "王孙自可留。"}
+{"prompt": "把数字 1727 转成中文", "completion": "1727 的中文是 一千七百二十七"}
+{"prompt": "请按指令操作：把十进制 15 转成二进制", "completion": "1111"}
+{"prompt": "我该怎么处理大事\n你怎么回", "completion": "谋定后动，慎重决策。"}
+{"prompt": "计算：1373 - 7", "completion": "1373 - 7 = 1366"}
+{"prompt": "英译如下中文：天下为公", "completion": "The world belongs to all"}
+{"prompt": "请将1 平方米转换为基本单位", "completion": "1 平方米 = 10000 平方厘米"}
+{"prompt": "把这句译为中文：I like watching movies", "completion": "我喜欢看电影"}
+{"prompt": "请将 9563 转为中文数字", "completion": "9563 的中文是 九千五百六十三"}
+{"prompt": "请执行任务：把数字 42 转成 JSON 字符串", "completion": "42"}
+{"prompt": "对方：我该怎么处理简单\n我：", "completion": "认真对待，精益求精。"}
+{"prompt": "请回答下面的问题：电话是谁发明的？", "completion": "电话是贝尔发明的。"}
+{"prompt": "请问什么是工厂模式？", "completion": "工厂模式定义一个创建对象的接口，让子类决定实例化哪个类。"}
+{"prompt": "用户说：我该怎么表达感谢\n请回应", "completion": "真诚地说谢谢，必要时送小礼物。"}
+{"prompt": "请教一下什么是机器学习？", "completion": "机器学习是人工智能的一个分支，它使计算机系统能够从数据中学习并改进，而无需明确编程。"}
+{"prompt": "我很伤心\n怎么回复", "completion": "别难过，事情会好起来的。"}
+{"prompt": "请回复：我该读什么书", "completion": "可以从经典文学开始。"}
+{"prompt": "我说：我该怎么处理批评\n你说：", "completion": "虚心接受，有则改之。"}
+{"prompt": "用 Python 代码实现 统计单词数（函数名 count_words）", "completion": "def count_words(s):\n    return len(s.split())"}
+{"prompt": "请用 Python 实现：写一个 Python 函数计算 1 到 n 的和", "completion": "def sum_to_n(n):\n    return n * (n + 1) // 2"}
+{"prompt": "对方：我该怎么保持健康\n我：", "completion": "合理饮食，规律作息，适度运动。"}
+{"prompt": "7810 用中文怎么写", "completion": "7810 的中文是 七千八百十"}
+{"prompt": "中文翻译英文：你说错了", "completion": "You are wrong"}
+{"prompt": "计算：7615 + 41", "completion": "7615 + 41 = 7656"}
+{"prompt": "请回答 97 + 258", "completion": "97 + 258 = 355"}
+{"prompt": "请完成指令：摘要：增强现实将虚拟信息叠加到现实世界中，增强用户对现实的感知。", "completion": "增强现实将虚拟信息叠加到现实。"}
+{"prompt": "中文翻译英文：你会说什么语言", "completion": "What languages do you speak"}
+{"prompt": "请给出英文翻译：请问贵姓", "completion": "May I ask your surname"}
+{"prompt": "麻烦解答：声音的传播需要介质吗？", "completion": "是的，声音的传播需要介质，不能在真空中传播。"}
+{"prompt": "我该怎么处理坏事\n你怎么回", "completion": "沉着应对，转危为安。"}
+{"prompt": "用户输入：我该怎么处理简单\n助手回复：", "completion": "认真对待，精益求精。"}
+{"prompt": "你知道摩尔多瓦的首都是哪座城市吗？", "completion": "摩尔多瓦的首都是基希讷乌。"}
+{"prompt": "算一算 793 + 322", "completion": "793 + 322 = 1115"}
+{"prompt": "用户说：我该怎么培养耐心\n请回应", "completion": "接受过程，不急于求成。"}
+{"prompt": "请给出中文翻译：Unity is strength", "completion": "团结就是力量"}
+{"prompt": "用 Python 完成：用 Python 实现栈", "completion": "class Stack:\n    def __init__(self):\n        self.items = []\n    def push(self, item):\n        self.items.append(item)\n    def pop(self):\n        return self.items.pop() if self.items else None\n    def is_empty(self):\n        return len(self.items) == 0"}
+{"prompt": "口算：5222 - 2528", "completion": "5222 - 2528 = 2694"}
+{"prompt": "请教一下什么是上下文管理器", "completion": "上下文管理器通过 with 语句管理资源，确保资源正确释放。"}
+{"prompt": "把数字 9454 转成中文", "completion": "9454 的中文是 九千四百五十四"}
+{"prompt": "请用中文表达下面这句话：Come on", "completion": "加油"}
+{"prompt": "用 Python 完成：转大写，函数名使用 to_upper", "completion": "def to_upper(s):\n    return s.upper()"}
+{"prompt": "请教一下自然对数的底 e 大约是多少？", "completion": "自然对数的底 e 大约是 2.71828。"}
+{"prompt": "请续写下面这句话：故人西辞黄鹤楼，", "completion": "烟花三月下扬州。"}
+{"prompt": "下面请续写：很久很久以前，", "completion": "有一个勇敢的少年踏上了冒险之旅。"}
+{"prompt": "请续写：劝君更尽一杯酒，", "completion": "西出阳关无故人。"}
+{"prompt": "答：电阻的单位是什么？", "completion": "电阻的单位是欧姆（Ω）。"}
+{"prompt": "请问 97 乘 17 等于多少", "completion": "97 × 17 = 1649"}
+{"prompt": "请用 Python 完成：用 Python 实现向上取整", "completion": "import math\nprint(math.ceil(3.2))"}
+{"prompt": "请用一句话回答：光合作用的原料是什么？", "completion": "光合作用的原料是二氧化碳和水。"}
+{"prompt": "输入：我该怎么处理竞争\n输出：", "completion": "公平竞争，共同进步。"}
+{"prompt": "把这句中文翻成英文：你喜欢什么食物", "completion": "What food do you like"}
+{"prompt": "请问 1840 除以 20 等于多少", "completion": "1840 ÷ 20 = 92"}
+{"prompt": "请问什么是迭代器？", "completion": "迭代器是实现了 __iter__ 和 __next__ 方法、可逐个访问元素的对象。"}
+{"prompt": "续：孤帆远影碧空尽，", "completion": "唯见长江天际流。"}
+{"prompt": "用 Python 完成：用 Python 实现 max 函数", "completion": "print(max(1, 2, 3))"}
+{"prompt": "问题：盐的化学式是什么？", "completion": "食盐的化学式是 NaCl。"}
+{"prompt": "续写下面的句子：火是", "completion": "热烈的，给予温暖，也需谨慎。"}
+{"prompt": "对方说：你能给我建议吗\n如何回应", "completion": "当然，请告诉我具体情况。"}
+{"prompt": "请简要说明埃及的首都。", "completion": "埃及的首都是开罗。"}
+{"prompt": "用 Python 实现字符串连接", "completion": "def join_str(lst, sep):\n    return sep.join(lst)"}
+{"prompt": "请给出英文翻译：你喜欢什么电影", "completion": "What movie do you like"}
+{"prompt": "请将 9511 转为中文数字", "completion": "9511 的中文是 九千五百十一"}
+{"prompt": "计算下面算式：354 + 761", "completion": "354 + 761 = 1115"}
+{"prompt": "请把它译成英语：用餐愉快", "completion": "Enjoy your meal"}
+{"prompt": "请操作：把 1 到 5 的数字用顿号连接", "completion": "1、2、3、4、5"}
+{"prompt": "请问挪威的首都是什么城市？", "completion": "挪威的首都是奥斯陆。"}
+{"prompt": "请帮我说明什么是神经网络", "completion": "神经网络是一种模仿生物神经网络结构和功能的计算模型，由大量神经元相互连接组成。"}
+{"prompt": "求 22 乘以 51", "completion": "22 × 51 = 1122"}
+{"prompt": "对方说：你假期有什么安排\n如何回应", "completion": "准备回家看看家人。"}
+{"prompt": "对话——用户：我该怎么提高沟通能力", "completion": "多倾听，表达清晰。"}
+{"prompt": "数学题：28 × 74", "completion": "28 × 74 = 2072"}
+{"prompt": "把这句英文翻成中文：The benevolent love others", "completion": "仁者爱人"}
+{"prompt": "请用 Python 编写：用 Python 写一个strip_spaces函数，去除空格", "completion": "def strip_spaces(s):\n    return s.strip()"}
+{"prompt": "代码实现：用 Python 写一个add函数，求两个数的和", "completion": "def add(a, b):\n    return a + b"}
+{"prompt": "请编写一段 Python 代码：用 Python 写一个fibonacci函数，求斐波那契数", "completion": "def fibonacci(n):\n    if n < 2:\n        return n\n    return fibonacci(n - 1) + fibonacci(n - 2)"}
+{"prompt": "代码示例：用 Python 实现线程", "completion": "import threading\ndef worker():\n    print('working')\nt = threading.Thread(target=worker)\nt.start()"}
+{"prompt": "请问 60 乘 40 等于多少", "completion": "60 × 40 = 2400"}
+{"prompt": "请帮我回答什么是异步？", "completion": "异步是任务发起后不等待完成、通过回调或 await 处理结果的机制。"}
+{"prompt": "接下去：在一个遥远的国度，", "completion": "住着一位善良的公主。"}
+{"prompt": "对方说：你喜欢什么季节\n你怎么回", "completion": "我喜欢秋天，凉爽舒适。"}
+{"prompt": "请接着写：梦想开始了，", "completion": "为它努力奋斗吧。"}
+{"prompt": "请问 650 + 902 等于多少", "completion": "650 + 902 = 1552"}
+{"prompt": "求和：246 + 782", "completion": "246 + 782 = 1028"}
+{"prompt": "我想了解什么是 DevOps？", "completion": "DevOps 是开发与运维的结合，旨在缩短开发周期、提高交付质量。"}
+{"prompt": "请翻译为汉语：Read ten thousand books, travel ten thousand miles", "completion": "读万卷书行万里路"}
+{"prompt": "解方程：15x + 21 = 96", "completion": "x = 5"}
+{"prompt": "求和：678 + 213", "completion": "678 + 213 = 891"}
+{"prompt": "什么是 Linux？", "completion": "Linux 是一种开源的类 Unix 操作系统内核，广泛用于服务器和嵌入式设备。"}
+{"prompt": "把数字 1962 转成中文", "completion": "1962 的中文是 一千九百六十二"}
+{"prompt": "请翻译下面的英文：Practice makes perfect", "completion": "熟能生巧"}
+{"prompt": "请用代码完成：用 Python 写一个km_to_mile函数，公里转英里", "completion": "def km_to_mile(km):\n    return km * 0.621371"}
+{"prompt": "请帮我说明什么是梯度下降", "completion": "梯度下降是一种优化算法，通过沿梯度反方向迭代更新参数来最小化损失函数。"}
+{"prompt": "请把下面英文翻译为中文：What color do you like", "completion": "你喜欢什么颜色"}
+{"prompt": "祝你生日快乐\n怎么回复", "completion": "谢谢你的祝福。"}
+{"prompt": "加法运算：777 + 376", "completion": "777 + 376 = 1153"}
+{"prompt": "用户输入：我该怎么处理矛盾\n助手回复：", "completion": "换位思考，互相理解。"}
+{"prompt": "请接着下面写：竹喧归浣女，", "completion": "莲动下渔舟。"}
+{"prompt": "请帮我解释什么是过拟合？", "completion": "过拟合是模型在训练数据上表现很好，但在新数据上表现差的现象。"}
+{"prompt": "请计算 99 × 84", "completion": "99 × 84 = 8316"}
+{"prompt": "请说明什么是什么是生成对抗网络？", "completion": "生成对抗网络由生成器和判别器组成，通过对抗训练生成逼真数据。"}
+{"prompt": "聊天：我该怎么处理责任\n回应：", "completion": "勇于担当，尽职尽责。"}
+{"prompt": "请完成续写：白毛浮绿水，", "completion": "红掌拨清波。"}
+{"prompt": "请实现：用 Python 实现单链表", "completion": "class LinkedList:\n    def __init__(self):\n        self.head = None\n    def append(self, data):\n        if not self.head:\n            self.head = Node(data)\n            return\n        cur = self.head\n        while cur.next:\n            cur = cur.next\n        cur.next = Node(data)"}
+{"prompt": "848 和 501 相加等于", "completion": "848 + 501 = 1349"}
+{"prompt": "请续写接下来的内容：家是", "completion": "温暖的，遮风挡雨，团圆幸福。"}
+{"prompt": "从 9119 中减去 8334", "completion": "9119 - 8334 = 785"}
+{"prompt": "595 和 716 相加等于", "completion": "595 + 716 = 1311"}
+{"prompt": "请问南非的首都是什么城市？", "completion": "南非的首都是比勒陀利亚。"}
+{"prompt": "聊天气泡：我该怎么处理旧事\n回复：", "completion": "总结经验，继往开来。"}
+{"prompt": "答：牛顿第一定律又称什么？", "completion": "牛顿第一定律又称惯性定律。"}
+{"prompt": "我想知道什么是单例模式？", "completion": "单例模式确保一个类只有一个实例，并提供全局访问点。"}
+{"prompt": "解方程：12x + 39 = 135", "completion": "x = 8"}
+{"prompt": "请翻译下面的中文：你住在哪里", "completion": "Where do you live"}
+{"prompt": "麻烦说明一下什么是微服务", "completion": "微服务是一种将应用拆分为小型、独立服务的架构风格。"}
+{"prompt": "请把 1336 翻译成中文数字", "completion": "1336 的中文是 一千三百三十六"}
+{"prompt": "请完成：把十六进制 ff 转成十进制", "completion": "255"}
+{"prompt": "《资治通鉴》的作者是谁？", "completion": "《资治通鉴》的作者是司马光。"}
+{"prompt": "请用 Python 实现：用 Python 实现优先队列", "completion": "import heapq\nclass PriorityQueue:\n    def __init__(self):\n        self.h = []\n    def push(self, item):\n        heapq.heappush(self.h, item)\n    def pop(self):\n        return heapq.heappop(self.h)"}
+{"prompt": "计算：410 + 306", "completion": "410 + 306 = 716"}
+{"prompt": "解方程：11x + 29 = 40", "completion": "x = 1"}
+{"prompt": "请执行以下操作：把以下中文数字转成阿拉伯数字：八十八", "completion": "88"}
+{"prompt": "请说明突尼斯的首都是什么城市。", "completion": "突尼斯的首都是突尼斯市。"}
+{"prompt": "续写下面的句子：叶是", "completion": "翠绿的，光合作用，滋养生命。"}
+{"prompt": "用户：我该怎么管理情绪\nAI：", "completion": "觉察情绪，合理表达。"}
+{"prompt": "我想知道什么是区块链", "completion": "区块链是一种分布式数据存储、点对点传输、共识机制、加密算法的技术。"}
+{"prompt": "用 Python 完成：用 Python 写一个fahrenheit_to_celsius函数，华氏度转摄氏度", "completion": "def fahrenheit_to_celsius(f):\n    return (f - 32) * 5 / 9"}
+{"prompt": "我该怎么处理复杂\n请给出回应", "completion": "化繁为简，逐步解决。"}
+{"prompt": "请用代码解决：用 Python 实现列表扁平化", "completion": "def flatten(lst):\n    result = []\n    for x in lst:\n        if isinstance(x, list):\n            result.extend(flatten(x))\n        else:\n            result.append(x)\n    return result"}
+{"prompt": "请按指令执行：把 1 到 5 的数字用逗号连接", "completion": "1,2,3,4,5"}
+{"prompt": "接下去：阳光是", "completion": "温暖的，照亮大地，给予生命。"}
+{"prompt": "对话——用户：我该买什么", "completion": "看你有什么需求。"}
+{"prompt": "请把下面这句续写下去：傍晚是", "completion": "迷人的，夕阳西下，余晖满地。"}
+{"prompt": "请说出波黑的首都名称。", "completion": "波黑的首都是萨拉热窝。"}
+{"prompt": "请继续往下写：叶是", "completion": "翠绿的，光合作用，滋养生命。"}
+{"prompt": "请译为英文：我喜欢吃面条", "completion": "I like eating noodles"}
+{"prompt": "请用 Python 编写函数 add，要求求两个数的和", "completion": "def add(a, b):\n    return a + b"}
+{"prompt": "请将阿拉伯数字 8011 转换为中文", "completion": "8011 的中文是 八千零十一"}
+{"prompt": "续写下面的句子：从前有一座山，", "completion": "山上有一座庙，庙里有一个老和尚和一个小和尚。"}
+{"prompt": "用户：你在忙什么\n助手：", "completion": "在处理一些事情，你呢？"}
+{"prompt": "请简述什么是 HTML", "completion": "HTML（超文本标记语言）是用于创建网页的标准标记语言。"}
+{"prompt": "请把 2284 翻译成中文数字", "completion": "2284 的中文是 二千二百八十四"}
+{"prompt": "请用代码实现：用 Python 写一个mile_to_km函数，英里转公里", "completion": "def mile_to_km(mile):\n    return mile * 1.60934"}
+{"prompt": "请将1 吨换算", "completion": "1 吨 = 1000 千克"}

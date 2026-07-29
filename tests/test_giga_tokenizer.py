@@ -877,7 +877,127 @@ class TestRealGigatoken:
 
 
 # ===========================================================================
-# 13. 向后兼容性
+# 13. .json 元信息文件加载（Part5K1.8 Task 12.1）
+# ===========================================================================
+
+
+class TestGigaJsonMetaLoading:
+    """``.json`` 元信息文件加载测试（Part5K1.8）。
+
+    覆盖 Part5K1.8 修复：``GigaTokenizerWrapper`` / ``load_tokenizer`` 在
+    ``path`` 为 ``.json`` 文件路径时不再抛 ``Repo id must be in the form...``
+    错误。gigatoken / transformers 未安装时通过 fake 模块测试。
+    """
+
+    def test_json_meta_file_not_raise_repo_id_error(self, fake_giga_and_auto, tmp_path):
+        """``load_tokenizer(kind="giga", path=json_path)`` 不抛 ``Repo id must be in the form`` 错误。
+
+        Part5K1.8 修复：``.json`` 元信息文件路径走 ``wrapper.load()`` 重建，
+        而非 ``AutoTokenizer.from_pretrained(.json)``。
+        """
+        from verse_infra.verse_tokenizer import load_tokenizer
+
+        # 创建临时 .json 元信息文件（符合 GigaTokenizerWrapper.save 的格式）
+        json_path = str(tmp_path / "giga_meta.json")
+        meta = {
+            "type": "giga",
+            "native": False,
+            "model_id": "Qwen/Qwen3-32B",
+            "tokenizer_dir": None,
+            "trust_remote_code": True,
+        }
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f)
+
+        # 调用 load_tokenizer：不应抛 "Repo id must be in the form" 错误
+        # （可能因 gigatoken 未安装而降级，但不应抛该特定错误）
+        try:
+            tok = load_tokenizer(kind="giga", path=json_path)
+            assert tok is not None
+        except ImportError:
+            # gigatoken / transformers 未安装时降级到 VerseTokenizer 是允许的
+            pytest.skip("gigatoken/transformers 未安装（fake 模块未生效）")
+        except Exception as e:
+            msg = str(e)
+            assert "Repo id must be in the form" not in msg, (
+                f"不应抛 'Repo id must be in the form' 错误，实际抛出：{msg}"
+            )
+            # 其他异常允许（如 fake 模块环境下 wrapper.load 内部找不到 tokenizer_dir）
+
+    def test_json_meta_file_with_wrapper(self, fake_giga_and_auto, tmp_path):
+        """``GigaTokenizerWrapper(model_id_or_tokenizer=json_path)`` 不抛 Repo id 错误。
+
+        Part5K1.8 修复：``__init__`` 检测 ``.json`` 文件路径后用
+        ``DEFAULT_GIGA_MODEL`` 先构造空实例，再调用 ``self.load(path)`` 重建。
+        """
+        from verse_infra.verse_tokenizer import GigaTokenizerWrapper
+
+        # 创建临时 .json 元信息文件
+        json_path = str(tmp_path / "giga_meta.json")
+        meta = {
+            "type": "giga",
+            "native": False,
+            "model_id": "Qwen/Qwen3-32B",
+            "tokenizer_dir": None,
+            "trust_remote_code": True,
+        }
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f)
+
+        # 直接构造 wrapper：不应抛 "Repo id must be in the form" 错误
+        try:
+            wrapper = GigaTokenizerWrapper(model_id_or_tokenizer=json_path)
+            assert wrapper is not None
+        except ImportError:
+            pytest.skip("gigatoken/transformers 未安装（fake 模块未生效）")
+        except Exception as e:
+            msg = str(e)
+            assert "Repo id must be in the form" not in msg, (
+                f"不应抛 'Repo id must be in the form' 错误，实际抛出：{msg}"
+            )
+
+    def test_json_meta_file_load_via_load_method(self, fake_giga_and_auto, tmp_path):
+        """``wrapper.load(json_path)`` 正常重建（端到端）。
+
+        先用 fake HF tokenizer 构造 wrapper 并 save 为 .json，
+        再用 ``GigaTokenizerWrapper(json_path)`` 从 .json 加载。
+        """
+        from verse_infra.verse_tokenizer import GigaTokenizerWrapper
+
+        # 1. 构造并保存为 .json
+        hf_tok = FakeHfTokenizer()
+        wrapper = GigaTokenizerWrapper(hf_tok)
+        json_path = str(tmp_path / "saved_meta.json")
+        wrapper.save(json_path)
+        assert os.path.isfile(json_path)
+
+        # 2. 用 .json 元信息文件路径直接构造（不应抛 Repo id 错误）
+        wrapper2 = GigaTokenizerWrapper(model_id_or_tokenizer=json_path)
+        # 加载后应能正常 encode
+        ids = wrapper2.encode("hello")
+        assert isinstance(ids, list)
+        assert len(ids) > 0
+
+    def test_load_tokenizer_with_nonexistent_json(self, fake_giga_and_auto, tmp_path):
+        """``.json`` 路径文件不存在时回退到原构造逻辑（不误判为元信息文件）。
+
+        Part5K1.8 SubTask 1.1: ``__init__`` 判断 ``.json`` 路径时同时校验
+        ``os.path.isfile``，文件不存在则走原 repo_id 处理路径。
+        """
+        from verse_infra.verse_tokenizer import GigaTokenizerWrapper
+
+        # 不存在的 .json 路径：应走原字符串 model_id 路径（AutoTokenizer.from_pretrained）
+        # 这里 fake_auto_tokenizer 已注入，不会真实下载
+        wrapper = GigaTokenizerWrapper(
+            model_id_or_tokenizer="Qwen/nonexistent.json"
+        )
+        # fake AutoTokenizer 忽略 model_id 直接返回 FakeHfTokenizer
+        assert wrapper.hf_tokenizer is not None
+        assert wrapper.native is False
+
+
+# ===========================================================================
+# 14. 向后兼容性
 # ===========================================================================
 
 

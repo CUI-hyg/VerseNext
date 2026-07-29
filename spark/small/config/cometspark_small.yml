@@ -107,8 +107,8 @@ tokenizer:
   vocab_size: 259
 
 data:
-  train_path: data/train.jsonl
-  val_path: data/val.jsonl
+  train_path: ../data/train.jsonl
+  val_path: ../data/val.jsonl
 
 checkpoint:
   save_dir: mf_small

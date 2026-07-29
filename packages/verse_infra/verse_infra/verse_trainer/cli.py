@@ -367,7 +367,7 @@ def _run_rl_posttrain(args, config_path: str, base_dir: str) -> int:
     ckpt_cfg = full_cfg.get("checkpoint", {})
     save_dir = _resolve_path(base_dir, str(ckpt_cfg.get("save_dir", "checkpoints")))
 
-    tok = _load_tokenizer(tok_cfg, base_dir, save_dir)
+    tok = _load_tokenizer(tok_cfg, base_dir, save_dir, model_cfg=model_cfg)
     vocab_size = len(tok)
     model, _ = _build_model(model_cfg, vocab_size)
 

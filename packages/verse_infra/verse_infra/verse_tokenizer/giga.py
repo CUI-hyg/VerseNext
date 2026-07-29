@@ -27,6 +27,13 @@ tokenizer（BPE / Byte / Char / Verse）依然可用。
    - ``gt.Tokenizer(model_id_or_tokenizer)`` 直接构造（gigatoken 原生 API）。
    - 适用于纯 gigatoken 工作流（最快，但不保留 HF 接口）。
 
+元信息文件加载
+--------------
+当 ``model_id_or_tokenizer`` 为 ``.json`` 文件路径时，wrapper 会先用
+:attr:`DEFAULT_GIGA_MODEL` 构造空实例，再调用 :meth:`load` 读取元信息
+重建 tokenizer。这避免了 HuggingFace ``from_pretrained`` 不接受
+``.json`` 文件路径的问题。
+
 向后兼容
 --------
 - ``bos_id`` / ``eos_id`` / ``pad_id`` / ``unk_id`` 属性对齐 :class:`VerseTokenizer`；
@@ -137,6 +144,19 @@ class GigaTokenizerWrapper(BaseTokenizer):
         if model_id_or_tokenizer is None:
             model_id_or_tokenizer = self.DEFAULT_GIGA_MODEL
 
+        # 元信息文件加载：.json 文件路径走 load() 重建 tokenizer
+        # （HuggingFace AutoTokenizer.from_pretrained 不接受 .json 文件路径）
+        json_meta_path: Optional[str] = None
+        if (
+            isinstance(model_id_or_tokenizer, str)
+            and model_id_or_tokenizer.endswith(".json")
+            and os.path.isfile(model_id_or_tokenizer)
+        ):
+            # 先用 DEFAULT_GIGA_MODEL 调用原构造逻辑（创建一个空实例），
+            # 再调用 load() 读取元信息重建 tokenizer
+            json_meta_path = model_id_or_tokenizer
+            model_id_or_tokenizer = self.DEFAULT_GIGA_MODEL
+
         if self._native:
             # 原生模式：gt.Tokenizer(model_id) 直接构造
             # gigatoken 原生 API 接受 HF model name / 本地路径
@@ -168,6 +188,14 @@ class GigaTokenizerWrapper(BaseTokenizer):
                 hf_tok = model_id_or_tokenizer
                 self._hf_tokenizer = hf_tok
                 self._tokenizer = gt.Tokenizer(hf_tok).as_hf()
+
+        if json_meta_path is not None:
+            # .json 元信息文件：调用 load() 读取元信息重建 tokenizer
+            # （load 内部会重建所有缓存，跳过下面的 _resolve_* 初始化）
+            self.load(json_meta_path)
+            # GigaTokenizerWrapper 不在 encode 时自动加 bos/eos（由 chat template 处理）
+            self.auto_add_special_tokens = False
+            return
 
         # --------------------------------------------------------------
         # 缓存 vocab 信息（构造时一次解析）

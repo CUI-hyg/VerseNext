@@ -140,7 +140,7 @@ def evaluate(
     save_dir = _resolve_path(base_dir, str(ckpt_cfg.get("save_dir", "checkpoints")))
 
     # 1. 加载 tokenizer
-    tok = _load_tokenizer(tok_cfg, base_dir, save_dir)
+    tok = _load_tokenizer(tok_cfg, base_dir, save_dir, model_cfg=model_cfg)
     vocab_size = len(tok)
 
     # 2. 加载模型

@@ -1701,7 +1701,8 @@ def load_tokenizer(kind: str = "byte", path: Optional[str] = None):
             - ``"giga"``：优先 :class:`GigaTokenizerWrapper`（gigatoken Rust 实现，
               ~1000× 快于 HF tokenizers），gigatoken 不可用时**自动降级**到
               :class:`VerseTokenizer`（打印警告）。
-              Part5K1.3 Task 7.8 新增。
+              Part5K1.3 Task 7.8 新增。Part5K1.8：``path`` 可为
+              ``.json`` 元信息文件（走 ``wrapper.load``）、目录路径、或 HF model_id。
             - ``"verse"``：:class:`VerseTokenizer`（lazy import transformers）。
               Part5K1.3 Task 7.8 新增。
             - ``"hf"``：尝试用 ``tokenizers`` 包加载 HF ``tokenizer.json``，
@@ -1725,6 +1726,18 @@ def load_tokenizer(kind: str = "byte", path: Optional[str] = None):
     if kind == "giga":
         try:
             from .giga import GigaTokenizerWrapper
+            # Part5K1.8: 按 path 类型分发
+            if (
+                path is not None
+                and isinstance(path, str)
+                and path.endswith(".json")
+                and os.path.isfile(path)
+            ):
+                # .json 元信息文件：构造空实例后调用 load
+                wrapper = GigaTokenizerWrapper()  # 用 DEFAULT_GIGA_MODEL 构造
+                wrapper.load(path)
+                return wrapper
+            # 目录路径 / repo_id 字符串 / None：走原构造
             if path is not None:
                 return GigaTokenizerWrapper(model_id_or_tokenizer=path)
             return GigaTokenizerWrapper()

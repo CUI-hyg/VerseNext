@@ -739,11 +739,81 @@ def _auto_build_tokenizer(kind: str, save_dir: str):
     return _vload(kind="byte")
 
 
-def _load_tokenizer(tok_cfg: dict, base_dir: str, save_dir: str):
+def _prompt_tokenizer_action(tok_cfg, model_cfg, save_dir, base_dir):
+    """交互式 tokenizer 初始化（Part5K1.8）。
+
+    当 tokenizer.json 不存在且 kind != "byte" 时，提示用户选择：
+    - y: 从 tokenizer_repo / from_hf 复制 tokenizer 文件
+    - n: 自行构建（调用 _auto_build_tokenizer）
+
+    非 TTY 环境默认走 n 路径，不阻塞。
+    """
+    import sys
+    tok_kind = str(tok_cfg.get("kind", "byte"))
+
+    # 读取 tokenizer_repo（优先 tok_cfg，兜底 model_cfg）
+    tokenizer_repo = tok_cfg.get("tokenizer_repo") or (model_cfg or {}).get("tokenizer_repo")
+    from_hf = tok_cfg.get("from_hf")
+    repo_source = tokenizer_repo or from_hf
+
+    # 非 TTY 环境：默认自行构建
+    if not sys.stdin.isatty():
+        print(f"[train] 非交互环境（非 TTY），tokenizer 文件不存在，默认自行构建 {tok_kind}", flush=True)
+        return _auto_build_tokenizer(tok_kind, save_dir)
+
+    # TTY 环境：交互式选择
+    print(f"\n[train] 检测到 tokenizer.json 不存在（kind={tok_kind}）", flush=True)
+    if repo_source:
+        print(f"  可用源: {repo_source}", flush=True)
+    print("  选项：", flush=True)
+    print("    y - 复制 tokenizer 文件（从 tokenizer_repo/from_hf 下载）", flush=True)
+    print("    n - 自行构建（降级为 byte tokenizer）", flush=True)
+
+    choice = "n"
+    for attempt in range(3):
+        try:
+            choice = input("请输入 y/n: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            choice = "n"
+            break
+
+        if choice in ("y", "n"):
+            break
+        print(f"  无效输入 '{choice}'，请输入 y 或 n", flush=True)
+    else:
+        print("  3 次无效输入，默认走自行构建", flush=True)
+        choice = "n"
+
+    if choice == "y" and repo_source:
+        # 复制路径：从 repo_source 加载并 save
+        try:
+            from verse_infra.verse_tokenizer import load_tokenizer as _vload
+            print(f"[train] 从 {repo_source} 加载 tokenizer...", flush=True)
+            tok = _vload(kind=tok_kind, path=repo_source)
+            # save 到 save_dir/tokenizer.json
+            tok_path = os.path.join(save_dir, "tokenizer.json")
+            if hasattr(tok, "save"):
+                tok.save(tok_path)
+                print(f"[train] tokenizer 已保存到 {tok_path}", flush=True)
+            return tok
+        except Exception as e:
+            print(f"[train] 复制 tokenizer 失败: {e}，降级为自行构建", flush=True)
+            return _auto_build_tokenizer(tok_kind, save_dir)
+    else:
+        # 自行构建
+        if choice == "y" and not repo_source:
+            print("[train] 无 tokenizer_repo / from_hf 配置，走自行构建", flush=True)
+        return _auto_build_tokenizer(tok_kind, save_dir)
+
+
+def _load_tokenizer(tok_cfg: dict, base_dir: str, save_dir: str, model_cfg: Optional[dict] = None):
     """加载 tokenizer（委托 verse_infra.verse_tokenizer）。
 
     Part4K2.6 Task 3: 当 tokenizer 文件不存在且 kind 非 byte 时，自动构建。
     Part5K1.7：所有分支显式返回 tokenizer 或抛 RuntimeError，不得返回 None。
+    Part5K1.8：当 tokenizer 文件不存在且 kind 非 byte 时，调用
+    ``_prompt_tokenizer_action`` 走交互式选择（非 TTY 默认自行构建，不阻塞）。
+    ``model_cfg`` 参数向后兼容（默认 None）。
     """
     from verse_infra.verse_tokenizer import load_tokenizer as _vload
     tok_kind = str(tok_cfg.get("kind", "byte"))
@@ -773,12 +843,13 @@ def _load_tokenizer(tok_cfg: dict, base_dir: str, save_dir: str):
     if tok_kind == "byte":
         return _vload(kind="byte")
 
-    # 4. 其他 kind：自动构建 tokenizer
-    print(f"[train] tokenizer 文件不存在，自动构建 {tok_kind}...", flush=True)
+    # 4. 其他 kind：交互式选择（Part5K1.8）
+    #    - TTY：提示用户 y（从 tokenizer_repo/from_hf 复制）/ n（自行构建）
+    #    - 非 TTY：默认自行构建（不阻塞）
     try:
-        tok = _auto_build_tokenizer(tok_kind, save_dir)
+        tok = _prompt_tokenizer_action(tok_cfg, model_cfg, save_dir, base_dir)
         if tok is None:
-            raise RuntimeError(f"自动构建 tokenizer 返回 None: kind={tok_kind}")
+            raise RuntimeError(f"交互式构建 tokenizer 返回 None: kind={tok_kind}")
         print(f"[train] tokenizer 构建完成 vocab_size={len(tok)}", flush=True)
         return tok
     except RuntimeError:
@@ -808,28 +879,41 @@ _DEFAULT_EVAL_PROMPTS = [
 # Part4K2.6 Task 3: 资源自动初始化（测试数据自动生成 + 测试配置判定）
 # ---------------------------------------------------------------------------
 
-# 测试数据模板（中英文混合，用于自动生成测试训练数据）
+# 测试数据模板（中英文混合，prompt-completion 对，用于自动生成测试训练数据）
+# Part5K1.8: 默认格式从 {"text":"..."} 改为 {"prompt":"...","completion":"..."}，
+# 同时 CachedDataset / TextDataset 仍兼容旧 {"text":"..."} 格式（向后兼容）。
 _TEST_TEXTS = [
-    "你好世界，这是一个测试。",
-    "Hello World, this is a test.",
-    "1+1=2 2+2=4 3+3=6",
-    "中国的首都是北京。",
-    "机器学习是人工智能的一个重要分支。",
-    "The quick brown fox jumps over the lazy dog.",
-    "深度学习使用神经网络来学习数据表示。",
-    "Python is a popular programming language.",
-    "自然语言处理研究计算机与人类语言的交互。",
-    "Artificial intelligence is the simulation of human intelligence.",
-    "大语言模型通过预训练和微调获得语言能力。",
-    "Machine learning algorithms improve through experience.",
-    "今天的天气很好，适合出门散步。",
-    "Knowledge is power, and learning is its key.",
-    "代码是人与计算机沟通的桥梁。",
-    "Practice makes perfect, persistence leads to success.",
-    "数学是科学的基础，逻辑是数学的基础。",
-    "Time flies when you are having fun.",
-    "音乐是心灵的语言，艺术是情感的表达。",
-    "A journey of a thousand miles begins with a single step.",
+    {"prompt": "你好", "completion": "你好世界，这是一个测试。"},
+    {"prompt": "Hello", "completion": "Hello World, this is a test."},
+    {"prompt": "1+1=", "completion": "1+1=2 2+2=4 3+3=6"},
+    {"prompt": "中国的首都是", "completion": "中国的首都是北京。"},
+    {"prompt": "什么是机器学习？", "completion": "机器学习是人工智能的一个重要分支。"},
+    {"prompt": "Type a pangram:", "completion": "The quick brown fox jumps over the lazy dog."},
+    {"prompt": "什么是深度学习？", "completion": "深度学习使用神经网络来学习数据表示。"},
+    {"prompt": "Which language is popular?", "completion": "Python is a popular programming language."},
+    {"prompt": "什么是自然语言处理？", "completion": "自然语言处理研究计算机与人类语言的交互。"},
+    {"prompt": "What is AI?", "completion": "Artificial intelligence is the simulation of human intelligence."},
+    {"prompt": "大语言模型如何获得语言能力？", "completion": "大语言模型通过预训练和微调获得语言能力。"},
+    {"prompt": "How do ML algorithms improve?", "completion": "Machine learning algorithms improve through experience."},
+    {"prompt": "今天天气怎么样？", "completion": "今天的天气很好，适合出门散步。"},
+    {"prompt": "What is the key to learning?", "completion": "Knowledge is power, and learning is its key."},
+    {"prompt": "代码的作用是什么？", "completion": "代码是人与计算机沟通的桥梁。"},
+    {"prompt": "How to succeed?", "completion": "Practice makes perfect, persistence leads to success."},
+    {"prompt": "数学和逻辑的关系？", "completion": "数学是科学的基础，逻辑是数学的基础。"},
+    {"prompt": "Why does time fly?", "completion": "Time flies when you are having fun."},
+    {"prompt": "音乐和艺术的意义？", "completion": "音乐是心灵的语言，艺术是情感的表达。"},
+    {"prompt": "How to start a long journey?", "completion": "A journey of a thousand miles begins with a single step."},
+    # 扩充至 30 条（Part5K1.8）
+    {"prompt": "2+3=", "completion": "2+3=5"},
+    {"prompt": "Translate to Chinese: good morning", "completion": "早上好"},
+    {"prompt": "美国的首都是哪里？", "completion": "美国的首都是华盛顿。"},
+    {"prompt": "What is the largest planet?", "completion": "Jupiter is the largest planet in the solar system."},
+    {"prompt": "水的化学式是什么？", "completion": "水的化学式是 H2O。"},
+    {"prompt": "What is recursion?", "completion": "Recursion is a function that calls itself to solve subproblems."},
+    {"prompt": "请解释什么是梯度下降。", "completion": "梯度下降是一种通过沿梯度反方向更新参数来最小化损失函数的优化算法。"},
+    {"prompt": "What is an API?", "completion": "An API is a set of rules that allows programs to communicate with each other."},
+    {"prompt": "光合作用是什么？", "completion": "光合作用是植物利用阳光将二氧化碳和水转化为有机物和氧气的过程。"},
+    {"prompt": "What does CPU stand for?", "completion": "CPU stands for Central Processing Unit."},
 ]
 
 
@@ -858,7 +942,8 @@ def _auto_generate_test_data(train_path: str, val_path: str):
     """自动生成测试数据（仅用于测试模型，Part4K2.6 Task 3）。
 
     当训练数据文件不存在时，自动生成简单的中英文文本数据。
-    生成的数据保存为 JSONL 格式，每行一个 ``{"text": "..."}`` 对象。
+    生成的数据保存为 JSONL 格式，每行一个 ``{"prompt": "...", "completion": "..."}``
+    对象（Part5K1.8：默认格式从 ``{"text": "..."}`` 改为 prompt-completion）。
     """
     # 确保目录存在
     train_dir = os.path.dirname(train_path)
@@ -868,14 +953,17 @@ def _auto_generate_test_data(train_path: str, val_path: str):
     if val_dir and val_dir != train_dir:
         os.makedirs(val_dir, exist_ok=True)
 
-    # 生成训练数据（20 条，重复 5 次 = 100 条）
+    # 生成训练数据（30 条 × 重复 5 次 = 150 条）
     train_data = []
     for _ in range(5):
-        for text in _TEST_TEXTS:
-            train_data.append({"text": text})
+        for item in _TEST_TEXTS:
+            train_data.append({"prompt": item["prompt"], "completion": item["completion"]})
 
-    # 生成验证数据（5 条）
-    val_data = [{"text": text} for text in _TEST_TEXTS[:5]]
+    # 生成验证数据（5 条，取前 5 条不重复）
+    val_data = [
+        {"prompt": item["prompt"], "completion": item["completion"]}
+        for item in _TEST_TEXTS[:5]
+    ]
 
     with open(train_path, "w", encoding="utf-8") as f:
         for item in train_data:
@@ -999,7 +1087,7 @@ def train(
     save_dir = _resolve_path(base_dir, raw_save_dir)
     os.makedirs(save_dir, exist_ok=True)
     print(f"[train] 加载 tokenizer", flush=True)
-    tok = _load_tokenizer(tok_cfg, base_dir, save_dir)
+    tok = _load_tokenizer(tok_cfg, base_dir, save_dir, model_cfg=model_cfg)
     if tok is None:
         raise RuntimeError("_load_tokenizer 返回 None，这是内部错误")
     vocab_size = len(tok)
