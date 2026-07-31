@@ -146,23 +146,37 @@ class GigaTokenizerWrapper(BaseTokenizer):
         else:
             # 兼容模式：gt.Tokenizer(hf_tok).as_hf()
             if isinstance(model_id_or_tokenizer, str):
-                # 字符串：先用 HF AutoTokenizer 加载
+                # 字符串可能是：
+                # 1) 本地 .json 元信息文件（由 save() 产生）→ 复用 _load_from_path
+                # 2) 本地 tokenizer 目录路径 → HF AutoTokenizer 加载
+                # 3) HF model_id（如 "Qwen/Qwen3-32B"）→ HF AutoTokenizer 加载
                 AutoTokenizer = _import_auto_tokenizer()
-                # 兼容本地目录路径
-                if os.path.isdir(model_id_or_tokenizer):
+                if (
+                    model_id_or_tokenizer.endswith(".json")
+                    and os.path.isfile(model_id_or_tokenizer)
+                ):
+                    # Part5K1.3 bugfix：.json 元信息文件，复用 load() 逻辑
+                    # （之前会把文件路径当作 HF repo id 传给 AutoTokenizer.from_pretrained
+                    #   触发 HFValidationError）
+                    self._load_from_path(model_id_or_tokenizer, gt, AutoTokenizer)
+                elif os.path.isdir(model_id_or_tokenizer):
+                    # 本地目录：用 HF AutoTokenizer 加载
                     hf_tok = AutoTokenizer.from_pretrained(
                         model_id_or_tokenizer,
                         trust_remote_code=trust_remote_code,
                     )
                     self._tokenizer_dir = model_id_or_tokenizer
+                    self._hf_tokenizer = hf_tok
+                    self._tokenizer = gt.Tokenizer(hf_tok).as_hf()
                 else:
+                    # HF model_id
                     hf_tok = AutoTokenizer.from_pretrained(
                         model_id_or_tokenizer,
                         trust_remote_code=trust_remote_code,
                     )
                     self._model_id = model_id_or_tokenizer
-                self._hf_tokenizer = hf_tok
-                self._tokenizer = gt.Tokenizer(hf_tok).as_hf()
+                    self._hf_tokenizer = hf_tok
+                    self._tokenizer = gt.Tokenizer(hf_tok).as_hf()
             else:
                 # 假定是 HF tokenizer 实例
                 hf_tok = model_id_or_tokenizer
@@ -182,6 +196,71 @@ class GigaTokenizerWrapper(BaseTokenizer):
 
         # GigaTokenizerWrapper 不在 encode 时自动加 bos/eos（由 chat template 处理）
         self.auto_add_special_tokens = False
+
+    # ------------------------------------------------------------------
+    # 内部辅助：从本地路径加载（__init__ 与 load() 共用）
+    # ------------------------------------------------------------------
+
+    def _load_from_path(self, path: str, gt, AutoTokenizer) -> None:
+        """从本地路径加载 tokenizer 到 self（不重建缓存）。
+
+        支持两种路径：
+        - ``.json`` 元信息文件（由 :meth:`save` 产生，含 ``type=giga`` 字段）：
+          读取 ``native`` / ``model_id`` / ``tokenizer_dir`` / ``trust_remote_code``
+          后按对应模式构造。
+        - 目录路径：当作 HF tokenizer 目录加载（兼容模式）。
+
+        不重建缓存（``bos_id`` / ``eos_id`` / ``vocab_size`` 等），
+        缓存重建由调用方（``__init__`` 末尾或 :meth:`load` 末尾）统一负责。
+
+        Args:
+            path: ``.json`` 元信息文件路径或 tokenizer 目录路径
+            gt: 已导入的 gigatoken 模块
+            AutoTokenizer: 已导入的 transformers.AutoTokenizer
+        """
+        if path.endswith(".json") and os.path.isfile(path):
+            # .json 元信息文件
+            with open(path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            self._native = bool(meta.get("native", False))
+            self._model_id = meta.get("model_id")
+            self._trust_remote_code = meta.get("trust_remote_code", True)
+            target_dir = meta.get("tokenizer_dir")
+            if self._native:
+                if not self._model_id:
+                    raise FileNotFoundError(
+                        f"元信息 {path} 无 model_id（原生模式必需）"
+                    )
+                self._tokenizer = gt.Tokenizer(self._model_id)
+            else:
+                if target_dir and os.path.isdir(target_dir):
+                    hf_tok = AutoTokenizer.from_pretrained(
+                        target_dir, trust_remote_code=self._trust_remote_code
+                    )
+                    self._tokenizer_dir = target_dir
+                elif self._model_id:
+                    hf_tok = AutoTokenizer.from_pretrained(
+                        self._model_id, trust_remote_code=self._trust_remote_code
+                    )
+                else:
+                    raise FileNotFoundError(
+                        f"元信息 {path} 既无有效 tokenizer_dir 也无 model_id"
+                    )
+                self._hf_tokenizer = hf_tok
+                self._tokenizer = gt.Tokenizer(hf_tok).as_hf()
+        elif os.path.isdir(path):
+            # 目录路径：用 HF AutoTokenizer 加载
+            hf_tok = AutoTokenizer.from_pretrained(
+                path, trust_remote_code=self._trust_remote_code
+            )
+            self._hf_tokenizer = hf_tok
+            self._tokenizer = gt.Tokenizer(hf_tok).as_hf()
+            self._tokenizer_dir = path
+            self._native = False
+        else:
+            raise FileNotFoundError(
+                f"路径 {path} 既不是 .json 元信息文件也不是目录"
+            )
 
     # ------------------------------------------------------------------
     # 内部辅助：解析特殊 token id（构造时一次，缓存）
@@ -330,45 +409,9 @@ class GigaTokenizerWrapper(BaseTokenizer):
             path: 目录路径或 ``.json`` 元信息文件路径
         """
         gt = _import_gigatoken()
-        if path.endswith(".json") and os.path.isfile(path):
-            with open(path, "r", encoding="utf-8") as f:
-                meta = json.load(f)
-            native = bool(meta.get("native", False))
-            self._native = native
-            self._model_id = meta.get("model_id")
-            self._trust_remote_code = meta.get("trust_remote_code", True)
-            target_dir = meta.get("tokenizer_dir")
-            if native:
-                # 原生模式重新构造
-                if self._model_id:
-                    self._tokenizer = gt.Tokenizer(self._model_id)
-            else:
-                AutoTokenizer = _import_auto_tokenizer()
-                if target_dir and os.path.isdir(target_dir):
-                    hf_tok = AutoTokenizer.from_pretrained(
-                        target_dir, trust_remote_code=self._trust_remote_code
-                    )
-                    self._tokenizer_dir = target_dir
-                elif self._model_id:
-                    hf_tok = AutoTokenizer.from_pretrained(
-                        self._model_id, trust_remote_code=self._trust_remote_code
-                    )
-                else:
-                    raise FileNotFoundError(
-                        f"元信息 {path} 既无有效 tokenizer_dir 也无 model_id"
-                    )
-                self._hf_tokenizer = hf_tok
-                self._tokenizer = gt.Tokenizer(hf_tok).as_hf()
-        else:
-            # 目录路径：当作 HF tokenizer 目录加载（兼容模式）
-            AutoTokenizer = _import_auto_tokenizer()
-            hf_tok = AutoTokenizer.from_pretrained(
-                path, trust_remote_code=self._trust_remote_code
-            )
-            self._hf_tokenizer = hf_tok
-            self._tokenizer = gt.Tokenizer(hf_tok).as_hf()
-            self._tokenizer_dir = path
-            self._native = False
+        AutoTokenizer = _import_auto_tokenizer()
+        # 复用 __init__ 也使用的 _load_from_path 逻辑，确保两条路径行为一致
+        self._load_from_path(path, gt, AutoTokenizer)
 
         # 重建所有缓存
         self._bos_id = self._resolve_bos_id()

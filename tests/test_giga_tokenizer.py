@@ -670,6 +670,157 @@ class TestSaveLoad:
 
 
 # ===========================================================================
+# 8b. __init__ 从 .json 元信息文件直接构造（Part5K1.3 bugfix 回归测试）
+# ===========================================================================
+
+
+class TestInitFromJsonFile:
+    """``GigaTokenizerWrapper(json_path)`` 直接构造测试。
+
+    Part5K1.3 bugfix 回归覆盖：之前 ``__init__`` 字符串路径仅识别"目录 vs
+    model_id"两种情况，把 ``.json`` 文件路径误当作 HF repo id 传给
+    ``AutoTokenizer.from_pretrained``，触发 ``HFValidationError``::
+
+        RuntimeError: 加载 tokenizer 失败: kind=giga,
+        path=.../mf_small/tokenizer.json, error=Repo id must be in the form
+        'repo_name' or 'namespace/repo_name': '.../mf_small/tokenizer.json'
+
+    修复后 ``__init__`` 识别 ``.json`` 文件路径，复用 :meth:`_load_from_path`
+    读取元信息（与 ``load()`` 行为一致）。
+    """
+
+    def test_init_with_json_file_path(self, fake_giga_and_auto, tmp_path):
+        """``GigaTokenizerWrapper(json_path)`` 直接构造（错误报告场景）。"""
+        from verse_infra.verse_tokenizer import GigaTokenizerWrapper
+        # 1. 先用一个 wrapper save 出 .json 元信息文件
+        hf_tok = FakeHfTokenizer()
+        wrapper = GigaTokenizerWrapper(hf_tok)
+        json_path = str(tmp_path / "giga_tok.json")
+        wrapper.save(json_path)
+        assert os.path.isfile(json_path)
+
+        # 2. 直接用 .json 文件路径构造（之前会触发 HFValidationError）
+        wrapper2 = GigaTokenizerWrapper(json_path)
+        # 应正确识别为兼容模式（meta.native=False）
+        assert wrapper2.native is False
+        # 应持有 HF tokenizer
+        assert wrapper2.hf_tokenizer is not None
+        # encode/decode 应正常工作
+        ids = wrapper2.encode("hello")
+        assert isinstance(ids, list)
+        assert len(ids) > 0
+        decoded = wrapper2.decode(ids)
+        assert decoded == "hello"
+
+    def test_init_with_json_file_path_matches_load(
+        self, fake_giga_and_auto, tmp_path
+    ):
+        """``__init__(json_path)`` 与 ``load(json_path)`` 行为一致。"""
+        from verse_infra.verse_tokenizer import GigaTokenizerWrapper
+        hf_tok = FakeHfTokenizer()
+        wrapper = GigaTokenizerWrapper(hf_tok)
+        json_path = str(tmp_path / "giga_tok.json")
+        wrapper.save(json_path)
+
+        # 路径 A：__init__ 直接接收 .json 文件路径
+        via_init = GigaTokenizerWrapper(json_path)
+        # 路径 B：先空构造再 load 同一个 .json 文件
+        via_load = GigaTokenizerWrapper(hf_tok)
+        via_load.load(json_path)
+
+        # 两条路径的内部状态应一致
+        assert via_init.native == via_load.native
+        assert via_init._model_id == via_load._model_id
+        assert via_init._tokenizer_dir == via_load._tokenizer_dir
+        # encode 输出应一致
+        assert via_init.encode("abc") == via_load.encode("abc")
+
+    def test_init_with_json_native_mode(self, fake_giga_and_auto, tmp_path):
+        """``__init__(native_json_path)`` 原生模式元信息文件。"""
+        from verse_infra.verse_tokenizer import GigaTokenizerWrapper
+        # 1. save 一个原生模式元信息文件
+        wrapper = GigaTokenizerWrapper("Qwen/Qwen3-32B", native=True)
+        json_path = str(tmp_path / "giga_native.json")
+        wrapper.save(json_path)
+
+        # 2. 直接用 .json 文件路径构造（应识别为原生模式）
+        wrapper2 = GigaTokenizerWrapper(json_path)
+        assert wrapper2.native is True
+        assert wrapper2._model_id == "Qwen/Qwen3-32B"
+        # 原生模式不持有 HF tokenizer
+        assert wrapper2.hf_tokenizer is None
+        # encode/decode 应正常
+        ids = wrapper2.encode("hello")
+        assert isinstance(ids, list)
+        assert len(ids) > 0
+
+    def test_init_with_json_meta_only_model_id(self, fake_giga_and_auto, tmp_path):
+        """``.json`` 元信息仅含 ``model_id``（无 ``tokenizer_dir``）时回退到 model_id。"""
+        from verse_infra.verse_tokenizer import GigaTokenizerWrapper
+        # 手写一个仅含 model_id 的元信息文件（模拟 save 到非目录路径的场景）
+        meta = {
+            "type": "giga",
+            "native": False,
+            "model_id": "Qwen/Qwen3-32B",
+            "tokenizer_dir": None,
+            "trust_remote_code": True,
+        }
+        json_path = str(tmp_path / "meta_only.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f)
+
+        # 直接用 .json 文件路径构造（应回退到 AutoTokenizer.from_pretrained(model_id)）
+        wrapper = GigaTokenizerWrapper(json_path)
+        assert wrapper.native is False
+        assert wrapper._model_id == "Qwen/Qwen3-32B"
+        # 应通过 model_id 加载 HF tokenizer
+        assert wrapper.hf_tokenizer is not None
+
+    def test_init_with_json_no_model_no_dir_raises(self, fake_giga_and_auto, tmp_path):
+        """``.json`` 元信息既无 ``tokenizer_dir`` 也无 ``model_id`` 时抛 FileNotFoundError。"""
+        from verse_infra.verse_tokenizer import GigaTokenizerWrapper
+        meta = {
+            "type": "giga",
+            "native": False,
+            "model_id": None,
+            "tokenizer_dir": None,
+        }
+        json_path = str(tmp_path / "empty_meta.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f)
+
+        with pytest.raises(FileNotFoundError) as exc_info:
+            GigaTokenizerWrapper(json_path)
+        assert "既无有效 tokenizer_dir 也无 model_id" in str(exc_info.value)
+
+    def test_load_tokenizer_kind_giga_with_json_path(
+        self, fake_giga_and_auto, tmp_path
+    ):
+        """端到端：``load_tokenizer(kind='giga', path=json_path)`` 完整链路。
+
+        复现错误报告中的完整调用链：
+        ``_load_tokenizer`` → ``load_tokenizer(kind='giga', path=tok_path)``
+        → ``GigaTokenizerWrapper(model_id_or_tokenizer=path)``
+        """
+        from verse_infra.verse_tokenizer import GigaTokenizerWrapper, load_tokenizer
+        # 1. save 一个 .json 元信息文件
+        hf_tok = FakeHfTokenizer()
+        wrapper = GigaTokenizerWrapper(hf_tok)
+        json_path = str(tmp_path / "tokenizer.json")
+        wrapper.save(json_path)
+
+        # 2. 端到端：load_tokenizer(kind='giga', path=json_path) 应成功
+        #    之前会触发 HFValidationError: Repo id must be in the form ...
+        tok = load_tokenizer(kind="giga", path=json_path)
+        assert isinstance(tok, GigaTokenizerWrapper)
+        # encode/decode 应正常工作
+        ids = tok.encode("hello")
+        assert isinstance(ids, list)
+        assert len(ids) > 0
+        assert tok.decode(ids) == "hello"
+
+
+# ===========================================================================
 # 9. 自动降级：load_tokenizer(kind="giga") 降级到 VerseTokenizer
 # ===========================================================================
 
