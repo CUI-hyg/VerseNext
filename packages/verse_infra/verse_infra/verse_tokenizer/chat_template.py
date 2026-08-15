@@ -26,11 +26,21 @@ jinja2 不可用时降级为现有的 f-string 拼接方式。新增工具调用
 - ``CHATML_TEMPLATE_WITH_TOOLS``：含 ``tools`` 声明的 ChatML jinja2 模板
 - ``CHATML_TEMPLATE_WITH_TOOL_CALLS``：含 ``tools`` 声明 + assistant 工具调用
   （``<tool_call>...</tool_call>`` Qwen3 官方格式）的 jinja2 模板
+
+外部 chat_template.jinja 文件（Part6 新增）
+------------------------------------------
+- 提供 :func:`set_chat_template_path` 配置外部模板文件路径（默认
+  ``spark/config/chat_template.jinja``），渲染管线**优先读取该文件**：
+  文件存在时用文件内容渲染，缺失/不可读时自动回退内置模板（不报错）。
+- 适用于 :func:`render_chat_qwen` 与 :func:`render_chat_qwen_with_tools`
+  （jinja2 可用时生效）；模板变量与内置模板一致
+  （``messages`` / ``tools`` / ``add_generation_prompt``）。
 """
 
 from __future__ import annotations
 
 import json as _json
+import os
 from typing import Any, Optional
 
 
@@ -234,6 +244,54 @@ def _jinja2_render(template_str: str, **kwargs: Any) -> str:
     return _Template(template_str).render(**kwargs)
 
 
+# ---------------------------------------------------------------------------
+# Part6 新增：外部 chat_template.jinja 文件支持
+# ---------------------------------------------------------------------------
+# 渲染管线优先读取外部模板文件（用户可自填），缺失时回退内置模板。
+# 路径通过 set_chat_template_path() 配置（默认 spark/config/chat_template.jinja）。
+
+# 外部模板文件默认路径（相对于仓库根目录）
+DEFAULT_CHAT_TEMPLATE_PATH = os.path.join("spark", "config", "chat_template.jinja")
+
+# 模块级外部模板路径（由 set_chat_template_path() 设置；None 表示未配置）
+_EXTERNAL_TEMPLATE_PATH: Optional[str] = None
+
+
+def set_chat_template_path(path: Optional[str]) -> None:
+    """配置外部 chat_template.jinja 路径（Part6 新增）。
+
+    设置后 :func:`render_chat_qwen` / :func:`render_chat_qwen_with_tools`
+    在 jinja2 可用时**优先读取该文件**渲染；文件缺失/不可读时自动回退
+    内置模板（不报错）。
+
+    Args:
+        path: 模板文件路径（字符串）；``None`` 或空串表示恢复内置模板。
+    """
+    global _EXTERNAL_TEMPLATE_PATH
+    _EXTERNAL_TEMPLATE_PATH = (path or None)
+
+
+def get_chat_template_path() -> Optional[str]:
+    """返回当前配置的外部模板路径（未配置时为 None）。"""
+    return _EXTERNAL_TEMPLATE_PATH
+
+
+def _resolve_template_source(builtin: str) -> str:
+    """解析模板源：外部文件存在时优先，否则回退内置模板字符串。
+
+    读取失败（文件缺失 / 权限 / 目录）时静默回退内置模板，
+    保证管线不因模板文件问题中断。
+    """
+    path = _EXTERNAL_TEMPLATE_PATH
+    if path and os.path.isfile(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read()
+        except OSError:  # pragma: no cover - 防御性处理
+            pass
+    return builtin
+
+
 def render_chat_qwen(
     messages: list[dict],
     add_generation_prompt: bool = False,
@@ -269,8 +327,9 @@ def render_chat_qwen(
         '<|im_start|>user\\n你好<|im_end|>\\n<|im_start|>assistant\\n'
     """
     if _HAS_JINJA2:
+        # Part6：优先外部 chat_template.jinja，缺失时回退内置模板
         return _jinja2_render(
-            CHATML_TEMPLATE,
+            _resolve_template_source(CHATML_TEMPLATE),
             messages=messages,
             add_generation_prompt=add_generation_prompt,
         )
@@ -443,13 +502,15 @@ def render_chat_qwen_with_tools(
     """
     # 选择模板：是否渲染 assistant 的 tool_calls 块
     if _HAS_JINJA2:
-        template_str = (
+        builtin = (
             CHATML_TEMPLATE_WITH_TOOL_CALLS
             if render_tool_calls
             else CHATML_TEMPLATE_WITH_TOOLS
         )
+        # Part6：优先外部 chat_template.jinja（外部模板自带渲染逻辑），
+        # 缺失时回退内置模板
         return _jinja2_render(
-            template_str,
+            _resolve_template_source(builtin),
             messages=messages,
             tools=tools or [],
             add_generation_prompt=add_generation_prompt,
@@ -562,4 +623,8 @@ __all__ = [
     "TOOL_CALL_END",
     "render_chat_qwen_with_tools",
     "extract_tool_calls_qwen3",
+    # Part6: 外部 chat_template.jinja 文件支持
+    "DEFAULT_CHAT_TEMPLATE_PATH",
+    "set_chat_template_path",
+    "get_chat_template_path",
 ]

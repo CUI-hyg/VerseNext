@@ -34,6 +34,15 @@ from .cometspark import (
     CometSparkV02,
     VerseNexLM,
 )
+# Part6 新增：VerseNext Delta Attention（VDA）家族
+from .delta_attention import (
+    DSAAttention,
+    KDAAttention,
+    GMLAAttention,
+    VDAAttention,
+    build_verse_delta_pattern,
+    DELTA_ATTN_CLASSES,
+)
 
 # Part4K1 Task 4: NexRL 强化学习算法包
 from . import nexrl
@@ -90,6 +99,13 @@ __all__ = [
     "VerseNexBlock",
     "CometSparkNexLM",
     "CometSparkV02",
+    # Part6: VerseNext Delta Attention（VDA）家族
+    "DSAAttention",
+    "KDAAttention",
+    "GMLAAttention",
+    "VDAAttention",
+    "build_verse_delta_pattern",
+    "DELTA_ATTN_CLASSES",
     # Part4K1 SubTask 2.1: VerseNex 品牌统一入口
     "VerseNexLM",
     "VerseNexAttention",

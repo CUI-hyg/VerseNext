@@ -293,6 +293,11 @@ class TestTrainerIntegration:
         save_dir = str(tmp_path / "ckpts")
         os.makedirs(save_dir, exist_ok=True)
 
+        # Part6：训练入口要求 tokenizer.json 存在（_load_tokenizer 已被 mock，
+        # 文件内容无关，仅需存在即可通过前置校验）
+        with open(os.path.join(save_dir, "tokenizer.json"), "w", encoding="utf-8") as f:
+            f.write("{}")
+
         # mock 模型（小模型，避免触发 1B 优化路径）
         mock_model = MagicMock()
         mock_model.parameters.return_value = []

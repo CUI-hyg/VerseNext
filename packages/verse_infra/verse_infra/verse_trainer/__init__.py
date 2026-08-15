@@ -59,6 +59,8 @@ from .trainer import (
     clear_emergency_save_fn,
     ChunkOOMError,
     migrate_checkpoint_dir,
+    find_tokenizer_json,
+    ensure_tokenizer_json_for_config,
 )
 from .evaluate import evaluate
 from .visualize import visualize
@@ -92,6 +94,9 @@ __all__ = [
     "ChunkOOMError",
     # Checkpoint 工具
     "migrate_checkpoint_dir",
+    # Part6: tokenizer.json 前置校验
+    "find_tokenizer_json",
+    "ensure_tokenizer_json_for_config",
     # 评估
     "evaluate",
     "visualize",

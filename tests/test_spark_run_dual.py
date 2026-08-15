@@ -562,6 +562,9 @@ class TestDelegatePrinciple:
 
         mock_result = {"best_val_loss": 0.5, "save_dir": "mf_small"}
         with patch(
+            "verse_infra.verse_trainer.ensure_tokenizer_json_for_config",
+            return_value="fake/tokenizer.json",
+        ), patch(
             "verse_infra.verse_trainer.train",
             return_value=mock_result,
         ) as mock_train:

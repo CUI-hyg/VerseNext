@@ -2687,7 +2687,10 @@ class BatchLoader:
     """对齐 ``torch.utils.data.DataLoader`` 接口的批量加载器。
 
     CPU-only 实现：``num_workers`` / ``pin_memory`` / ``persistent_workers``
-    为占位参数（保留以匹配 PyTorch API 但忽略实际行为），实际单线程同步迭代。
+    为占位参数（保留以匹配 PyTorch API 但忽略实际行为），实际单线程同步迭代；
+    设置 ``prefetch=True`` 时改用单个后台线程预取下一个 batch
+    （纯 threading，不引入多进程；仅当 ``collate_fn`` 与
+    ``dataset.__getitem__`` 是确定性的且线程安全时可用）。
 
     Args:
         dataset: 可索引数据集（实现 ``__getitem__`` 与 ``__len__``），
@@ -2701,6 +2704,11 @@ class BatchLoader:
         num_workers: 占位参数（CPU-only，默认 0，忽略）
         pin_memory: 占位参数（CPU-only，默认 False，忽略）
         persistent_workers: 占位参数（默认 False，忽略）
+        prefetch: 是否用后台线程预取下一个 batch（默认 False）。
+                  每次迭代（每轮 epoch）启动一个 daemon 生产者线程，
+                  消费方提前退出时线程会在队列写满后阻塞并随进程退出，
+                  不会挂起主流程
+        prefetch_buffer: 预取队列容量（默认 2）
 
     用法:
         >>> loader = BatchLoader(dataset, batch_size=8, shuffle=True)
@@ -2713,7 +2721,8 @@ class BatchLoader:
     def __init__(self, dataset, batch_size: int = 1, shuffle: bool = True,
                  collate_fn=None, drop_last: bool = False, seed: int = 0,
                  num_workers: int = 0, pin_memory: bool = False,
-                 persistent_workers: bool = False):
+                 persistent_workers: bool = False,
+                 prefetch: bool = False, prefetch_buffer: int = 2):
         self.dataset = dataset
         self.batch_size = int(batch_size)
         self.shuffle = bool(shuffle)
@@ -2724,6 +2733,9 @@ class BatchLoader:
         self.num_workers = int(num_workers)
         self.pin_memory = bool(pin_memory)
         self.persistent_workers = bool(persistent_workers)
+        # Part6 优化：后台线程预取（纯 threading）
+        self.prefetch = bool(prefetch)
+        self.prefetch_buffer = max(1, int(prefetch_buffer))
         # 内部 RNG 状态
         self._rng = np.random.RandomState(seed) if seed is not None else np.random.RandomState()
 
@@ -2734,22 +2746,68 @@ class BatchLoader:
             return n // self.batch_size
         return (n + self.batch_size - 1) // self.batch_size
 
-    def __iter__(self):
-        """迭代一个 epoch 的所有 batch。"""
+    # Part6 优化：预取迭代器。daemon 生产者线程把 collate 结果放入队列，
+    # 主线程只负责取。collate 异常经哨兵对象传给消费方重新抛出，
+    # 避免生产者线程静默死亡导致消费方永久阻塞。
+    class _PrefetchError:
+        __slots__ = ("exc",)
+
+        def __init__(self, exc):
+            self.exc = exc
+
+    def _iter_batches(self):
+        """产生一个 epoch 的所有 batch（在调用线程/生产者线程中执行）。"""
         n = len(self.dataset)
         indices = np.arange(n)
         if self.shuffle:
             self._rng.shuffle(indices)
 
-        # 按 batch_size 切片
         for i in range(0, n, self.batch_size):
             batch_indices = indices[i:i + self.batch_size]
             if self.drop_last and len(batch_indices) < self.batch_size:
                 # drop_last 且最后一个 batch 不满：丢弃
                 break
-            # 收集 batch
             batch = [self.dataset[int(idx)] for idx in batch_indices]
             yield self.collate_fn(batch)
+
+    def __iter__(self):
+        """迭代一个 epoch 的所有 batch。"""
+        batches = self._iter_batches()
+        if not self.prefetch:
+            return batches
+        return self._prefetch_iter(batches)
+
+    def _prefetch_iter(self, batches):
+        """预取迭代器：daemon 生产者线程把 collate 结果放入队列，
+        本生成器只负责取。collate 异常经哨兵对象传给消费方重新抛出，
+        避免生产者线程静默死亡导致消费方永久阻塞。
+        注意：必须独立成生成器方法，不能把 yield 直接写进 __iter__
+        （否则 __iter__ 自身会成为生成器函数，非 prefetch 路径的
+        ``return batches`` 将退化为普通 return 导致迭代为空）。"""
+        import queue as _queue
+        import threading as _threading
+
+        q = _queue.Queue(maxsize=self.prefetch_buffer)
+        _STOP = object()
+
+        def _producer():
+            try:
+                for b in batches:
+                    q.put(b)
+                q.put(_STOP)
+            except Exception as e:  # noqa: BLE001  collate 失败要传给消费方
+                q.put(BatchLoader._PrefetchError(e))
+
+        t = _threading.Thread(
+            target=_producer, daemon=True, name="verse-batch-prefetch")
+        t.start()
+        while True:
+            item = q.get()
+            if item is _STOP:
+                break
+            if isinstance(item, BatchLoader._PrefetchError):
+                raise item.exc
+            yield item
 
 
 __all__ = [
@@ -3141,9 +3199,11 @@ class ParallelTrainer:
         # 用 abs(chunk_id)+1 偏移确保非负且各 chunk 间 seed 互不相同。
         chunk_seed = int(self.seed) + abs(int(chunk_id)) + 1
         chunk_seed = chunk_seed % (2**32 - 1)
+        # Part6 优化：train_loader 开启后台线程预取（纯 threading，不引入
+        # 多进程），掩盖 collate + pin_memory 耗时
         train_loader = BatchLoader(
             train_dataset, batch_size=self.batch_size, shuffle=True,
-            collate_fn=self.collate_fn, seed=chunk_seed)
+            collate_fn=self.collate_fn, seed=chunk_seed, prefetch=True)
         val_loader = BatchLoader(
             self.val_dataset, batch_size=self.batch_size, shuffle=False,
             collate_fn=self.collate_fn, seed=self.seed)
@@ -3229,9 +3289,11 @@ class ParallelTrainer:
                   f"merge_ft={self.merge_finetune_steps}", flush=True)
 
         # 备份原始模型状态（每个 chunk 都从同一状态出发）
-        original_state = None
+        # Part6 优化：只序列化一次为 bytes，chunk 间复用
+        # （pickle.loads 每次生成全新拷贝，语义与逐次 round-trip 完全一致）
+        original_state_bytes = None
         if hasattr(self.model, "state_dict"):
-            original_state = pickle.loads(pickle.dumps(self.model.state_dict(), protocol=4))
+            original_state_bytes = pickle.dumps(self.model.state_dict(), protocol=4)
 
         # Part4K2 Task 7.1: 创建外层进度条
         # 总阶段数 = Phase 1 (actual_chunks) + Phase 2 (actual_chunks 重训)
@@ -3244,8 +3306,8 @@ class ParallelTrainer:
         chunk_results = []
         for i in range(actual_chunks):
             # 重置模型到原始状态
-            if original_state is not None and hasattr(self.model, "load_state_dict"):
-                self.model.load_state_dict(pickle.loads(pickle.dumps(original_state, protocol=4)))
+            if original_state_bytes is not None and hasattr(self.model, "load_state_dict"):
+                self.model.load_state_dict(pickle.loads(original_state_bytes))
 
             # Part4K2 Task 7.5: round_robin 模式下使用数据子集
             if self.parallel_strategy == "round_robin":
@@ -3304,8 +3366,8 @@ class ParallelTrainer:
                   f"{[r['chunk_id'] for r in chunk_results]}", flush=True)
 
         # 4. 串行重训（差前好后）
-        if original_state is not None and hasattr(self.model, "load_state_dict"):
-            self.model.load_state_dict(pickle.loads(pickle.dumps(original_state, protocol=4)))
+        if original_state_bytes is not None and hasattr(self.model, "load_state_dict"):
+            self.model.load_state_dict(pickle.loads(original_state_bytes))
 
         for idx, result in enumerate(chunk_results):
             # Part4K2.5 Task 6 修复：chunk_steps < 4 时跳过 Phase 2 重训

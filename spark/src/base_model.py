@@ -63,6 +63,12 @@ def _import_build_v02_pattern():
     return _build_v02_pattern
 
 
+def _import_build_verse_delta_pattern():
+    """延迟导入 build_verse_delta_pattern（Part6 VDA 层分配）。"""
+    from verse_nex.delta_attention import build_verse_delta_pattern
+    return build_verse_delta_pattern
+
+
 # ---------------------------------------------------------------------------
 # CometSparkV05LM：顶层模型
 # ---------------------------------------------------------------------------
@@ -92,14 +98,30 @@ class CometSparkV05LM:
         self.config = config
         CometSparkNexLM = _import_cometspark_nex_lm()
 
-        # 处理 layer_pattern：None 则按 mod_every 自动生成
+        # Part6：外部 chat_template.jinja 路径（渲染管线优先读取；
+        # 文件缺失时由 chat_template 模块自动回退内置模板）
+        try:
+            from verse_infra.verse_tokenizer.chat_template import (
+                set_chat_template_path,
+            )
+            set_chat_template_path(config.chat_template_path)
+        except Exception:
+            # verse_infra 不可用或配置缺失时跳过（回退内置模板）
+            pass
+
+        # 处理 layer_pattern：None 则按 use_vda / mod_every 自动生成
         layer_pattern = config.layer_pattern
         if layer_pattern is None:
-            _build_v02_pattern = _import_build_v02_pattern()
-            layer_pattern = _build_v02_pattern(
-                n_layer=config.n_layer,
-                mod_every=config.mod_every,
-            )
+            if config.use_vda:
+                # Part6：VDA 层分配（build_verse_delta_pattern 规则）
+                build_verse_delta_pattern = _import_build_verse_delta_pattern()
+                layer_pattern = build_verse_delta_pattern(n_layer=config.n_layer)
+            else:
+                _build_v02_pattern = _import_build_v02_pattern()
+                layer_pattern = _build_v02_pattern(
+                    n_layer=config.n_layer,
+                    mod_every=config.mod_every,
+                )
             # Part5K1.1 修复 MoD 抽风：将自动生成的 layer_pattern 固化回 config，
             # 保证 save（config.to_dict）→ load（from_dict）路径一致，避免
             # "有时显示无 MoD, 有时显示有 MoD" 的不确定性。固化后 config.layer_pattern
