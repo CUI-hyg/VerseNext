@@ -8,9 +8,12 @@
 设计要点
 --------
 - ``arch`` 固定为 ``"versenex"``（继承自 V05Config，自动映射旧值）。
-- 0.06zB 目标通过极小默认值控制：``vocab_size=256, n_embd=64, n_layer=2``，
-  ``mod_every=2, num_dense_parts=2, num_experts_per_part=2, top_k=1``，
+- 0.06zB 目标通过极小默认值控制：``vocab_size=256, n_embd=128, n_layer=10``，
+  ``num_dense_parts=4, num_experts_per_part=4, top_k=2``，
   + ``tie_weights=True``，参数量 ≈ 100K-400K（调试用）。
+- **Part6 新增：``use_vda=True``**，``layer_pattern=None`` 时按
+  ``build_verse_delta_pattern(10)`` 自动分配（前 4 层 VDA + 后 2 层 DSA +
+  其余 GMLA），注意力机制替换为 VerseNext Delta Attention 家族。
 - **Part5K1.1 VMPC V2.0 配置融合**：
   - ``use_vmpc`` 统一开关（默认 ``True``），管理是否使用 VMPC V2.0
   - 参数分为 ``vmpc_legacy``（传统技术直通，use_vmpc=False 时生效）与
@@ -80,21 +83,24 @@ class CometSparkSmallConfig(CometSparkV05Config):
         checkpoint_save_dir: checkpoint 保存目录名（默认 ``"mf_small"``，Task 10 用）。
 
     Note:
-        Part5K1.5 升级后架构字段默认值：
-        ``vocab_size=256, n_embd=128, n_layer=8, n_head=8, n_kv_head=4,
-        seq_len=150, mod_every=1（全 MoD）, num_dense_parts=4,
-        num_experts_per_part=4, top_k=2, init_std=0.04``。
+        Part6 升级后架构字段默认值：
+        ``vocab_size=256, n_embd=128, n_layer=10, n_head=8, n_kv_head=4,
+        seq_len=150, use_vda=True（VDA 层分配：前 4 VDA + 后 2 DSA +
+        其余 GMLA）, num_dense_parts=4, num_experts_per_part=4, top_k=2,
+        init_std=0.04``。
     """
 
-    # 覆盖父类默认值（Part5K1.5 升级：全 MoD 架构 + 更深更宽）
+    # 覆盖父类默认值（Part6 升级：10 层 + VDA 注意力）
     vocab_size: int = 256
-    n_layer: int = 8
+    n_layer: int = 10
     n_embd: int = 128
     n_head: int = 8
     n_kv_head: int = 4
     seq_len: int = 150
     max_position_embeddings: int = 256
-    mod_every: int = 1             # Part5K1.5：强制每层都是 MoD
+    # Part6：VDA 架构（layer_pattern=None 时按 build_verse_delta_pattern 分配）
+    use_vda: bool = True
+    mod_every: int = 1             # 显式 layer_pattern 时沿用 MoD 规则
     num_dense_parts: int = 4       # Part5K1.5：4 个 DensePart
     num_experts_per_part: int = 4  # Part5K1.5：4 个 Expert/DensePart
     top_k: int = 2                 # Part5K1.5：激活 2 个 Expert

@@ -8,8 +8,11 @@
 设计要点
 --------
 - ``arch`` 固定为 ``"versenex"``（继承自 V05Config，自动映射旧值）。
-- 0.2zB 目标（旗舰）：默认值与 V05 1B 配置一致
-  （``vocab_size=248320, n_embd=1024, n_layer=20``），通过 VMPC 压缩到 0.2zB。
+- 旗舰规模：``vocab_size=248320, n_embd=1024, n_layer=32``，通过 VMPC
+  压缩到 0.2zB。
+- **Part6 新增：``use_vda=True``**，``layer_pattern=None`` 时按
+  ``build_verse_delta_pattern(32)`` 自动分配（前 4 层 VDA + 后 2 层 DSA +
+  其余 GMLA），注意力机制替换为 VerseNext Delta Attention 家族。
 - **Part5K1.1 VMPC V2.0 配置融合**：
   - ``use_vmpc`` 统一开关（默认 ``True``），管理是否使用 VMPC V2.0
   - 参数分为 ``vmpc_legacy``（传统技术直通，use_vmpc=False 时生效）与
@@ -79,21 +82,24 @@ class CometSparkMateConfig(CometSparkV05Config):
         checkpoint_save_dir: checkpoint 保存目录名（默认 ``"mf_mate"``，Task 10 用）。
 
     Note:
-        架构字段默认值与 V05 1B 一致（旗舰规模）：
-        ``vocab_size=248320, n_embd=1024, n_layer=20, n_head=16, n_kv_head=8,
-        mod_every=4, num_dense_parts=4, num_experts_per_part=4, top_k=2,
+        架构字段默认值（Part6 升级：32 层 + VDA）：
+        ``vocab_size=248320, n_embd=1024, n_layer=32, n_head=16, n_kv_head=8,
+        use_vda=True（VDA 层分配：前 4 VDA + 后 2 DSA + 其余 GMLA）,
+        num_dense_parts=4, num_experts_per_part=4, top_k=2,
         init_std=0.02``（mate 用中等 init_std，保持稳定收敛）。
-        参数量 ≈ 1.12B，VMPC 压缩后目标 0.2zB。
+        参数量 ≈ 1.8B，VMPC 压缩后目标 0.2zB。
     """
 
-    # 覆盖父类默认值（mate 旗舰配置，与 V05 1B 一致）
+    # 覆盖父类默认值（Part6 升级：32 层 + VDA 注意力）
     vocab_size: int = 248320
-    n_layer: int = 20
+    n_layer: int = 32
     n_embd: int = 1024
     n_head: int = 16
     n_kv_head: int = 8
     seq_len: int = 2048
     max_position_embeddings: int = 4096
+    # Part6：VDA 架构（layer_pattern=None 时按 build_verse_delta_pattern 分配）
+    use_vda: bool = True
     mod_every: int = 4
     num_dense_parts: int = 4
     num_experts_per_part: int = 4

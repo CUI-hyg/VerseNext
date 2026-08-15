@@ -63,6 +63,7 @@ from verse_torch.vnn import (
 
 from .tri_sparse_attn import TriSparseAttention
 from .mod import MoDLayer
+from .delta_attention import DELTA_ATTN_CLASSES
 
 
 # ---------------------------------------------------------------------------
@@ -77,11 +78,15 @@ class VerseNexBlock(Module):
         dim: 模型维度
         n_head: 注意力头数
         n_kv_head: GQA 的 kv head 数（None 表示 = n_head）
-        layer_kind: ``"trisparse"``（FFN=SwiGLUMLP）或 ``"mod"``（FFN=MoDLayer）
-        window_size: TriSparse 滑动窗口大小
-        num_global_tokens: TriSparse 全局 sink token 数
+        layer_kind: ``"trisparse"``（FFN=SwiGLUMLP）、``"mod"``（FFN=MoDLayer）
+            或 VDA 注意力类型 ``"vda" / "dsa" / "kda" / "gmla"``
+            （FFN 均为 SwiGLUMLP；见 ``build_verse_delta_pattern`` 的层分配规则）
+        window_size: TriSparse / DSA / KDA / GMLA 滑动窗口大小
+        num_global_tokens: TriSparse / DSA 全局 sink token 数
+        anchor_interval: KDA anchor 间隔（默认 128）
+        latent_dim: GMLA latent 维度（None 表示 = kv 投影维度）
         use_alibi: TriSparse 是否启用 ALiBi 路径
-        use_rope: TriSparse 是否对 Q/K 应用 RoPE
+        use_rope: 是否对 Q/K 应用 RoPE
         max_seq_len: RoPE/ALiBi 预计算最大长度
         dropout: dropout 概率（通用）
         rope_theta: RoPE 基础频率
@@ -102,7 +107,7 @@ class VerseNexBlock(Module):
             CPU / 无 PyTorch 时自动降级为直接前向。
     """
 
-    VALID_KINDS = ("trisparse", "mod")
+    VALID_KINDS = ("trisparse", "mod", "vda", "dsa", "kda", "gmla")
 
     def __init__(
         self,
@@ -112,6 +117,8 @@ class VerseNexBlock(Module):
         layer_kind: str = "trisparse",
         window_size: int = 512,
         num_global_tokens: int = 64,
+        anchor_interval: int = 128,
+        latent_dim: Optional[int] = None,
         use_alibi: bool = True,
         use_rope: bool = False,
         max_seq_len: int = 2048,
@@ -147,28 +154,39 @@ class VerseNexBlock(Module):
         self.norm1 = RMSNorm(dim)
         self.norm2 = RMSNorm(dim)
 
-        # 注意力（所有层共用 TriSparseAttention）
-        self.attn = TriSparseAttention(
-            dim=dim,
-            n_head=n_head,
-            n_kv_head=n_kv_head,
-            window_size=window_size,
-            num_global_tokens=num_global_tokens,
-            use_alibi=use_alibi,
-            use_rope=use_rope,
-            max_seq_len=max_seq_len,
-            dropout=dropout,
-            rope_theta=rope_theta,
-        )
-
-        # FFN：根据 layer_kind 选择 SwiGLU 或 MoD
-        if layer_kind == "trisparse":
-            self.ffn = SwiGLUMLP(
-                d=dim,
+        # 注意力：按 layer_kind 选择注意力实现
+        #   - "trisparse"/"mod" → TriSparseAttention（三路 gated 稀疏；mod 只改 FFN）
+        #   - "vda"/"dsa"/"kda"/"gmla" → VerseNext Delta Attention 家族
+        if layer_kind in ("trisparse", "mod"):
+            self.attn = TriSparseAttention(
+                dim=dim,
+                n_head=n_head,
+                n_kv_head=n_kv_head,
+                window_size=window_size,
+                num_global_tokens=num_global_tokens,
+                use_alibi=use_alibi,
+                use_rope=use_rope,
+                max_seq_len=max_seq_len,
                 dropout=dropout,
-                hidden_multiple=mlp_hidden_multiple,
+                rope_theta=rope_theta,
             )
-        else:  # "mod"
+        else:
+            self.attn = DELTA_ATTN_CLASSES[layer_kind](
+                dim=dim,
+                n_head=n_head,
+                n_kv_head=n_kv_head,
+                window_size=window_size,
+                num_global_tokens=num_global_tokens,
+                anchor_interval=anchor_interval,
+                latent_dim=latent_dim,
+                use_rope=use_rope,
+                max_seq_len=max_seq_len,
+                dropout=dropout,
+                rope_theta=rope_theta,
+            )
+
+        # FFN：仅 "mod" 用 MoDLayer，其余（trisparse / vda / dsa / kda / gmla）用 SwiGLU
+        if layer_kind == "mod":
             self.ffn = MoDLayer(
                 dim=dim,
                 num_dense_parts=num_dense_parts,
@@ -182,6 +200,12 @@ class VerseNexBlock(Module):
                 router_temperature=router_temperature,
                 ema_decay=ema_decay,
                 entropy_weight=entropy_weight,
+            )
+        else:
+            self.ffn = SwiGLUMLP(
+                d=dim,
+                dropout=dropout,
+                hidden_multiple=mlp_hidden_multiple,
             )
 
     # ------------------------------------------------------------------
@@ -280,12 +304,16 @@ class CometSparkNexLM(Module):
             为 None 则自动生成长度为 n_layer 的全 "trisparse" pattern）
         n_head: 注意力头数
         n_kv_head: GQA 的 kv head 数（None 表示 = n_head）
-        layer_pattern: ``list[str]``，每元素为 ``"trisparse"`` 或 ``"mod"``,
-            显式指定每层类型；None 表示全 "trisparse"
-        window_size: TriSparse 滑动窗口大小
-        num_global_tokens: TriSparse 全局 sink token 数
+        layer_pattern: ``list[str]``，每元素为 ``"trisparse"`` / ``"mod"`` /
+            ``"vda"`` / ``"dsa"`` / ``"kda"`` / ``"gmla"``，显式指定每层
+            类型；None 表示全 "trisparse"（VDA 层分配请用
+            :func:`build_verse_delta_pattern` 生成后传入）
+        window_size: 滑动窗口大小（TriSparse / DSA / KDA / GMLA）
+        num_global_tokens: 全局 sink token 数（TriSparse / DSA）
+        anchor_interval: KDA anchor 间隔（默认 128）
+        latent_dim: GMLA latent 维度（None 表示 = kv 投影维度）
         use_alibi: TriSparse 是否启用 ALiBi 路径
-        use_rope: TriSparse 是否对 Q/K 应用 RoPE
+        use_rope: 是否对 Q/K 应用 RoPE
         max_seq_len: RoPE/ALiBi 预计算最大长度
         dropout: dropout 概率
         rope_theta: RoPE 基础频率
@@ -311,9 +339,11 @@ class CometSparkNexLM(Module):
         n_head: int,
         n_kv_head: Optional[int] = None,
         layer_pattern: Optional[List[str]] = None,
-        # TriSparse
+        # TriSparse / Delta Attention
         window_size: int = 512,
         num_global_tokens: int = 64,
+        anchor_interval: int = 128,
+        latent_dim: Optional[int] = None,
         use_alibi: bool = True,
         use_rope: bool = False,
         max_seq_len: int = 2048,
@@ -377,6 +407,8 @@ class CometSparkNexLM(Module):
                 layer_kind=kind,
                 window_size=window_size,
                 num_global_tokens=num_global_tokens,
+                anchor_interval=anchor_interval,
+                latent_dim=latent_dim,
                 use_alibi=use_alibi,
                 use_rope=use_rope,
                 max_seq_len=max_seq_len,
@@ -404,10 +436,14 @@ class CometSparkNexLM(Module):
 
         # 打印参数量
         n_params = self.count_parameters()
-        n_mod = sum(1 for k in self.layer_pattern if k == "mod")
+        kinds_count = {}
+        for k in self.layer_pattern:
+            kinds_count[k] = kinds_count.get(k, 0) + 1
+        kind_desc = " ".join(
+            f"{k}={c}" for k, c in kinds_count.items()
+        )
         print(
-            f"[CometSparkNexLM] layers={n_layer} "
-            f"(mod={n_mod}, trisparse={n_layer - n_mod}) "
+            f"[CometSparkNexLM] layers={n_layer} ({kind_desc}) "
             f"parameters: {n_params} ({n_params / 1e6:.1f}M)",
             flush=True,
         )

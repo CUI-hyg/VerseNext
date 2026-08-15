@@ -197,8 +197,13 @@ class CometSparkV05Config:
         seq_len: 训练序列长度。
         dropout: dropout 概率（通用）。
         tie_weights: 是否共享 tok_emb 与 lm_head 权重（节省参数 + 稳定输出）。
-        layer_pattern: ``list[str]``，每元素 ``"trisparse"`` 或 ``"mod"``；
-            None 则按 ``mod_every`` 自动生成。
+        layer_pattern: ``list[str]``，每元素 ``"trisparse"`` 或 ``"mod"``
+            （Part6 起支持 ``"vda" / "dsa" / "kda" / "gmla"``）；
+            None 则按 ``mod_every``（或 ``use_vda`` 的 VDA 规则）自动生成。
+        use_vda: Part6 新增：True 且 ``layer_pattern is None`` 时，按
+            ``build_verse_delta_pattern`` 规则自动生成 VDA 层分配
+            （<6 层全 VDA；6-9 层前 4 VDA + 其余 GMLA；>=10 层前 4 VDA +
+            后 2 DSA + 其余 GMLA）。
         mod_every: 自动生成 layer_pattern 时 MoD 层间隔（每 N 层一个 MoD）。
         num_dense_parts: MoD 的 DensePart 数量（1B 默认 4）。
         num_experts_per_part: 每个 DensePart 的 Expert 数（1B 默认 4）。
@@ -235,6 +240,7 @@ class CometSparkV05Config:
 
     # VerseNex / TriSparse / MoD
     layer_pattern: Optional[List[str]] = None
+    use_vda: bool = False
     mod_every: int = 4
     num_dense_parts: int = 4
     num_experts_per_part: int = 4
@@ -250,6 +256,10 @@ class CometSparkV05Config:
 
     # tokenizer
     tokenizer_repo: str = "Qwen/Qwen3.5-35B-A3B"
+
+    # Part6: 外部 chat_template.jinja 文件路径（默认 spark/config/chat_template.jinja）。
+    # 渲染管线优先读取该文件（jinja2 渲染）；文件缺失时自动回退内置模板。
+    chat_template_path: str = os.path.join("spark", "config", "chat_template.jinja")
 
     # Part4K1 Task 8.7：VerseNex 优化（解决胡乱输出）
     embedding_scale: bool = True

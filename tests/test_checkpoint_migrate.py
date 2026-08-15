@@ -457,6 +457,15 @@ class TestTrainIntegration:
         marker_content = b"old checkpoint marker"
         (old_dir / "marker.txt").write_bytes(marker_content)
 
+        # Part6：训练入口要求 tokenizer.json 存在（校验用，mock 掉真实加载，
+        # 避免 giga tokenizer 在离线沙箱触发网络加载）
+        (tmp_path / "tokenizer.json").write_text("{}", encoding="utf-8")
+        from verse_infra.verse_tokenizer import ByteTokenizer
+        monkeypatch.setattr(
+            "verse_infra.verse_trainer.trainer._load_tokenizer",
+            lambda *a, **k: ByteTokenizer(),
+        )
+
         # 调用 train()：最小步数 + 跳过评估 + 静默
         from verse_infra.verse_trainer import train
 
@@ -490,6 +499,15 @@ class TestTrainIntegration:
 
         monkeypatch.chdir(tmp_path)
         # 不创建旧目录
+
+        # Part6：训练入口要求 tokenizer.json 存在（mock 掉真实加载，避免
+        # giga tokenizer 在离线沙箱触发网络加载）
+        (tmp_path / "tokenizer.json").write_text("{}", encoding="utf-8")
+        from verse_infra.verse_tokenizer import ByteTokenizer
+        monkeypatch.setattr(
+            "verse_infra.verse_trainer.trainer._load_tokenizer",
+            lambda *a, **k: ByteTokenizer(),
+        )
 
         from verse_infra.verse_trainer import train
 

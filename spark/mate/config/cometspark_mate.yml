@@ -1,4 +1,4 @@
-# CometSpark Mate（0.2zB 旗舰）VMPC-mate 预设（Part5K1 Task 9.2）
+# CometSpark Mate（0.2zB 旗舰）VMPC-mate 预设（Part5K1 Task 9.2 / Part6 VDA）
 #
 # 双模型并行中的 mate 档：0.2zB 旗舰模型（1zB ≈ 1000B 等效能力）。
 # 从 cometspark_v05.yml（1B 配置）迁移，调整为 VMPC-mate 预设。
@@ -10,24 +10,25 @@
 #
 # 架构配置（旗舰，Qwen tokenizer）：
 # - vocab_size=248320（Qwen3.5-35B-A3B tokenizer）
-# - n_embd=1024, n_layer=20, n_head=16, n_kv_head=8 (GQA 2:1)
-# - mod_every=4 → 每 4 层 1 个 MoD（共 5 MoD + 15 trisparse）
+# - n_embd=1024, n_layer=32, n_head=16, n_kv_head=8 (GQA 2:1)
+# - Part6：use_vda=true → layer_pattern=None 时按 build_verse_delta_pattern(32)
+#   自动分配（前 4 层 VDA + 后 2 层 DSA + 其余 GMLA，共 26 GMLA）
 # - num_dense_parts=4, num_experts_per_part=4, top_k=2
 # - tie_weights=True（embedding 与 lm_head 共享）
 # - init_std=0.02（mate 用中等 init_std，保持稳定收敛）
 # - embedding_scale=True + temperature_scaling（解决胡乱输出）
 #
-# 参数预算（dim=1024, expert_hidden 自动 ≈ 2688）：
-# - 15 个 trisparse 层 + 5 个 mod 层 ≈ 861M
+# 参数预算（dim=1024, expert_hidden 自动 ≈ 2688，全 SwiGLU FFN）：
+# - 32 层 × ~27M ≈ 861M（VDA/GMLA/DSA 均 SwiGLU，无 MoD）
 # - Embedding (tie, vocab=248320) = 254M
-# - 总 ≈ 1115M ≈ 1.12B（VMPC 压缩后目标 0.2zB）
+# - 总 ≈ 1.8B（VMPC 压缩后目标 0.2zB）
 #
 # checkpoint.save_dir=mf_mate（Task 10 会用）
 
 model:
   arch: versenex
   vocab_size: 248320
-  n_layer: 20
+  n_layer: 32
   n_embd: 1024
   n_head: 16
   n_kv_head: 8
@@ -35,7 +36,8 @@ model:
   dropout: 0.0
   tie_weights: true
 
-  # VerseNex / TriSparse / MoD
+  # VerseNex / TriSparse / MoD（Part6：VDA 注意力替换，layer_pattern=None 自动分配）
+  use_vda: true
   mod_every: 4
   num_dense_parts: 4
   num_experts_per_part: 4

@@ -542,19 +542,12 @@ class ParallelTrainerSafe(ParallelTrainer):
 
             # 在每个 chunk 之间检测 shutdown 信号：通过包装 _split_steps
             # 让 fit 在收到信号时尽快返回（best_state_dict 已更新）
-            history = super().fit()
-
-            # 保存断点续训状态
-            if self.checkpoint_mgr is not None:
-                resume_path = os.path.join(
-                    str(self.checkpoint_mgr.save_dir), "resume.vn"
-                )
-                self._save_resume_state(resume_path, step=self.max_steps)
-            return history
+            return super().fit()
         finally:
             # 恢复原始 _train_chunk
             self._train_chunk = original_train_chunk
-            # 保存最终 resume 状态
+            # Part6 优化：resume 状态只在 finally 保存一次
+            # （此前 try 与 finally 各保存一次，属于重复序列化）
             if self.checkpoint_mgr is not None:
                 resume_path = os.path.join(
                     str(self.checkpoint_mgr.save_dir), "resume.vn"
@@ -573,6 +566,64 @@ def _resolve_path(base_dir: str, path_str: str) -> str:
     if p.is_absolute():
         return str(p)
     return str((Path(base_dir) / p).resolve())
+
+
+def find_tokenizer_json(save_dir: str, base_dir: str) -> Optional[str]:
+    """Part6：查找 ``tokenizer.json``（save_dir 优先，其次 base_dir）。
+
+    Args:
+        save_dir: checkpoint 保存目录（绝对路径）。
+        base_dir: 配置相对路径的基准目录。
+
+    Returns:
+        第一个找到的 ``tokenizer.json`` 绝对路径；两处均不存在返回 None。
+    """
+    for d in (save_dir, base_dir):
+        p = os.path.join(d, "tokenizer.json")
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def _resolve_training_save_dir(full_cfg: dict, base_dir: str) -> str:
+    """解析训练 checkpoint 保存目录（绝对路径）。
+
+    复刻 Part5K1 Task 10.2 的目录迁移逻辑：
+    - model_level 优先从 ``vmpc.profile`` 推断，回退到从 save_dir 名称推断；
+    - 旧 ``checkpoints_XXX/`` 目录在相对路径层面迁移为 ``mf_XXX/``。
+    """
+    ckpt_cfg = full_cfg.get("checkpoint", {})
+    raw_save_dir = str(ckpt_cfg.get("save_dir", "checkpoints"))
+    vmpc_cfg = full_cfg.get("vmpc", {})
+    _profile = str(vmpc_cfg.get("profile", "")).lower()
+    if _profile in ("small", "mate"):
+        _model_level = _profile
+    elif "mate" in raw_save_dir.lower():
+        _model_level = "mate"
+    else:
+        _model_level = "small"
+    raw_save_dir = migrate_checkpoint_dir(raw_save_dir, _model_level)
+    return _resolve_path(base_dir, raw_save_dir)
+
+
+def ensure_tokenizer_json_for_config(config_path: str, base_dir: str) -> Optional[str]:
+    """Part6：训练前校验 ``tokenizer.json`` 是否存在（run.py / train 共用）。
+
+    读取配置解析出 save_dir（含旧目录迁移）后，在 save_dir / base_dir 下查找
+    ``tokenizer.json``。找到则返回其路径；均未找到返回 None（由调用方决定
+    报错退出方式，train() 与 run.py cmd_train 均以此为准，不再自动降级/
+    自动构建 tokenizer）。
+
+    Args:
+        config_path: 配置文件路径（YAML）。
+        base_dir: 配置中相对路径的基准目录。
+
+    Returns:
+        找到的 ``tokenizer.json`` 绝对路径；未找到返回 None。
+    """
+    full_cfg = _load_full_config(config_path)
+    save_dir = _resolve_training_save_dir(full_cfg, base_dir)
+    return find_tokenizer_json(save_dir, base_dir)
 
 
 def _load_full_config(path: str) -> dict:
@@ -963,7 +1014,7 @@ def train(
     train_cfg = full_cfg.get("training", {})
     tok_cfg = full_cfg.get("tokenizer", {})
     data_cfg = full_cfg.get("data", {})
-    ckpt_cfg = full_cfg.get("checkpoint", {})
+    vmpc_cfg = full_cfg.get("vmpc", {})
 
     # 2. 环境准备
     if n_threads > 0:
@@ -986,18 +1037,20 @@ def train(
     # 在 save_dir 解析为绝对路径前，先在相对路径层面做迁移（旧目录与新目录
     # 通常在同一个工作目录下）。model_level 优先从 vmpc.profile 推断，回退到
     # 从 save_dir 名称推断。
-    raw_save_dir = str(ckpt_cfg.get("save_dir", "checkpoints"))
-    vmpc_cfg = full_cfg.get("vmpc", {})
-    _profile = str(vmpc_cfg.get("profile", "")).lower()
-    if _profile in ("small", "mate"):
-        _model_level = _profile
-    elif "mate" in raw_save_dir.lower():
-        _model_level = "mate"
-    else:
-        _model_level = "small"
-    raw_save_dir = migrate_checkpoint_dir(raw_save_dir, _model_level)
-    save_dir = _resolve_path(base_dir, raw_save_dir)
+    save_dir = _resolve_training_save_dir(full_cfg, base_dir)
     os.makedirs(save_dir, exist_ok=True)
+    # Part6：无 tokenizer.json 直接退出（不再自动降级/自动构建 tokenizer）
+    tok_json_path = ensure_tokenizer_json_for_config(config_path, base_dir)
+    if tok_json_path is None:
+        print(
+            f"[train] 错误：未找到 tokenizer.json。\n"
+            f"  已检查目录：save_dir={save_dir}、base_dir={base_dir}。\n"
+            "  请先准备 tokenizer 文件（tokenizer.json）再开始训练，"
+            "例如从 HuggingFace 下载后放到 save_dir 或 base_dir 下。",
+            flush=True,
+        )
+        sys.exit(1)
+    print(f"[train] 使用 tokenizer.json：{tok_json_path}", flush=True)
     print(f"[train] 加载 tokenizer", flush=True)
     tok = _load_tokenizer(tok_cfg, base_dir, save_dir)
     if tok is None:
@@ -1061,9 +1114,12 @@ def train(
           flush=True)
 
     batch_size = int(train_cfg.get("batch_size", 16))
+    # Part6 优化：prefetch=True 用后台线程预取下一 batch（纯 threading，
+    # 不引入多进程），掩盖 collate + pin_memory 耗时
     train_loader = BatchLoader(
         train_ds, batch_size=batch_size, shuffle=True,
         collate_fn=collate_fn, drop_last=False, seed=seed,
+        prefetch=True,
     )
     val_loader = BatchLoader(
         val_ds, batch_size=batch_size, shuffle=False,
@@ -1361,6 +1417,9 @@ def train(
             "verbose": verbose,
             # Part4K2 Task 7.4: 1B 模型 GPU 显存定期清理
             "empty_cache_interval": empty_cache_interval,
+            # Part6 优化：梯度累积透传（此前 parallel 路径丢失 grad_accum，
+            # chunk 内 Trainer 恒为 1）
+            "grad_accum": grad_accum,
         }
         optimizer_kwargs = {"weight_decay": weight_decay}
         # Part5K1.3 Task 4.4: CheckpointManager 实例化传入 format="auto" + use_vmpc

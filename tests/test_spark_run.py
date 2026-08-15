@@ -301,8 +301,10 @@ class TestTrainCommand:
     """train 子命令 mock 验证。"""
 
     @patch("verse_infra.verse_trainer.evaluate")
+    @patch("verse_infra.verse_trainer.ensure_tokenizer_json_for_config",
+           return_value="fake/tokenizer.json")
     @patch("verse_infra.verse_trainer.train")
-    def test_train_calls_train(self, mock_train, mock_eval):
+    def test_train_calls_train(self, mock_train, mock_tok_check, mock_eval):
         """train 调用 verse_infra.verse_trainer.train()。"""
         mock_train.return_value = {
             "best_val_loss": 0.5,
@@ -321,8 +323,10 @@ class TestTrainCommand:
         assert config_path.endswith(_SMALL_CONFIG)
 
     @patch("spark.run._run_post_train_eval")
+    @patch("verse_infra.verse_trainer.ensure_tokenizer_json_for_config",
+           return_value="fake/tokenizer.json")
     @patch("verse_infra.verse_trainer.train")
-    def test_train_eval_after(self, mock_train, mock_post_eval):
+    def test_train_eval_after(self, mock_train, mock_tok_check, mock_post_eval):
         """--eval-after（默认）训练后自动评估。
 
         Part5K1.5：训练后评估改为 _run_post_train_eval（逐行读取 val.jsonl），
@@ -342,8 +346,10 @@ class TestTrainCommand:
         mock_post_eval.assert_called_once()
 
     @patch("verse_infra.verse_trainer.evaluate")
+    @patch("verse_infra.verse_trainer.ensure_tokenizer_json_for_config",
+           return_value="fake/tokenizer.json")
     @patch("verse_infra.verse_trainer.train")
-    def test_train_max_steps_override(self, mock_train, mock_eval):
+    def test_train_max_steps_override(self, mock_train, mock_tok_check, mock_eval):
         """--max-steps 覆盖训练步数。"""
         mock_train.return_value = {
             "best_val_loss": 0.5,
@@ -841,7 +847,9 @@ class TestMainEntry:
 
     @patch("verse_infra.verse_trainer.train")
     @patch("verse_infra.verse_trainer.evaluate")
-    def test_main_train_small(self, mock_eval, mock_train):
+    @patch("verse_infra.verse_trainer.ensure_tokenizer_json_for_config",
+           return_value="fake/tokenizer.json")
+    def test_main_train_small(self, mock_tok_check, mock_eval, mock_train):
         """main(["train", "--small"]) 完整流程。"""
         mock_train.return_value = {
             "best_val_loss": 0.5,

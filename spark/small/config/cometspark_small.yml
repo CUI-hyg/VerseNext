@@ -1,4 +1,4 @@
-# CometSpark Small（0.06zB 目标）VMPC-small 预设（Part5K1.5 升级）
+# CometSpark Small（0.06zB 目标）VMPC-small 预设（Part5K1.5 升级 / Part6 VDA）
 #
 # 双模型并行中的 small 档：0.06zB 小模型（1zB ≈ 1000B 等效能力）。
 # 用于 3 核 CPU / 5GB 内存沙箱下快速跑通端到端流程（训练 / 生成 / 压缩 / 打分）。
@@ -10,6 +10,11 @@
 # - KV Cache 优化：max_position_embeddings=256（够用即可，减少预计算开销）
 # - 训练 Steps 优化：max_steps=300, eval_interval=30（匹配更深模型）
 #
+# Part6 升级要点（VDA 注意力替换）：
+# - n_layer=8 → 10（10 层模型）
+# - use_vda=true：layer_pattern=None 时按 build_verse_delta_pattern(10)
+#   自动分配（前 4 层 VDA + 后 2 层 DSA + 其余 GMLA）
+#
 # VMPC-small 预设：
 # - ternary 量化（2bit/值，高压缩比）+ 高稀疏剪枝（sparsity=0.5）
 # - use_lora=false：不包装 LoRA（小模型无需微调适配器）
@@ -20,7 +25,7 @@
 model:
   arch: versenex
   vocab_size: 256
-  n_layer: 8
+  n_layer: 10
   n_embd: 128
   n_head: 8
   n_kv_head: 4
@@ -28,8 +33,9 @@ model:
   dropout: 0.0
   tie_weights: true
 
-  # VerseNex / MoD（Part5K1.5：全 MoD 架构 + 增强路由）
-  mod_every: 1              # 强制每层都是 MoD
+  # VerseNex / MoD（Part6：VDA 注意力替换，layer_pattern=None 自动分配）
+  use_vda: true
+  mod_every: 1              # 显式 layer_pattern 时沿用 MoD 规则
   num_dense_parts: 4        # 4 个 DensePart（通用/语言/数理/代码）
   num_experts_per_part: 4   # 每个 DensePart 4 个 Expert
   top_k: 2                  # 每个 token 激活 2 个 Expert

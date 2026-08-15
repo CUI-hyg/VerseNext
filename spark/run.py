@@ -646,6 +646,17 @@ def cmd_train(args) -> int:
     # 实际训练（委托 verse_trainer，不重复造轮子）
     import verse_infra.verse_trainer as _vt
 
+    # Part6：无 tokenizer.json 直接退出（与 trainer.train 一致，不自动降级）
+    _train_base_dir = os.path.dirname(config_path) or _REPO_ROOT
+    _tok_json = _vt.ensure_tokenizer_json_for_config(config_path, _train_base_dir)
+    if _tok_json is None:
+        _error(
+            "未找到 tokenizer.json（已检查配置 save_dir 与配置文件所在目录）。"
+            "请先准备 tokenizer 文件再开始训练，例如从 HuggingFace 下载后"
+            "放到 checkpoint 保存目录或配置文件所在目录下。"
+        )
+        return 1
+
     result = _vt.train(
         config_path=config_path,
         base_dir=os.path.dirname(config_path) or _REPO_ROOT,
