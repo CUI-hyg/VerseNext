@@ -204,24 +204,81 @@ class GigaTokenizerWrapper(BaseTokenizer):
     def _load_from_path(self, path: str, gt, AutoTokenizer) -> None:
         """从本地路径加载 tokenizer 到 self（不重建缓存）。
 
-        支持两种路径：
+        支持三种路径：
         - ``.json`` 元信息文件（由 :meth:`save` 产生，含 ``type=giga`` 字段）：
           读取 ``native`` / ``model_id`` / ``tokenizer_dir`` / ``trust_remote_code``
           后按对应模式构造。
+        - ``.json`` 标准 HF ``tokenizer.json``（顶层含 ``model`` 字段，
+          即 tokenizer 本体文件）：直接加载。同目录有 ``tokenizer_config.json``
+          时整体按 HF 目录加载（保留 chat template / 特殊 token 语义），
+          否则用 ``PreTrainedTokenizerFast(tokenizer_file=...)`` 单文件加载。
+          Part6 bugfix：此前把标准 tokenizer.json 误当元信息文件解析，
+          报"既无有效 tokenizer_dir 也无 model_id"。
         - 目录路径：当作 HF tokenizer 目录加载（兼容模式）。
 
         不重建缓存（``bos_id`` / ``eos_id`` / ``vocab_size`` 等），
         缓存重建由调用方（``__init__`` 末尾或 :meth:`load` 末尾）统一负责。
 
         Args:
-            path: ``.json`` 元信息文件路径或 tokenizer 目录路径
+            path: ``.json`` 元信息文件 / 标准 ``tokenizer.json`` / tokenizer
+                  目录路径
             gt: 已导入的 gigatoken 模块
             AutoTokenizer: 已导入的 transformers.AutoTokenizer
         """
         if path.endswith(".json") and os.path.isfile(path):
-            # .json 元信息文件
+            # .json 文件可能是两类：
+            # 1) verse_infra 元信息文件（由 save() 产生，含 type=giga +
+            #    model_id / tokenizer_dir 引用字段）
+            # 2) HF 标准 tokenizer.json（tokenizers 库序列化格式，顶层含
+            #    "model" 字段，即实际的 tokenizer 本体文件）
             with open(path, "r", encoding="utf-8") as f:
                 meta = json.load(f)
+            is_infra_meta = (
+                isinstance(meta, dict)
+                and (
+                    "model_id" in meta
+                    or "tokenizer_dir" in meta
+                    or meta.get("type") == "giga"
+                )
+            )
+            if not is_infra_meta:
+                # Part6 bugfix：标准 HF tokenizer.json 直接加载。
+                # 此前被误当元信息文件解析（无 model_id/tokenizer_dir），
+                # 抛"既无有效 tokenizer_dir 也无 model_id"。
+                if not (isinstance(meta, dict) and "model" in meta):
+                    raise FileNotFoundError(
+                        f"文件 {path} 既不是 verse_infra tokenizer 元信息文件"
+                        f"（缺少 model_id/tokenizer_dir 引用字段）也不是 HF 标准"
+                        f" tokenizer.json（缺少顶层 model 字段），无法加载"
+                    )
+                # 原生模式（gt.Tokenizer(model_id)）只接受 model_id / 本地目录，
+                # 单文件 tokenizer.json 无法走原生路径，自动转为兼容模式。
+                self._native = False
+                base_dir = os.path.dirname(path)
+                tok_cfg_json = os.path.join(base_dir, "tokenizer_config.json")
+                if os.path.isfile(tok_cfg_json):
+                    # 同目录有 tokenizer_config.json：整体作为 HF tokenizer 目录
+                    # 加载，保留 chat template 与特殊 token 语义
+                    hf_tok = AutoTokenizer.from_pretrained(
+                        base_dir, trust_remote_code=self._trust_remote_code
+                    )
+                    self._tokenizer_dir = base_dir
+                else:
+                    # 只有单个 tokenizer.json：用 PreTrainedTokenizerFast 直接
+                    # 从文件构造（不要求 tokenizer_config.json）
+                    try:
+                        from transformers import PreTrainedTokenizerFast
+                        hf_tok = PreTrainedTokenizerFast(tokenizer_file=path)
+                    except Exception as e:
+                        raise FileNotFoundError(
+                            f"加载 HF 标准 tokenizer.json 失败：{path}（{e}）"
+                        ) from e
+                    self._tokenizer_dir = None
+                self._model_id = None
+                self._hf_tokenizer = hf_tok
+                self._tokenizer = gt.Tokenizer(hf_tok).as_hf()
+                return
+            # verse_infra 元信息文件：按原有逻辑解析引用
             self._native = bool(meta.get("native", False))
             self._model_id = meta.get("model_id")
             self._trust_remote_code = meta.get("trust_remote_code", True)
