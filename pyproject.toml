@@ -20,6 +20,6 @@ members = [
 #
 # 兼容性说明：
 # - packages/verse_tokenizer / verse_inference / verse_compat / verse_trainer
-#   已迁入 packages/verse_infra，原位置保留 thin shim（发出 DeprecationWarning）。
-# - 这些 shim 目录不再是 workspace 成员（仅 verse_infra 声明全部子模块）。
-# - 旧路径 ``from verse_tokenizer import ...`` 仍可用（shim 转发 + DeprecationWarning）。
+#   已迁入 packages/verse_infra（verse_infra.verse_tokenizer 等子模块）。
+# - Part1：顶层 shim 目录已彻底删除，旧路径 ``from verse_tokenizer import ...``
+#   不再可用，请使用 ``from verse_infra.verse_tokenizer import ...``。

@@ -5,8 +5,8 @@
 
 用法
 ----
-    from verse_compat import torch_api as torch
-    # 或：from verse_compat.torch_api import Tensor, nn, optim
+    from verse_infra.verse_compat import torch_api as torch
+    # 或：from verse_infra.verse_compat.torch_api import Tensor, nn, optim
 
     x = torch.randn(2, 3)             # -> verse_torch.Tensor
     linear = torch.nn.Linear(3, 4)
@@ -34,7 +34,7 @@ from verse_torch import (
     set_grad_enabled,
     is_grad_enabled,
 )
-from verse_torch.nn import (
+from verse_torch.vnnn import (
     Linear,
     Embedding,
     LayerNorm,

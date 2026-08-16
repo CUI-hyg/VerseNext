@@ -43,15 +43,10 @@ import time
 import uuid
 from typing import Any, Optional
 
-# 兼容两种执行方式：
-# - 作为模块运行 ``python -m verse_inference.server`` → 包内相对导入可用
-# - 作为脚本运行 ``python server.py`` → 相对导入失败，回退到绝对导入
-try:
-    from .generator import StreamingGenerator
-    from .sampler import Sampler
-except ImportError:  # pragma: no cover - 仅在直接脚本执行时触发
-    from verse_inference.generator import StreamingGenerator
-    from verse_inference.sampler import Sampler
+# 包内相对导入（Part6/Part1：顶层 verse_inference shim 已删除，统一走
+# verse_infra.verse_inference，不再支持直接脚本执行时的旧绝对路径）
+from .generator import StreamingGenerator
+from .sampler import Sampler
 
 
 # ---------------------------------------------------------------------------

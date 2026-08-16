@@ -7,15 +7,13 @@
 - :mod:`verse_infra.verse_inference` — 模型加载 / 状态缓存 / 流式生成
 - :mod:`verse_infra.verse_trainer` — 预训练 / 微调 / 后训练 / 评估 CLI
 
-导入路径迁移指南
-----------------
-旧路径（带 DeprecationWarning，仍可用）::
-
-    from verse_tokenizer import BPETokenizer       # 仍可用，会发警告
-
-新路径（推荐）::
+导入路径
+--------
+Part1：顶层 shim（``verse_tokenizer`` / ``verse_compat`` / ``verse_inference`` /
+``verse_trainer``）已彻底删除，统一使用新版路径::
 
     from verse_infra.verse_tokenizer import BPETokenizer
+    from verse_infra.verse_trainer import train, RLTrainer
 
 便捷重导出::
 
