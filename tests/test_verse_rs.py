@@ -269,3 +269,92 @@ def test_optimizer_f64_falls_back():
     ref = run(False)
     assert res.dtype == np.float64
     assert np.allclose(res, ref, atol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# 5. 训练工具链内核（log_softmax / clip_grad_norm）
+# ---------------------------------------------------------------------------
+
+
+def test_log_softmax_forward_matches_numpy():
+    rng = np.random.default_rng(0)
+    for shape in ((8, 16), (2, 3, 5), (4, 1)):
+        x = rng.standard_normal(shape).astype(np.float32)
+        xm = x.max(axis=-1, keepdims=True)
+        ref = (x - xm) - np.log(np.sum(np.exp(x - xm), axis=-1, keepdims=True))
+        out = np.asarray(verse_rs.log_softmax_forward(x))
+        assert out.shape == shape
+        assert np.allclose(out, ref, atol=1e-5)
+
+
+def test_log_softmax_backward_matches_numpy():
+    rng = np.random.default_rng(1)
+    x = rng.standard_normal((8, 16)).astype(np.float32)
+    out = np.asarray(verse_rs.log_softmax_forward(x))
+    g = rng.standard_normal((8, 16)).astype(np.float32)
+    ref = g - np.exp(out) * np.sum(g, axis=-1, keepdims=True)
+    dx = np.asarray(verse_rs.log_softmax_backward(g, out))
+    assert np.allclose(dx, ref, atol=1e-5)
+
+
+def test_tensor_log_softmax_e2e():
+    """Tensor.log_softmax 走 Rust 前反向，数值与 NumPy 参考一致。"""
+    rng = np.random.default_rng(2)
+    x = Tensor(rng.standard_normal((6, 10)).astype(np.float32), requires_grad=True)
+    out = x.log_softmax(dim=-1)
+    g = Tensor(rng.standard_normal((6, 10)).astype(np.float32))
+    out.backward(g)
+    xm = x.data.max(axis=-1, keepdims=True)
+    ref = (x.data - xm) - np.log(np.sum(np.exp(x.data - xm), axis=-1, keepdims=True))
+    assert np.allclose(out.data, ref, atol=1e-5)
+    s = np.exp(ref)
+    ref_dx = g.data - s * np.sum(g.data, axis=-1, keepdims=True)
+    assert np.allclose(x.grad, ref_dx, atol=1e-5)
+
+
+def test_cross_entropy_rust_path():
+    """cross_entropy（走 Rust log_softmax）前反向完整可用。"""
+    from verse_torch.losses import cross_entropy
+
+    rng = np.random.default_rng(3)
+    logits = Tensor(rng.standard_normal((5, 8)).astype(np.float32), requires_grad=True)
+    tgt = rng.integers(0, 8, size=5)
+    loss = cross_entropy(logits, tgt)
+    loss.backward()
+    assert loss.data.shape == ()
+    assert logits.grad is not None and logits.grad.shape == logits.shape
+    assert np.isfinite(logits.grad).all()
+
+
+def test_clip_grad_norm_rust_path():
+    """clip_grad_norm 走 Rust：裁剪后范数收敛到 max_norm。"""
+    from verse_torch.training import clip_grad_norm
+
+    rng = np.random.default_rng(4)
+    params = []
+    for s in ((3, 4), (5,), (2, 2, 2)):
+        p = Tensor(rng.standard_normal(s).astype(np.float32), requires_grad=True)
+        p.grad = rng.standard_normal(s).astype(np.float32)
+        params.append(p)
+    tn = clip_grad_norm(params, max_norm=0.1)
+    assert tn > 0.1
+    norm_after = float(np.sqrt(sum(float(np.sum(p.grad * p.grad)) for p in params)))
+    assert abs(norm_after - 0.1) < 1e-3
+    # 未触发裁剪时返回值与 NumPy 参考一致
+    p2 = Tensor(rng.standard_normal((2, 3)).astype(np.float32), requires_grad=True)
+    p2.grad = rng.standard_normal((2, 3)).astype(np.float32)
+    tn2 = clip_grad_norm([p2], max_norm=100.0)
+    ref_tn = float(np.sqrt(float(np.sum(p2.grad * p2.grad))))
+    assert abs(tn2 - ref_tn) < 1e-4
+
+
+def test_clip_grad_norm_f64_falls_back():
+    """float64 梯度自动降级 NumPy 路径。"""
+    from verse_torch.training import clip_grad_norm
+
+    rng = np.random.default_rng(5)
+    p = Tensor(rng.standard_normal((2, 3)), requires_grad=True)
+    p.grad = rng.standard_normal((2, 3))
+    tn = clip_grad_norm([p], max_norm=0.5)
+    assert tn > 0
+    assert np.isfinite(p.grad).all()

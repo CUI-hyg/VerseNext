@@ -27,6 +27,44 @@ _TORCH = get_torch_module()
 #: PyTorch 是否可用（用于快速短路判断）
 _TORCH_AVAILABLE = has_torch()
 
+# Part1：Rust 内核（与 tensor.rs 同目录产物 verse_rs.so），缺失时自动降级。
+try:
+    from . import verse_rs as _VERSE_RS
+except ImportError:  # pragma: no cover - .so 未构建（源码树/纯净环境）
+    _VERSE_RS = None
+
+
+def _rs_log_softmax_forward(x, dim):
+    """Rust log_softmax 前向；不可用（dtype/连续/轴）时返回 None。"""
+    if _VERSE_RS is None:
+        return None
+    if x.dtype != np.float32 or not x.flags.c_contiguous:
+        return None
+    d = dim if dim >= 0 else dim + x.ndim
+    if d != x.ndim - 1:
+        return None
+    try:
+        return np.asarray(_VERSE_RS.log_softmax_forward(x))
+    except Exception:
+        return None
+
+
+def _rs_log_softmax_backward(grad, out, dim):
+    """Rust log_softmax 反向；不可用时返回 None。"""
+    if _VERSE_RS is None:
+        return None
+    if grad.dtype != np.float32 or out.dtype != np.float32:
+        return None
+    if not grad.flags.c_contiguous or not out.flags.c_contiguous:
+        return None
+    d = dim if dim >= 0 else dim + grad.ndim
+    if d != grad.ndim - 1:
+        return None
+    try:
+        return np.asarray(_VERSE_RS.log_softmax_backward(grad, out))
+    except Exception:
+        return None
+
 
 def _is_torch_data(x) -> bool:
     """判断 ``x`` 是否为 ``torch.Tensor``（无 torch 时恒为 False）。
@@ -955,6 +993,27 @@ class Tensor:
             return self._torch_apply(
                 lambda a: _TORCH.log_softmax(a, dim=dim), _op="log_softmax"
             )
+        # Part1 Rust 内核：float32、C 连续、沿最后一维时单遍计算
+        rs_out = _rs_log_softmax_forward(self.data, dim)
+        if rs_out is not None:
+            out_data = rs_out
+
+            def _backward():
+                if self.requires_grad:
+                    rs_grad = _rs_log_softmax_backward(out.grad, out_data, dim)
+                    if rs_grad is not None:
+                        self._accumulate_grad(rs_grad)
+                        return
+                    # 降级：NumPy 路径
+                    s = np.exp(out_data)
+                    sum_grad = np.sum(out.grad, axis=dim, keepdims=True)
+                    grad = out.grad - s * sum_grad
+                    self._accumulate_grad(grad)
+
+            out = self._result(out_data, (self,), "log_softmax")
+            if out.requires_grad:
+                out._backward = _backward
+            return out
         x = self.data
         x_max = np.max(x, axis=dim, keepdims=True)
         shifted = x - x_max

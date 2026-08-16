@@ -52,6 +52,12 @@ from .vn_format import VNFileWriter, VNFileReader
 # 模块级缓存 torch 模块（无 torch 时为 None）
 _TORCH = get_torch_module()
 
+# Part1：Rust 内核（与 training.rs 同名产物 verse_rs.so），缺失时自动降级。
+try:
+    from . import verse_rs as _VERSE_RS
+except ImportError:  # pragma: no cover - .so 未构建（源码树/纯净环境）
+    _VERSE_RS = None
+
 
 def _get_autocast(device=None, enabled: bool = True):
     """获取 autocast 上下文管理器（无 torch 或 CPU 时返回 no-op contextmanager）。
@@ -394,12 +400,32 @@ def clip_grad_norm(params, max_norm: float) -> float:
 
     Returns:
         裁剪前的总范数（float）
+
+    Part1：全部梯度为 float32 NumPy 数组时走 Rust 内核
+    （``training.rs`` 的 ``grad_norm`` / ``scale_grads``），否则降级 NumPy。
     """
     if max_norm is None or max_norm <= 0:
         return 0.0
     grads = [p.grad for p in params if p.grad is not None]
     if not grads:
         return 0.0
+    # Part1 Rust 内核
+    if _VERSE_RS is not None and all(
+        isinstance(g, np.ndarray) and g.dtype == np.float32 for g in grads
+    ):
+        try:
+            total_norm = float(_VERSE_RS.grad_norm(grads))
+            if total_norm > max_norm and total_norm > 0:
+                scale = max_norm / (total_norm + 1e-6)
+                new_grads = _VERSE_RS.scale_grads(grads, scale)
+                i = 0
+                for p in params:
+                    if p.grad is not None:
+                        p.grad = np.asarray(new_grads[i])
+                        i += 1
+            return total_norm
+        except Exception:
+            pass  # 降级到 NumPy 路径
     total_norm = float(math.sqrt(sum(float(np.sum(g * g)) for g in grads)))
     if total_norm > max_norm and total_norm > 0:
         scale = max_norm / (total_norm + 1e-6)
