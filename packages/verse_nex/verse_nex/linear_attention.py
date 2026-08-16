@@ -24,7 +24,7 @@ from __future__ import annotations
 import numpy as np
 
 from verse_torch import Tensor, nn, no_grad
-from verse_torch.vnn import Linear, RMSNorm, Module
+from verse_torch.vnnn import Linear, RMSNorm, Module
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +251,7 @@ class RetNet(Module):
         Part5K1.7：使用可微 _concat + _pad_last_dim 替换 np.concatenate，
         恢复 qkv 投影权重的梯度路径。
         """
-        from verse_torch.vnn import _concat
+        from verse_torch.vnnn import _concat
         from verse_nex.sparse_attention import _pad_last_dim
 
         B, T, D = x.shape

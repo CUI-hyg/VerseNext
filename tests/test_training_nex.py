@@ -121,7 +121,7 @@ def _count_module_type(model, cls):
 def _all_params(model):
     """递归 yield 所有 Tensor 参数（不论 requires_grad）。
 
-    verse_torch.nn.Module.parameters() 仅返回 requires_grad=True 的参数，
+    verse_torch.vnnn.Module.parameters() 仅返回 requires_grad=True 的参数，
     因此需要直接遍历 _parameters 字典以覆盖被冻结的参数。
     """
     for m in model.modules():

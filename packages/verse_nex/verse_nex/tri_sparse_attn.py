@@ -21,11 +21,11 @@ SWA (Sliding Window) + Global Token + ALiBi 三路并行计算并加权融合。
 - forward_recurrent：单步递推（推理），维护滑动窗口 KV cache 与 global KV。
 
 复用的项目内已有功能：
-- verse_torch.nn.Linear / Dropout / Embedding / Module / normal_
-- verse_torch.nn._concat（可微 Tensor 拼接，KV cache 用，与 GQASelfAttention 一致）
-- verse_torch.nn.repeat_kv（GQA head 复制）
+- verse_torch.vnnn.Linear / Dropout / Embedding / Module / normal_
+- verse_torch.vnnn._concat（可微 Tensor 拼接，KV cache 用，与 GQASelfAttention 一致）
+- verse_torch.vnnn.repeat_kv（GQA head 复制）
 - verse_nex.sparse_attention._pad_last_dim（带梯度的轴向 padding）
-- ALiBi slopes 公式与 verse_torch.nn.ALiBi 一致（m_h = 1/2^(h/n_head)，h=1..n_head）
+- ALiBi slopes 公式与 verse_torch.vnnn.ALiBi 一致（m_h = 1/2^(h/n_head)，h=1..n_head）
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from __future__ import annotations
 import numpy as np
 
 from verse_torch import Tensor, no_grad
-from verse_torch.vnn import (
+from verse_torch.vnnn import (
     Linear,
     Module,
     Dropout,
@@ -148,7 +148,7 @@ class TriSparseAttention(Module):
         # gate 取值会随训练自适应，这里严格按契约 "logits=[0,0,0]" 初始化。
         self.gate_logits = Tensor(np.zeros(3, dtype=np.float32), requires_grad=True)
 
-        # ALiBi slopes（与 verse_torch.nn.ALiBi 一致：m_h = 1/2^(h/n_head)，h=1..n_head）
+        # ALiBi slopes（与 verse_torch.vnnn.ALiBi 一致：m_h = 1/2^(h/n_head)，h=1..n_head）
         slopes = 1.0 / (
             2.0 ** (np.arange(1, n_head + 1, dtype=np.float32) / n_head)
         )

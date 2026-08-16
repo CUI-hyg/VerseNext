@@ -22,7 +22,7 @@ from __future__ import annotations
 import numpy as np
 
 from .tensor import Tensor, no_grad
-from . import vnn as nn
+from . import vnnn as nn
 from .losses import cross_entropy, kl_div_loss, mse_loss
 from .quantize import QuantizedLinear
 

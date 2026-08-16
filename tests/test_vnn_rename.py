@@ -1,15 +1,18 @@
-"""Part5K1 Task 1：VerseTorch.nn → VerseTorch.vnn 重命名测试。
+"""Part1：VerseTorch vnn.py + nn.py → vnnn.py 合并测试。
 
 验证内容：
-1. 新导入路径 ``from verse_torch.vnn import ...`` 全部核心符号可用。
-2. 旧路径 ``from verse_torch import nn`` 仍可工作（向后兼容，不报错）。
-3. transformer 系旧名（``TransformerLM`` / ``TransformerBlock`` / ``GQASelfAttention``）
-   从 ``verse_torch.nn`` 导入时抛 ``ImportError``（Part5K1 REMOVED）。
-4. ``vnn`` 中的核心类可正常实例化（小尺寸）。
+1. 新导入路径 ``from verse_torch.vnnn import ...`` 全部核心符号可用。
+2. 顶层 ``from verse_torch import nn`` 仍可用（属性别名指向 vnnn，仅属性级兼容）。
+3. 旧模块路径 ``verse_torch.vnn`` / ``verse_torch.nn`` 已删除，导入抛
+   ``ModuleNotFoundError``（Part1 BREAKING）。
+4. transformer 系旧名（``TransformerLM`` / ``TransformerBlock`` / ``GQASelfAttention``）
+   从 ``vnnn`` 访问时抛 ``ImportError``（Part5K1 REMOVED，合并后保留拦截钩子）。
+5. ``vnnn`` 中的核心类可正常实例化（小尺寸）。
 """
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -26,8 +29,8 @@ sys.path.insert(0, str(_REPO_ROOT / "packages" / "verse_torch"))
 
 
 def test_vnn_import_core_symbols():
-    """新路径 ``from verse_torch.vnn import ...`` 全部核心符号导入成功。"""
-    from verse_torch.vnn import (  # noqa: F401
+    """新路径 ``from verse_torch.vnnn import ...`` 全部核心符号导入成功。"""
+    from verse_torch.vnnn import (  # noqa: F401
         Module,
         Linear,
         Embedding,
@@ -44,7 +47,7 @@ def test_vnn_import_core_symbols():
 
 def test_vnn_import_extended_symbols():
     """新路径下扩展符号也可用。"""
-    from verse_torch.vnn import (  # noqa: F401
+    from verse_torch.vnnn import (  # noqa: F401
         SlidingWindowAttention,
         ALiBi,
         DeepNorm,
@@ -64,8 +67,8 @@ def test_vnn_import_extended_symbols():
 
 
 def test_vnn_private_implementations_preserved():
-    """vnn 保留私有实现（``_`` 前缀），供内部使用。"""
-    from verse_torch.vnn import (  # noqa: F401
+    """vnnn 保留私有实现（``_`` 前缀），供内部使用。"""
+    from verse_torch.vnnn import (  # noqa: F401
         _GQASelfAttention,
         _TransformerBlock,
         _TransformerLM,
@@ -74,25 +77,41 @@ def test_vnn_private_implementations_preserved():
 
 
 # ---------------------------------------------------------------------------
-# 2. 旧路径 ``from verse_torch import nn`` 仍可工作
+# 2. 顶层 ``from verse_torch import nn`` 仍可用（属性别名）
 # ---------------------------------------------------------------------------
 
 
 def test_old_nn_alias_still_works():
-    """``from verse_torch import nn`` 不报错（nn 指向 vnn 别名）。"""
+    """``from verse_torch import nn`` 不报错（nn 指向 vnnn 别名）。"""
     from verse_torch import nn
-    # nn 应是 vnn 模块（或至少提供相同的核心符号）
     assert hasattr(nn, "Module")
     assert hasattr(nn, "Linear")
     assert hasattr(nn, "Embedding")
     assert hasattr(nn, "LayerNorm")
 
 
-def test_from_verse_torch_nn_import_module_works():
-    """``from verse_torch.nn import Module`` 仍可用（经薄壳 re-export）。"""
-    from verse_torch.nn import Module as ShimModule
-    from verse_torch.vnn import Module as VnnModule
-    assert ShimModule is VnnModule
+def test_old_vnn_nn_module_paths_removed():
+    """Part1：``verse_torch.vnn`` / ``verse_torch.nn`` 子模块已删除。"""
+    code = (
+        "import sys\n"
+        "sys.path.insert(0, 'packages')\n"
+        "for bad in ('verse_torch.nn', 'verse_torch.vnn'):\n"
+        "    try:\n"
+        "        __import__(bad, fromlist=['*'])\n"
+        "    except ModuleNotFoundError:\n"
+        "        continue\n"
+        "    else:\n"
+        "        raise SystemExit(f'{bad} should have been removed')\n"
+        "print('ModuleNotFoundError as expected')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, (
+        f"旧模块路径删除验证失败：\nstdout={result.stdout}\nstderr={result.stderr}"
+    )
+    assert "ModuleNotFoundError as expected" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -102,26 +121,26 @@ def test_from_verse_torch_nn_import_module_works():
 
 @pytest.mark.parametrize("old_name", ["TransformerLM", "TransformerBlock", "GQASelfAttention"])
 def test_transformer_old_names_raise_importerror_via_getattr(old_name):
-    """``getattr(verse_torch.nn, <old_name>)`` 应抛 ImportError。"""
+    """``getattr(verse_torch.vnnn, <old_name>)`` 应抛 ImportError。"""
     import importlib
-    nn_mod = importlib.import_module("verse_torch.nn")
+    vnnn_mod = importlib.import_module("verse_torch.vnnn")
     with pytest.raises(ImportError, match=old_name):
-        getattr(nn_mod, old_name)
+        getattr(vnnn_mod, old_name)
 
 
 @pytest.mark.parametrize("old_name", ["TransformerLM", "TransformerBlock", "GQASelfAttention"])
 def test_transformer_old_names_raise_importerror_via_from_import(old_name):
-    """``from verse_torch.nn import <old_name>`` 应抛 ImportError。"""
+    """``from verse_torch.vnnn import <old_name>`` 应抛 ImportError。"""
     import importlib
-    nn_mod = importlib.import_module("verse_torch.nn")
+    vnnn_mod = importlib.import_module("verse_torch.vnnn")
     with pytest.raises(ImportError, match=old_name):
-        # 等价于 from verse_torch.nn import <old_name>
-        getattr(nn_mod, old_name)
+        # 等价于 from verse_torch.vnnn import <old_name>
+        getattr(vnnn_mod, old_name)
 
 
-def test_transformer_private_names_still_importable_from_vnn():
-    """私有实现（``_`` 前缀）仍可从 vnn 正常导入。"""
-    from verse_torch.vnn import _TransformerLM, _TransformerBlock, _GQASelfAttention
+def test_transformer_private_names_still_importable_from_vnnn():
+    """私有实现（``_`` 前缀）仍可从 vnnn 正常导入。"""
+    from verse_torch.vnnn import _TransformerLM, _TransformerBlock, _GQASelfAttention
     # 它们应是类（可被子类化/实例化）
     assert isinstance(_TransformerLM, type)
     assert isinstance(_TransformerBlock, type)
@@ -129,7 +148,7 @@ def test_transformer_private_names_still_importable_from_vnn():
 
 
 # ---------------------------------------------------------------------------
-# 4. vnn 核心类可正常实例化
+# 4. vnnn 核心类可正常实例化
 # ---------------------------------------------------------------------------
 
 
@@ -137,7 +156,7 @@ def test_linear_instantiation():
     """Linear(4, 2) 可正常实例化与前向。"""
     import numpy as np
     from verse_torch import Tensor
-    from verse_torch.vnn import Linear
+    from verse_torch.vnnn import Linear
 
     np.random.seed(0)
     layer = Linear(4, 2)
@@ -151,7 +170,7 @@ def test_linear_instantiation():
 def test_embedding_instantiation():
     """Embedding(10, 4) 可正常实例化与前向。"""
     import numpy as np
-    from verse_torch.vnn import Embedding
+    from verse_torch.vnnn import Embedding
 
     np.random.seed(0)
     emb = Embedding(10, 4)
@@ -164,7 +183,7 @@ def test_layernorm_instantiation():
     """LayerNorm(4) 可正常实例化与前向。"""
     import numpy as np
     from verse_torch import Tensor
-    from verse_torch.vnn import LayerNorm
+    from verse_torch.vnnn import LayerNorm
 
     np.random.seed(0)
     ln = LayerNorm(4)
@@ -179,7 +198,7 @@ def test_rmsnorm_instantiation():
     """RMSNorm(4) 可正常实例化与前向。"""
     import numpy as np
     from verse_torch import Tensor
-    from verse_torch.vnn import RMSNorm
+    from verse_torch.vnnn import RMSNorm
 
     np.random.seed(0)
     rn = RMSNorm(4)
@@ -191,7 +210,7 @@ def test_rmsnorm_instantiation():
 
 def test_dropout_instantiation():
     """Dropout(0.5) 可正常实例化。"""
-    from verse_torch.vnn import Dropout
+    from verse_torch.vnnn import Dropout
 
     d = Dropout(0.5)
     assert d.p == 0.5
@@ -208,7 +227,7 @@ def test_sequential_instantiation():
     """Sequential 可正常实例化与调用。"""
     import numpy as np
     from verse_torch import Tensor
-    from verse_torch.vnn import Sequential, Linear
+    from verse_torch.vnnn import Sequential, Linear
 
     np.random.seed(0)
     seq = Sequential(Linear(4, 8), Linear(8, 2))
@@ -219,7 +238,7 @@ def test_sequential_instantiation():
 
 def test_modulelist_instantiation():
     """ModuleList 可正常实例化与索引。"""
-    from verse_torch.vnn import ModuleList, Linear
+    from verse_torch.vnnn import ModuleList, Linear
 
     ml = ModuleList([Linear(4, 2), Linear(4, 3)])
     assert len(ml) == 2
@@ -231,7 +250,7 @@ def test_swiglu_mlp_instantiation():
     """SwiGLUMLP 可正常实例化与前向。"""
     import numpy as np
     from verse_torch import Tensor
-    from verse_torch.vnn import SwiGLUMLP
+    from verse_torch.vnnn import SwiGLUMLP
 
     np.random.seed(0)
     mlp = SwiGLUMLP(8, dropout=0.0)
@@ -244,7 +263,7 @@ def test_init_helpers_run():
     """kaiming_uniform_ / xavier_uniform_ 可对 Tensor 正常调用。"""
     import numpy as np
     from verse_torch import Tensor
-    from verse_torch.vnn import kaiming_uniform_, xavier_uniform_
+    from verse_torch.vnnn import kaiming_uniform_, xavier_uniform_
 
     np.random.seed(0)
     t = Tensor.empty(4, 4, requires_grad=True)

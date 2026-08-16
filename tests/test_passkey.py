@@ -37,7 +37,7 @@ sys.path.insert(0, str(REPO_ROOT / "packages" / "verse_torch"))
 sys.path.insert(0, str(REPO_ROOT / "packages" / "verse_nex"))
 
 from verse_torch import Tensor, no_grad
-from verse_torch.vnn import Module
+from verse_torch.vnnn import Module
 from verse_torch.optim import AdamW
 from verse_torch.losses import cross_entropy
 # HybridLM 已 deprecated，从子模块导入（保留只读兼容）。

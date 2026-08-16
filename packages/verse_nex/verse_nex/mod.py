@@ -32,7 +32,7 @@ V1.2 升级要点
 - ``P_i`` 是 router 给 route i 的平均概率（可微，梯度通过 softmax 回传）
 
 设计要点：
-- Expert 复用 ``verse_torch.vnn.SwiGLUMLP`` 的 SwiGLU MLP 结构（同 Linear / Dropout / silu）
+- Expert 复用 ``verse_torch.vnnn.SwiGLUMLP`` 的 SwiGLU MLP 结构（同 Linear / Dropout / silu）
 - dispatch/combine 用 numpy 索引实现，手写 ``_backward`` 闭包保持梯度可微
 - 不实现 capacity 限制、expert parallelism、token dropping
 - 重点是正确性和可微性
@@ -53,7 +53,7 @@ from typing import Optional
 import numpy as np
 
 from verse_torch import Tensor, no_grad
-from verse_torch.vnn import (
+from verse_torch.vnnn import (
     Module,
     ModuleList,
     Linear,
@@ -464,7 +464,7 @@ class Router(Module):
 
 
 class Expert(Module):
-    """单个 SwiGLU MLP Expert（复用 ``verse_torch.nn.SwiGLUMLP`` 结构）。
+    """单个 SwiGLU MLP Expert（复用 ``verse_torch.vnnn.SwiGLUMLP`` 结构）。
 
     前向计算::
 

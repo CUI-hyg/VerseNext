@@ -1,4 +1,4 @@
-"""verse_torch.nn 多层神经网络组件单元测试（阶段 1 / Task 1.5）。
+"""verse_torch.vnnn 多层神经网络组件单元测试（阶段 1 / Task 1.5）。
 
 覆盖：
 1. SwiGLUMLP forward shape (B, T, d) 正确
@@ -27,7 +27,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "packages" / "verse_torch"))
 
 from verse_torch import Tensor
-from verse_torch.vnn import (
+from verse_torch.vnnn import (
     SwiGLUMLP,
     _GQASelfAttention as GQASelfAttention,
     _TransformerBlock as TransformerBlock,

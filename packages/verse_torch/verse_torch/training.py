@@ -208,7 +208,7 @@ def activation_checkpoint(module, *args, **kwargs):
       （no-op 降级，不节省显存但保证正确性）。
 
     Args:
-        module: 可调用对象（通常是 ``torch.nn.Module`` 或 ``verse_torch.nn.Module``）
+        module: 可调用对象（通常是 ``torch.nn.Module`` 或 ``verse_torch.vnnn.Module``）
         *args: 透传给 module 的位置参数
         **kwargs: 透传给 module 的关键字参数
 

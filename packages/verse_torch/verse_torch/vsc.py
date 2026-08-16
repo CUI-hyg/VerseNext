@@ -156,7 +156,7 @@ class VSCProfile:
         """分析模型的三维空间占用。
 
         Args:
-            model: ``verse_torch.vnn.Module`` 子类模型
+            model: ``verse_torch.vnnn.Module`` 子类模型
             sample_input: 可选样本输入（用于实测延迟）；None 则仅估算
 
         Returns:
@@ -433,7 +433,7 @@ class VSCEngine:
         """执行三维空间压缩。
 
         Args:
-            model: 待压缩模型（``verse_torch.vnn.Module`` 子类）
+            model: 待压缩模型（``verse_torch.vnnn.Module`` 子类）
             return_stats: 是否返回统计信息
 
         Returns:

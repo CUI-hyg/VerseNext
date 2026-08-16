@@ -29,7 +29,7 @@
   KV cache 拼接（``_concat`` 可微）、数值稳定 softmax。
 
 复用的项目内已有功能：
-- ``verse_torch.vnn``：``Linear / Module / Dropout / Embedding / normal_ /
+- ``verse_torch.vnnn``：``Linear / Module / Dropout / Embedding / normal_ /
   _concat / repeat_kv``
 - ``verse_nex.sparse_attention._pad_last_dim``（带梯度的轴向 padding）
 """
@@ -41,7 +41,7 @@ from typing import Optional
 import numpy as np
 
 from verse_torch import Tensor, no_grad
-from verse_torch.vnn import (
+from verse_torch.vnnn import (
     Linear,
     Module,
     Dropout,

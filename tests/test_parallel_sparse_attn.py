@@ -27,7 +27,7 @@ for _sub in ("verse_torch", "verse_nex"):
 import pytest
 
 from verse_torch import Tensor, no_grad
-from verse_torch.vnn import repeat_kv, StaticCache, DynamicCache
+from verse_torch.vnnn import repeat_kv, StaticCache, DynamicCache
 from verse_nex import TriSparseAttention, ParallelKVCache
 
 

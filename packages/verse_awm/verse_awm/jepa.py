@@ -19,7 +19,7 @@ from __future__ import annotations
 import numpy as np
 
 from verse_torch import Tensor, nn, no_grad
-from verse_torch.nn import Module, Linear, LayerNorm, Dropout, ModuleList
+from verse_torch.vnnn import Module, Linear, LayerNorm, Dropout, ModuleList
 
 
 # ---------------------------------------------------------------------------
