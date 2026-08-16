@@ -3,7 +3,13 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+# 例外：Part1 交付的 Rust 编译产物（与源码同目录、同名入库）
+!packages/verse_torch/verse_torch/verse_rs.so
 .Python
+
+# Rust 构建产物（cargo）
+target/
+Cargo.lock.orig
 
 # 构建产物
 build/
