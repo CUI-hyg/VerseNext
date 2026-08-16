@@ -52,6 +52,17 @@
 - **新训练设施（`training.py`）**：`DistributedTrainer` 占位接口（多卡数据并行 API 预留）/ `autocast` 混合精度上下文（GPU 后端，CPU 时 no-op）
 - **可选依赖**：`pyproject.toml` 把 `torch` 声明为可选 extra（`pip install -e packages/verse_torch[gpu]`）
 
+### Part1 新增能力（性能内核化）
+
+- **可选 Rust 数值内核（`verse_rs`，pyo3 + rayon 构建）**：
+  - `parallel.py`：批量 matmul 走 Rust（rayon 按 batch 分片，替代 multiprocessing 进程池）
+  - `optim.py` / `optim_extras.py`：AdamW / NAdamW / Lion / RMSProp / SGD 的 step 更新走 Rust（单遍遍历 + 解耦 weight decay）
+  - `tensor.py` / `losses.py`：`log_softmax` 前反向走 Rust（`cross_entropy` 复用），单遍数值稳定遍历
+  - `training.py`：`clip_grad_norm` 全局范数归约 + 裁剪缩放走 Rust
+  - **自动降级**：`.so` 缺失 / 非 float32 / 非连续内存时回退 NumPy 原路径，数值对拍 `atol=1e-5`
+- **模块拆分**：`training.py`（3677 行）→ `training.py`（训练循环）+ `checkpoint.py`（CheckpointManager / ResumeManager / ResumeState）+ `plotting.py`（compute_loss_rate / plot_loss_curve / ASCII 降级），导入路径完全兼容
+- **工程约定**：Rust 内核源码与同名 Python 文件同目录（`verse_torch/parallel.rs` 等），`src/lib.rs` 经 `#[path]` 引用
+
 ## 安装
 
 ```bash
@@ -830,13 +841,15 @@ print(f"loss 差异: {report['loss_diff_pct']:.2f}%")
 - **CPU-first**：所有运算基于 NumPy + BLAS，不依赖 GPU（参考 [ADR-001](../../docs/architecture/adr-001-cpu-first.md)）。
 - **GPU/NPU 可选委托（Part4K1）**：CPU-first 不变，PyTorch 仅作为可选加速后端；GPU 路径委托 `torch` 原生算子，不自研 kernel（参考 [ADR-005](../../docs/architecture/adr-005-gpu-npu-backend.md)）。
 - **零重型依赖**：运行时仅 NumPy + 标准库；`matplotlib` / `numba` / `torch` 均为可选加速。
+- **可选 Rust 内核（Part1）**：`verse_rs`（pyo3 + rayon 构建）覆盖训练循环 CPU 热点（matmul / 优化器 step / log_softmax / grad clip），**缺失自动降级**为纯 NumPy 路径，数值结果一致（参考 [ADR-020](../../docs/architecture/adr-020-rust-kernels.md)）。
 - **PyTorch API 兼容**：`Tensor` / `nn.Module` / `optim` / `losses` 命名与签名贴近 PyTorch，降低迁移成本。
-- **数值正确性**：所有算子均通过有限差分梯度检查（见 `tests/test_unit_operators.py`）；GPU 后端与 CPU 后端语义等价。
+- **数值正确性**：所有算子均通过有限差分梯度检查（见 `tests/test_unit_operators.py`）；GPU 后端与 CPU 后端语义等价；Rust 内核与 NumPy 参考逐项对拍（`atol=1e-5`）。
 
 ## 测试
 
 | 文件 | 覆盖范围 |
 |---|---|
+| [test_verse_rs.py](../../tests/test_verse_rs.py) | **Part1** Rust 内核：batched matmul / 5 个优化器 step / log_softmax / grad_norm / scale_grads 对拍与自动降级 |
 | [test_nn_advanced.py](../../tests/test_nn_advanced.py) | SwiGLU / GQA / TransformerLM 前向 + 反向 |
 | [test_training.py](../../tests/test_training.py) | Trainer / cross_entropy / 调度器 / EarlyStopping |
 | [test_parallel.py](../../tests/test_parallel.py) | 并行 matmul 数值一致性 |

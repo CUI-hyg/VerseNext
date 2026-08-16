@@ -8,7 +8,7 @@ VerseNext 的目标是用 **线性复杂度架构（SSM / Mamba / RWKV / Linear 
 
 | 包 | PyPI 名 | 定位 | 关键能力 |
 |---|---|---|---|
-| **VerseTorch** | `verse-torch` | 纯 Python + NumPy 的张量与自动微分引擎（PyTorch 替代） | `Tensor` 类、动态计算图、反向模式 autograd、`nn.Module`、优化器栈（SGD/Adam/AdamW/NAdamW/RMSProp）、INT4/INT8/1.58-bit 量化、可读 PyTorch `state_dict`、`DeviceBackend` 抽象（CPU/GPU/NPU） |
+| **VerseTorch** | `verse-torch` | 纯 Python + NumPy 的张量与自动微分引擎（PyTorch 替代），可选 Rust 数值内核加速 | `Tensor` 类、动态计算图、反向模式 autograd、`nn.Module`、优化器栈（SGD/Adam/AdamW/NAdamW/RMSProp）、INT4/INT8/1.58-bit 量化、可读 PyTorch `state_dict`、`DeviceBackend` 抽象（CPU/GPU/NPU）、可选 `verse_rs` Rust 内核（matmul / 优化器 step / log_softmax / grad clip，缺失自动降级） |
 | **VerseNex** | `verse-nex` | Transformer 替代架构库 + VerseNex 原生架构 | Mamba-2 / RWKV-7 / RetNet Linear Attention / Sparse Attention / Hybrid / **TriSparseAttention** / **MoDLayer**（5 DensePart × 8 Expert × top-3）/ **VerseNexLM** / **NexRL** 强化学习 |
 | **VerseAWM** | `verse-awm` | 世界模型专用包（Autonomous World Model） | I-JEPA / V-JEPA 潜在空间预测、RSSM（Dreamer 风格）、H-JEPA 层次化规划、EMA target encoder、energy-based loss |
 | **VerseInfra** | `verse-infra` | 总包：聚合 verse_tokenizer / verse_compat / verse_inference / verse_trainer 四个子模块 | 单包安装 + 子模块结构 + 便捷重导出 + shim 兼容旧导入路径 |
@@ -464,6 +464,20 @@ resume = ResumeManager()
 state = resume.load("mf_small/best.vn")  # ResumeState(model_state_dict, optimizer_state, step, rng_state, ...)
 resume.apply(trainer, "mf_small/best.vn")  # 恢复 model / optimizer / step / rng / best_val_loss
 trainer.fit()  # 从 step=N 继续
+```
+
+### Rust 数值内核（Part1 新增，可选加速）
+
+VerseTorch 提供**可选 Rust 数值内核 `verse_rs`**（pyo3 + rayon 构建，CPU-first 无 BLAS 依赖），覆盖训练循环 CPU 热点；Python 侧「优先走 Rust、缺失自动降级」，任何情况下数值结果与纯 NumPy 一致。详见 [ADR-020](docs/architecture/adr-020-rust-kernels.md)。
+
+- **覆盖内核**：`batched_matmul`（批量矩阵乘，rayon 按 batch 分片替代 multiprocessing 进程池）、5 个优化器 step（AdamW / NAdamW / Lion / RMSProp / SGD）、`log_softmax` 前反向（`cross_entropy` 复用）、`clip_grad_norm`（全局范数归约 + 裁剪）。
+- **自动降级**：`verse_rs.so` 缺失 / 非 float32 / 非连续内存时自动回退 NumPy 原路径，无需任何配置。
+- **模块拆分**：`training.py` 拆分为 `training.py`（训练循环）+ `checkpoint.py`（持久化）+ `plotting.py`（绘图），导入路径完全兼容。
+
+```python
+from verse_torch.parallel import parallel_matmul            # matmul 自动走 Rust
+from verse_torch.training import clip_grad_norm, Trainer     # grad clip 自动走 Rust
+from verse_torch.optim import AdamW                          # step 更新自动走 Rust
 ```
 
 ## 安装
