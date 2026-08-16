@@ -163,3 +163,109 @@ def test_parallel_linear_forward_backward():
     assert np.allclose(layer.weight.grad, g.data.T @ x.data, atol=1e-3)
     assert layer.bias.grad is not None
     assert np.allclose(layer.bias.grad, g.data.sum(axis=0), atol=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# 4. 优化器 Rust 内核集成（与 NumPy 降级路径多步对拍）
+# ---------------------------------------------------------------------------
+
+
+def _run_optim(opt_factory, steps=4, rs_enabled=True):
+    """以固定种子跑 N 步优化器，返回 (param_list, state_list)。"""
+    rng = np.random.default_rng(42)
+    shapes = [(8,), (4, 6), (2, 3, 4)]
+    params = [
+        Tensor(rng.standard_normal(s).astype(np.float32), requires_grad=True)
+        for s in shapes
+    ]
+    import verse_torch.optim as O
+
+    old = O._VERSE_RS
+    try:
+        O._VERSE_RS = verse_rs if rs_enabled else None
+        opt = opt_factory(params)
+        for _ in range(steps):
+            for p in params:
+                p.grad = rng.standard_normal(p.shape).astype(np.float32)
+            opt.step()
+    finally:
+        O._VERSE_RS = old
+    return [p.data.copy() for p in params]
+
+
+@pytest.mark.parametrize(
+    "opt_factory",
+    [
+        lambda ps: verse_torch.optim.SGD(ps, lr=0.01, momentum=0.9),
+        lambda ps: verse_torch.optim.SGD(ps, lr=0.01, momentum=0.9, weight_decay=0.01, nesterov=True),
+        lambda ps: verse_torch.optim.SGD(ps, lr=0.01, momentum=0.9, dampening=0.1, weight_decay=0.01),
+        lambda ps: verse_torch.optim.Adam(ps, lr=1e-3, weight_decay=0.01),
+        lambda ps: verse_torch.optim.AdamW(ps, lr=1e-3, weight_decay=0.01),
+        lambda ps: verse_torch.optim.NAdamW(ps, lr=1e-3, weight_decay=0.01),
+        lambda ps: verse_torch.optim.RMSProp(ps, lr=1e-2, momentum=0.9, centered=True),
+        lambda ps: verse_torch.optim.RMSProp(ps, lr=1e-2, momentum=0.9),
+        lambda ps: verse_torch.optim.RMSProp(ps, lr=1e-2, centered=True),
+    ],
+)
+def test_optimizer_rust_matches_numpy(opt_factory):
+    """Rust 内核路径与 NumPy 降级路径多步更新完全一致。"""
+    rs = _run_optim(opt_factory, rs_enabled=True)
+    np_ = _run_optim(opt_factory, rs_enabled=False)
+    for p_rs, p_np in zip(rs, np_):
+        assert np.allclose(p_rs, p_np, atol=1e-6), f"param mismatch: {p_rs} vs {p_np}"
+
+
+def _run_lion(rs_enabled):
+    """固定种子跑 4 步 Lion，返回参数列表。"""
+    from verse_torch.optim_extras import Lion
+    import verse_torch.optim_extras as OE
+    import verse_torch.optim as O
+
+    rng = np.random.default_rng(7)
+    shapes = [(5,), (3, 4)]
+    params = [
+        Tensor(rng.standard_normal(s).astype(np.float32), requires_grad=True)
+        for s in shapes
+    ]
+    old_o, old_e = O._VERSE_RS, OE._VERSE_RS
+    try:
+        O._VERSE_RS = verse_rs if rs_enabled else None
+        OE._VERSE_RS = verse_rs if rs_enabled else None
+        opt = Lion(params, lr=1e-4, betas=(0.9, 0.99), weight_decay=0.1)
+        for _ in range(4):
+            for p in params:
+                p.grad = rng.standard_normal(p.shape).astype(np.float32)
+            opt.step()
+    finally:
+        O._VERSE_RS, OE._VERSE_RS = old_o, old_e
+    return [p.data.copy() for p in params]
+
+
+def test_lion_rust_matches_numpy():
+    """Lion（optim_extras）Rust 路径与 NumPy 降级路径一致。"""
+    for p_rs, p_np in zip(_run_lion(True), _run_lion(False)):
+        assert np.allclose(p_rs, p_np, atol=1e-6)
+
+
+def test_optimizer_f64_falls_back():
+    """float64 参数自动降级 NumPy 路径（不报错且语义一致）。"""
+    import verse_torch.optim as O
+
+    def run(rs_enabled):
+        rng = np.random.default_rng(3)
+        p = Tensor(rng.standard_normal((4, 6)), requires_grad=True)  # float64
+        old = O._VERSE_RS
+        try:
+            O._VERSE_RS = verse_rs if rs_enabled else None
+            opt = O.AdamW([p], lr=1e-3, weight_decay=0.01)
+            for _ in range(2):
+                p.grad = rng.standard_normal((4, 6))
+                opt.step()
+        finally:
+            O._VERSE_RS = old
+        return p.data.copy()
+
+    res = run(True)
+    ref = run(False)
+    assert res.dtype == np.float64
+    assert np.allclose(res, ref, atol=1e-12)

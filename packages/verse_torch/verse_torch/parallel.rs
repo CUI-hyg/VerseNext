@@ -11,7 +11,7 @@
 //! Python 侧 parallel.py 保留完整 API 与 multiprocessing 降级路径：
 //! .so 可用时优先走本内核，不可用时回退原实现。
 
-use numpy::{IntoPyArray, PyArrayDyn, PyArrayMethods, PyReadonlyArrayDyn, PyUntypedArrayMethods};
+use numpy::{IntoPyArray, PyArrayDyn, PyReadonlyArrayDyn, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use rayon::prelude::*;
@@ -62,7 +62,8 @@ fn borrow_f32<'py>(arr: &'py PyReadonlyArrayDyn<f32>) -> Borrowed<'py> {
     }
 }
 
-/// 分片：把 batch 切成 ≈n_threads 段。
+/// 分片：把 batch 切成 ≈n_threads 段（测试辅助）。
+#[cfg(test)]
 fn split_batch(batch: usize, n_threads: usize) -> Vec<(usize, usize)> {
     let k = if n_threads > batch { batch } else { n_threads };
     if k < 1 {

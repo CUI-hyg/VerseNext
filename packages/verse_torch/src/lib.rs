@@ -11,11 +11,19 @@ use pyo3::prelude::*;
 #[path = "../verse_torch/parallel.rs"]
 pub mod parallel;
 
+#[path = "../verse_torch/optim.rs"]
+pub mod optim;
+
 /// Python 侧入口：`from .verse_rs import batched_matmul, ...`。
 #[pymodule]
 fn verse_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parallel::batched_matmul, m)?)?;
     m.add_function(wrap_pyfunction!(parallel::default_threads, m)?)?;
+    m.add_function(wrap_pyfunction!(optim::adam_step, m)?)?;
+    m.add_function(wrap_pyfunction!(optim::nadamw_step, m)?)?;
+    m.add_function(wrap_pyfunction!(optim::sgd_step, m)?)?;
+    m.add_function(wrap_pyfunction!(optim::rmsprop_step, m)?)?;
+    m.add_function(wrap_pyfunction!(optim::lion_step, m)?)?;
     m.add("__version__", "0.1.0")?;
     Ok(())
 }
