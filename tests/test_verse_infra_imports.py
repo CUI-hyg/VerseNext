@@ -3,8 +3,8 @@
 覆盖三类场景：
 1. 子模块导入：``from verse_infra.verse_xxx import ...``
 2. 便捷重导出：``from verse_infra import BPETokenizer, ModelLoader, train, RLTrainer``
-3. 旧路径 shim DeprecationWarning：``from verse_tokenizer import ...`` 应发出
-   ``DeprecationWarning`` 但仍可正常使用
+3. Part1：旧路径顶层 shim（``verse_tokenizer`` / ``verse_compat`` /
+   ``verse_inference`` / ``verse_trainer``）已彻底删除，导入应失败
 
 运行方式：
     cd /workspace && python -m pytest tests/test_verse_infra_imports.py -v
@@ -187,15 +187,14 @@ class TestConvenienceReexport:
 
 
 # ---------------------------------------------------------------------------
-# 3. 旧路径 shim DeprecationWarning 测试（子进程隔离，避免模块缓存污染）
+# 3. Part1：旧路径顶层 shim 已删除，导入应失败
 # ---------------------------------------------------------------------------
 
 
 def _run_subprocess(code: str, timeout: int = 30) -> subprocess.CompletedProcess:
     """在子进程中执行 Python 代码，返回 CompletedProcess。
 
-    用子进程隔离每个 shim 测试，避免主进程 sys.modules 缓存干扰
-    DeprecationWarning 触发次数。
+    用子进程隔离，避免主进程 sys.modules 缓存干扰。
     """
     return subprocess.run(
         [sys.executable, "-c", code],
@@ -203,114 +202,38 @@ def _run_subprocess(code: str, timeout: int = 30) -> subprocess.CompletedProcess
     )
 
 
-class TestShimDeprecationWarning:
-    """验证旧路径 ``from verse_xxx import ...`` 经 shim 转发 + DeprecationWarning。"""
+class TestShimRemoved:
+    """验证旧路径顶层 shim（Part1 已彻底删除）导入应抛 ImportError。"""
 
-    def test_verse_tokenizer_shim(self):
-        """``from verse_tokenizer import BPETokenizer`` 应发 DeprecationWarning 且可用。"""
+    @pytest.mark.parametrize("shim_name", [
+        "verse_tokenizer", "verse_compat", "verse_inference", "verse_trainer",
+    ])
+    def test_old_top_level_shim_import_fails(self, shim_name):
+        """``import verse_tokenizer`` 等旧路径应抛 ImportError（shim 已删除）。"""
         code = (
-            "import sys, warnings\n"
-            f"sys.path.insert(0, '{_REPO_ROOT / 'packages' / 'verse_tokenizer'}')\n"
-            "with warnings.catch_warnings(record=True) as w:\n"
-            "    warnings.simplefilter('always')\n"
-            "    from verse_tokenizer import BPETokenizer\n"
-            "    assert BPETokenizer is not None, 'BPETokenizer missing'\n"
-            "    assert any(issubclass(x.category, DeprecationWarning) for x in w), \\\n"
-            "        f'expected DeprecationWarning, got: {[(x.category, str(x.message)) for x in w]}'\n"
-            "    print('shim OK: BPETokenizer =', BPETokenizer)\n"
+            "import sys\n"
+            f"sys.path.insert(0, '{_REPO_ROOT / 'packages'}')\n"
+            "try:\n"
+            f"    import {shim_name}\n"
+            "except ImportError:\n"
+            "    print('ImportError as expected')\n"
+            "else:\n"
+            "    raise SystemExit(f'{shim_name} should have been removed')\n"
         )
         result = _run_subprocess(code)
         assert result.returncode == 0, (
-            f"shim 测试失败：\nstdout={result.stdout}\nstderr={result.stderr}"
+            f"shim 删除验证失败：\nstdout={result.stdout}\nstderr={result.stderr}"
         )
-        assert "shim OK" in result.stdout
+        assert "ImportError as expected" in result.stdout
 
-    def test_verse_compat_shim(self):
-        """``from verse_compat import load_hf_state_dict`` 应发 DeprecationWarning 且可用。"""
-        code = (
-            "import sys, warnings\n"
-            f"sys.path.insert(0, '{_REPO_ROOT / 'packages' / 'verse_compat'}')\n"
-            "with warnings.catch_warnings(record=True) as w:\n"
-            "    warnings.simplefilter('always')\n"
-            "    from verse_compat import load_hf_state_dict\n"
-            "    assert callable(load_hf_state_dict), 'load_hf_state_dict missing'\n"
-            "    assert any(issubclass(x.category, DeprecationWarning) for x in w), \\\n"
-            "        f'expected DeprecationWarning, got: {[(x.category, str(x.message)) for x in w]}'\n"
-            "    print('shim OK: load_hf_state_dict =', load_hf_state_dict)\n"
+    @pytest.mark.parametrize("shim_name", [
+        "verse_tokenizer", "verse_compat", "verse_inference", "verse_trainer",
+    ])
+    def test_shim_dir_absent(self, shim_name):
+        """shim 包目录应不存在于 packages/。"""
+        assert not (_REPO_ROOT / "packages" / shim_name).exists(), (
+            f"packages/{shim_name} 应已删除"
         )
-        result = _run_subprocess(code)
-        assert result.returncode == 0, (
-            f"shim 测试失败：\nstdout={result.stdout}\nstderr={result.stderr}"
-        )
-        assert "shim OK" in result.stdout
-
-    def test_verse_inference_shim(self):
-        """``from verse_inference import ModelLoader`` 应发 DeprecationWarning 且可用。"""
-        code = (
-            "import sys, warnings\n"
-            f"sys.path.insert(0, '{_REPO_ROOT / 'packages' / 'verse_inference'}')\n"
-            "with warnings.catch_warnings(record=True) as w:\n"
-            "    warnings.simplefilter('always')\n"
-            "    from verse_inference import ModelLoader\n"
-            "    assert ModelLoader is not None, 'ModelLoader missing'\n"
-            "    assert any(issubclass(x.category, DeprecationWarning) for x in w), \\\n"
-            "        f'expected DeprecationWarning, got: {[(x.category, str(x.message)) for x in w]}'\n"
-            "    print('shim OK: ModelLoader =', ModelLoader)\n"
-        )
-        result = _run_subprocess(code)
-        assert result.returncode == 0, (
-            f"shim 测试失败：\nstdout={result.stdout}\nstderr={result.stderr}"
-        )
-        assert "shim OK" in result.stdout
-
-    def test_verse_trainer_shim(self):
-        """``from verse_trainer import train, RLTrainer`` 应发 DeprecationWarning 且可用。"""
-        code = (
-            "import sys, warnings\n"
-            f"sys.path.insert(0, '{_REPO_ROOT / 'packages' / 'verse_trainer'}')\n"
-            "with warnings.catch_warnings(record=True) as w:\n"
-            "    warnings.simplefilter('always')\n"
-            "    from verse_trainer import train, RLTrainer\n"
-            "    assert callable(train), 'train missing'\n"
-            "    assert RLTrainer is not None, 'RLTrainer missing'\n"
-            "    assert any(issubclass(x.category, DeprecationWarning) for x in w), \\\n"
-            "        f'expected DeprecationWarning, got: {[(x.category, str(x.message)) for x in w]}'\n"
-            "    print('shim OK: train =', train)\n"
-        )
-        result = _run_subprocess(code)
-        assert result.returncode == 0, (
-            f"shim 测试失败：\nstdout={result.stdout}\nstderr={result.stderr}"
-        )
-        assert "shim OK" in result.stdout
-
-    def test_verse_tokenizer_shim_submodule_lazy(self):
-        """``verse_tokenizer.verse`` 子模块属性访问应经 shim __getattr__ 转发可用。
-
-        注意：PEP 562 的 ``__getattr__`` 仅支持属性访问（``import verse_tokenizer;
-        verse_tokenizer.verse``），不支持 ``from verse_tokenizer.verse import ...``
-        形式（后者需要物理文件）。这里用属性访问验证延迟转发。
-        """
-        code = (
-            "import sys, warnings\n"
-            f"sys.path.insert(0, '{_REPO_ROOT / 'packages' / 'verse_tokenizer'}')\n"
-            "with warnings.catch_warnings(record=True) as w:\n"
-            "    warnings.simplefilter('always')\n"
-            "    import verse_tokenizer\n"
-            "    # 通过 __getattr__ 延迟访问子模块 verse\n"
-            "    verse_mod = verse_tokenizer.verse\n"
-            "    assert hasattr(verse_mod, '_import_transformers'), \\\n"
-            "        f'verse module missing _import_transformers: {dir(verse_mod)}'\n"
-            "    assert callable(verse_mod._import_transformers), \\\n"
-            "        '_import_transformers not callable'\n"
-            "    assert any(issubclass(x.category, DeprecationWarning) for x in w), \\\n"
-            "        f'expected DeprecationWarning, got: {[(x.category, str(x.message)) for x in w]}'\n"
-            "    print('shim submodule OK')\n"
-        )
-        result = _run_subprocess(code)
-        assert result.returncode == 0, (
-            f"shim 子模块测试失败：\nstdout={result.stdout}\nstderr={result.stderr}"
-        )
-        assert "shim submodule OK" in result.stdout
 
 
 # ---------------------------------------------------------------------------

@@ -23,7 +23,7 @@ GEMM/softmax 算力利用率低。Speculative decoding 通过引入 **draft head
 
 复用的项目内已有功能
 --------------------
-- ``verse_torch.Tensor`` / ``verse_torch.nn.Linear / Module / ModuleList``
+- ``verse_torch.Tensor`` / ``verse_torch.vnnn.Linear / Module / ModuleList``
 - 主模型只需要是可调用对象（接受 token id Tensor，返回 logits Tensor），
   与 ``VerseNexLM.forward`` / ``CometSparkNexLM.forward`` 接口对齐。
 
@@ -44,7 +44,7 @@ from typing import Callable, List, Optional, Tuple, Union
 import numpy as np
 
 from verse_torch import Tensor, no_grad
-from verse_torch.vnn import Linear, Module, ModuleList
+from verse_torch.vnnn import Linear, Module, ModuleList
 
 
 # ---------------------------------------------------------------------------

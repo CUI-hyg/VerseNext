@@ -5,7 +5,7 @@
 
 - 多序列同时维护各自独立的 KV cache（B 个序列并行）
 - ``batch_update`` 一次性给所有 B 个序列追加 K/V（避免 for 循环遍历 batch）
-- 与 ``verse_torch.nn.StaticCache`` / ``DynamicCache`` 兼容（内部委托）
+- 与 ``verse_torch.vnnn.StaticCache`` / ``DynamicCache`` 兼容（内部委托）
 
 设计要点
 --------
@@ -19,9 +19,9 @@
 
 复用的项目内已有功能
 --------------------
-- ``verse_torch.nn.KVCache`` 抽象基类
-- ``verse_torch.nn.StaticCache`` / ``DynamicCache``：底层 buffer 实现
-- ``verse_torch.nn._concat``：可微 Tensor 拼接
+- ``verse_torch.vnnn.KVCache`` 抽象基类
+- ``verse_torch.vnnn.StaticCache`` / ``DynamicCache``：底层 buffer 实现
+- ``verse_torch.vnnn._concat``：可微 Tensor 拼接
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 
 from verse_torch import Tensor, no_grad
-from verse_torch.vnn import KVCache, StaticCache, DynamicCache, _concat
+from verse_torch.vnnn import KVCache, StaticCache, DynamicCache, _concat
 
 
 # ---------------------------------------------------------------------------

@@ -43,13 +43,12 @@ else:
 
 # Parameter 别名（与 PyTorch 习惯一致：Parameter = Tensor，通过 requires_grad=True 标识）
 Parameter = Tensor
-from . import nn
-# Part5K1 Task 1：vnn 为推荐路径（原 nn 重命名）。nn 仍可用（薄壳 re-export）。
-from . import vnn
-# 让 `from verse_torch import nn` 指向 vnn（推荐路径），保证向后兼容不报错。
-# 注意：`from verse_torch.nn import X` 仍走 nn.py 薄壳（sys.modules 保留），
-# 以便 transformer 系旧名抛 ImportError 的拦截逻辑生效。
-nn = vnn
+# Part1：vnn.py 与 nn.py 已合并为 vnnn.py（旧模块路径 vnn/nn 已删除）。
+from . import vnnn
+# 让 `from verse_torch import nn` 仍可用（顶层属性别名，指向 vnnn）。
+# 注意：`from verse_torch.nn import X` / `from verse_torch.vnn import X`
+# 已不可用（Part1 BREAKING，旧模块文件已删除），请改用 verse_torch.vnnn。
+nn = vnnn
 from . import optim
 from . import losses
 from . import training
@@ -95,7 +94,7 @@ from .quantize import (
     quantize_batch,
     benchmark_throughput,
 )
-from .nn import (
+from .vnnn import (
     Module,
     Linear,
     Embedding,
@@ -106,8 +105,7 @@ from .nn import (
     ModuleList,
     SwiGLUMLP,
     # Part4K1 SubTask 2.2: 旧名重命名为私有实现，此处直接导入私有名以避免
-    # import verse_torch 时触发 DeprecationWarning（仅 from verse_torch.nn
-    # import TransformerLM 等直接访问 nn 模块时才发警告）
+    # import verse_torch 时触发 ImportError 拦截钩子
     _GQASelfAttention as GQASelfAttention,
     _TransformerBlock as TransformerBlock,
     _TransformerLM as TransformerLM,
@@ -269,7 +267,7 @@ __all__ = [
     "auto_tune_threads",
     # 子模块
     "nn",
-    "vnn",
+    "vnnn",
     "optim",
     "losses",
     "training",

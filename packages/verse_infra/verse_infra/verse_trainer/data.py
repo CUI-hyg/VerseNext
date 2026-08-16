@@ -26,9 +26,10 @@ from typing import List, Optional
 
 import numpy as np
 
-# 尝试导入 chat_template 常量（verse_tokenizer 已升级，含此模块）
+# 从 verse_infra.verse_tokenizer 导入 chat_template 常量
+# （Part1：顶层 verse_tokenizer shim 已删除，统一包内相对导入）
 try:
-    from verse_tokenizer.chat_template import EOS_TOKEN as _EOS_STR
+    from ..verse_tokenizer.chat_template import EOS_TOKEN as _EOS_STR
 except Exception:  # pragma: no cover - verse_tokenizer 不可用时的降级
     _EOS_STR = "<|eos|>"
 

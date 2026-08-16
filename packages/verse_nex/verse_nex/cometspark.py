@@ -2,7 +2,7 @@
 
 设计目标
 --------
-- **完全不依赖 TransformerLM（已更名为 VerseNexLM）**：仅使用 verse_torch.nn 的基础组件
+- **完全不依赖 TransformerLM（已更名为 VerseNexLM）**：仅使用 verse_torch.vnnn 的基础组件
   （Embedding / RMSNorm / Linear / SwiGLUMLP）+ verse_nex 原生注意力
   （TriSparseAttention）+ verse_nex 原生 MoD（MoDLayer）。
 - **layer_pattern 驱动**：用 ``list[str]`` 显式指定每层类型
@@ -50,7 +50,7 @@ from typing import Optional, List, Iterable, Any
 import numpy as np
 
 from verse_torch import Tensor, no_grad
-from verse_torch.vnn import (
+from verse_torch.vnnn import (
     Module,
     Linear,
     Embedding,

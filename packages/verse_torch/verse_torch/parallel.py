@@ -1,16 +1,18 @@
-"""verse_torch.parallel: CPU 并行计算模块（multiprocessing 后端）。
+"""verse_torch.parallel: CPU 并行计算模块（Rust 内核 + multiprocessing 降级）。
 
 提供：
 - parallel_matmul(A, B, n_workers=None): 批量矩阵乘法并行计算
 - ParallelLinear(d_in, d_out, n_workers=None, batch_threshold=16): 并行全连接层
 - parallel_map(fn, iterable, n_workers=None): 通用并行 map
 
-设计要点：
-- 仅使用 NumPy + 标准库（multiprocessing/os），不依赖 torch/tensorflow/jax
-- 默认 n_workers = max(1, os.cpu_count() // 2)
-- Linux 默认 fork 启动方式，子进程继承父进程内存
-- 测试环境如 Pool 启动失败，自动降级为串行
-- ParallelLinear 仅前向并行；反向通过手动构建 _backward 闭包走标准 autograd
+Part1 设计：
+- 批量矩阵乘法（3D x 2D / 3D x 3D）优先走 Rust 内核（``verse_rs``，即同名
+  ``parallel.rs`` 编译产物）：rayon 线程池按 batch 并行 + matrixmultiply
+  SIMD GEMM，替代 multiprocessing 进程池（省 fork/pickle/进程创建开销）。
+- ``verse_rs`` 不可用（.so 缺失 / dtype 非 float32 / 异常）时自动降级为
+  原 NumPy + multiprocessing 实现，行为完全一致。
+- 2D 场景仍走 ``np.matmul``（底层 BLAS 单核已接近硬件峰值）。
+- ParallelLinear 仅前向并行；反向通过手动构建 _backward 闭包走标准 autograd。
 """
 
 from __future__ import annotations
@@ -23,7 +25,13 @@ from typing import Callable, Iterable, Optional
 import numpy as np
 
 from .tensor import Tensor, is_grad_enabled
-from . import vnn as nn
+from . import vnnn as nn
+
+# Part1：Rust 内核（与 parallel.rs 同目录的 verse_rs.so）。缺失时自动降级。
+try:
+    from . import verse_rs as _VERSE_RS
+except ImportError:  # pragma: no cover - .so 未构建（源码树/纯净环境）
+    _VERSE_RS = None
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +80,22 @@ def _matmul_worker(args):
     return A_chunk @ B
 
 
+def _rs_batched_matmul(A: np.ndarray, B: np.ndarray, n_workers: int) -> Optional[np.ndarray]:
+    """尝试用 Rust 内核做批量 matmul；不可用时返回 None（由调用方降级）。
+
+    仅 float32 且 verse_rs 可用时生效；任何异常（dtype/形状/版本）都回退。
+    """
+    if _VERSE_RS is None:
+        return None
+    if A.dtype != np.float32 or B.dtype != np.float32:
+        return None
+    try:
+        return _VERSE_RS.batched_matmul(A, B, n_threads=n_workers)
+    except Exception:
+        # Rust 内核异常 -> 降级（维度不匹配等仍由 numpy 侧报错，语义不变）
+        return None
+
+
 def parallel_matmul(A, B, n_workers: Optional[int] = None):
     """批量矩阵乘法的并行实现。
 
@@ -85,7 +109,7 @@ def parallel_matmul(A, B, n_workers: Optional[int] = None):
     参数:
         A: Tensor 或 np.ndarray
         B: Tensor 或 np.ndarray
-        n_workers: 进程数；None 则用 max(1, cpu_count // 2)
+        n_workers: 线程/进程数；None 则用 max(1, cpu_count // 2)
 
     返回:
         与输入中第一个 Tensor 同类型；若输入均为 ndarray 则返回 ndarray
@@ -109,13 +133,19 @@ def parallel_matmul(A, B, n_workers: Optional[int] = None):
             if batch <= 1 or n_workers == 1:
                 result = np.matmul(A_np, B_np)
             else:
-                result = _parallel_batched_matmul(A_np, B_np, n_workers, batch)
+                rs = _rs_batched_matmul(A_np, B_np, n_workers)
+                result = rs if rs is not None else _parallel_batched_matmul(
+                    A_np, B_np, n_workers, batch
+                )
         elif B_np.ndim == 3:
             # (B, M, K) x (B, K, N) -> (B, M, N)
             if batch <= 1 or n_workers == 1:
                 result = np.matmul(A_np, B_np)
             else:
-                result = _parallel_batched_matmul_paired(A_np, B_np, n_workers, batch)
+                rs = _rs_batched_matmul(A_np, B_np, n_workers)
+                result = rs if rs is not None else _parallel_batched_matmul_paired(
+                    A_np, B_np, n_workers, batch
+                )
         else:
             raise ValueError(f"Unsupported B.ndim={B_np.ndim} for A.ndim=3")
     else:

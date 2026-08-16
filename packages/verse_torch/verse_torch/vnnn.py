@@ -1,4 +1,4 @@
-"""VerseTorch.vnn（Part5K1：原 verse_torch.nn 重命名）。
+"""VerseTorch.vnnn（Part1：由 vnn.py 与 nn.py 合并而来）。
 
 设计参考 PyTorch `torch.nn`：
 - Module 自动注册子模块与参数（通过 __setattr__ 拦截）。
@@ -7,10 +7,14 @@
 - 核心层：Linear、Embedding、LayerNorm、RMSNorm、Dropout、Sequential、ModuleList。
 - 初始化辅助：kaiming_uniform_、xavier_uniform_、normal_、zeros_、ones_。
 
-Part5K1 BREAKING：本模块由 ``verse_torch.nn`` 重命名为 ``verse_torch.vnn``。
-旧的 ``verse_torch.nn`` 路径仍作为薄壳保留以向后兼容，但 transformer 系
-公开别名（``TransformerLM`` / ``TransformerBlock`` / ``GQASelfAttention``）
-已移除——请改用 ``verse_nex`` 品牌入口或本模块的私有实现（``_`` 前缀）。
+Part1 BREAKING：本模块由 ``verse_torch.vnn`` + ``verse_torch.nn``（薄壳）合并，
+统一为 ``verse_torch.vnnn``。旧模块路径已删除：
+- ``from verse_torch.vnn import X`` / ``from verse_torch.nn import X`` 均不再可用，
+  请改用 ``from verse_torch.vnnn import X``（或 ``from verse_torch import vnnn``）。
+- 顶层 ``from verse_torch import nn`` 仍可用（指向 vnnn 的别名，仅属性级兼容）。
+- transformer 系公开别名（``TransformerLM`` / ``TransformerBlock`` /
+  ``GQASelfAttention``）自 Part5K1 起已移除——请改用 ``verse_nex`` 品牌入口
+  或本模块的私有实现（``_`` 前缀）。
 """
 
 from __future__ import annotations
@@ -21,6 +25,28 @@ from collections import deque
 import numpy as np
 
 from .tensor import Tensor, no_grad, _GRAD_ENABLED
+
+# ---------------------------------------------------------------------------
+# Part5K1 REMOVED：transformer 系公开别名从 DeprecationWarning 升级为 ImportError。
+# 旧名 → 新品牌名（提示信息用）。Part1 合并后保留拦截钩子，提示仍指向新路径。
+# ---------------------------------------------------------------------------
+_REMOVED_NN_ALIASES = {
+    "TransformerLM": "VerseNexLM",
+    "TransformerBlock": "VerseNexBlock",
+    "GQASelfAttention": "VerseNexAttention",
+}
+
+
+def __getattr__(name):
+    """模块级 ``__getattr__`` 钩子：transformer 系旧名访问时抛 ``ImportError``。"""
+    if name in _REMOVED_NN_ALIASES:
+        new_name = _REMOVED_NN_ALIASES[name]
+        raise ImportError(
+            f"`{name}` 已从 verse_torch 移除（Part5K1 BREAKING）。"
+            f"请改用 `from verse_nex import {new_name}`，"
+            f"或从 verse_torch.vnnn 导入私有实现 `_{name}`。"
+        )
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # ---------------------------------------------------------------------------

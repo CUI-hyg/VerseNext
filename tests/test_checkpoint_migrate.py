@@ -414,21 +414,29 @@ class TestPackageExports:
         from verse_infra.verse_trainer.checkpoint_utils import migrate_checkpoint_dir
         assert callable(migrate_checkpoint_dir)
 
-    def test_shim_path_import_with_deprecation_warning(self):
-        """shim 路径 from verse_trainer import migrate_checkpoint_dir 仍可用（带 DeprecationWarning）。"""
-        import warnings
+    def test_shim_path_removed(self):
+        """Part1：顶层 shim 已删除，from verse_trainer import ... 应抛 ImportError。"""
+        import subprocess
 
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            # 清理 shim 缓存，确保重新走 shim（不影响 verse_infra.verse_trainer）
-            sys.modules.pop("verse_trainer", None)
-            from verse_trainer import migrate_checkpoint_dir  # noqa: E402
-            assert callable(migrate_checkpoint_dir)
-            # shim 应发 DeprecationWarning
-            assert any(issubclass(x.category, DeprecationWarning) for x in w), (
-                f"shim 应发 DeprecationWarning，得到："
-                f"{[(x.category, str(x.message)) for x in w]}"
-            )
+        # 子进程隔离，避免 sys.modules 缓存影响
+        code = (
+            "import sys\n"
+            "sys.path.insert(0, 'packages')\n"
+            "try:\n"
+            "    import verse_trainer\n"
+            "except ImportError:\n"
+            "    print('ImportError as expected')\n"
+            "else:\n"
+            "    raise SystemExit('shim should have been removed')\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True, text=True, timeout=30,
+        )
+        assert result.returncode == 0, (
+            f"shim 删除验证失败：\nstdout={result.stdout}\nstderr={result.stderr}"
+        )
+        assert "ImportError as expected" in result.stdout
 
 
 # ---------------------------------------------------------------------------

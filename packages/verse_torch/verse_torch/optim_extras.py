@@ -14,7 +14,13 @@ from __future__ import annotations
 
 import numpy as np
 
-from .optim import Optimizer
+from .optim import Optimizer, _rs_ok
+
+# Part1：Rust 内核（与 optim.rs 同名产物 verse_rs.so），缺失时自动降级。
+try:
+    from . import verse_rs as _VERSE_RS
+except ImportError:  # pragma: no cover - .so 未构建（源码树/纯净环境）
+    _VERSE_RS = None
 
 
 class Lion(Optimizer):
@@ -67,6 +73,18 @@ class Lion(Optimizer):
                 if "exp_avg" not in state:
                     state["exp_avg"] = np.zeros_like(p.data)
                 m = state["exp_avg"]
+                # Part1 Rust 内核（仅 NumPy float32 路径）
+                if _rs_ok(p, g):
+                    try:
+                        p_new, m_new = _VERSE_RS.lion_step(
+                            p.data, g, m, self.lr, beta1, beta2, wd,
+                        )
+                        p.data = np.asarray(p_new)
+                        state["exp_avg"] = np.asarray(m_new)
+                        self.state[id(p)] = state
+                        continue
+                    except Exception:
+                        pass  # 降级到 NumPy 路径
                 # Lion 更新：sign(m·β1 + g·(1-β1))
                 update = m * beta1 + g * (1.0 - beta1)
                 p.data = p.data - self.lr * np.sign(update)

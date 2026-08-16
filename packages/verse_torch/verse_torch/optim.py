@@ -23,6 +23,21 @@ from .device import get_torch_module
 # 模块级缓存 torch 模块（无 torch 时为 None）
 _TORCH = get_torch_module()
 
+# Part1：Rust 优化器内核（与 optim.rs 同名产物 verse_rs.so）。缺失时自动降级。
+try:
+    from . import verse_rs as _VERSE_RS
+except ImportError:  # pragma: no cover - .so 未构建（源码树/纯净环境）
+    _VERSE_RS = None
+
+
+def _rs_ok(p, g) -> bool:
+    """Rust 优化器内核可用性：float32 NumPy 数组、GPU/torch 数据除外。"""
+    if _VERSE_RS is None:
+        return False
+    if _is_torch_data(p.data) or _is_torch_data(g):
+        return False
+    return p.data.dtype == np.float32 and g.dtype == np.float32
+
 
 # ---------------------------------------------------------------------------
 # 优化器 (Task 1.10)
@@ -103,11 +118,27 @@ class SGD(Optimizer):
             if p.grad is None:
                 continue
             g = p.grad
-            if self.weight_decay != 0:
-                g = g + self.weight_decay * p.data
             if self.momentum != 0:
                 key = id(p)
                 buf = self.state.get(key, None)
+                # Part1 Rust 内核：wd 在 Rust 内耦合，避免 Python 侧预加
+                if _rs_ok(p, g):
+                    try:
+                        p_new, buf_new = _VERSE_RS.sgd_step(
+                            p.data, g, buf,
+                            self.lr, self.momentum, self.dampening,
+                            self.weight_decay, self.nesterov,
+                        )
+                        # 首次：Rust 返回 buf'=None，Python 语义为 buf = g.copy()
+                        self.state[key] = (
+                            g.copy() if buf_new is None else np.asarray(buf_new)
+                        )
+                        p.data = np.asarray(p_new)
+                        continue
+                    except Exception:
+                        pass  # 降级到 NumPy 路径
+                if self.weight_decay != 0:
+                    g = g + self.weight_decay * p.data
                 if buf is None:
                     buf = g.copy()
                     self.state[key] = buf
@@ -118,6 +149,8 @@ class SGD(Optimizer):
                     g = g + self.momentum * buf
                 else:
                     g = buf
+            elif self.weight_decay != 0:
+                g = g + self.weight_decay * p.data
             # 更新参数
             p.data = p.data - self.lr * g
 
@@ -150,11 +183,34 @@ class Adam(Optimizer):
             if p.grad is None:
                 continue
             g = p.grad
+            key = id(p)
+            state = self.state.get(key, None)
+            # Part1 Rust 内核：wd 为耦合（decoupled=False），g 不预加
+            if _rs_ok(p, g):
+                try:
+                    if state is None:
+                        m0 = np.zeros_like(p.data, dtype=np.float32)
+                        v0 = np.zeros_like(p.data, dtype=np.float32)
+                    else:
+                        m0, v0 = state["m"], state["v"]
+                    p_new, m_new, v_new = _VERSE_RS.adam_step(
+                        p.data, g, m0, v0,
+                        self.lr, self.beta1, self.beta2, self.eps,
+                        1.0 - self.beta1 ** self.t, 1.0 - self.beta2 ** self.t,
+                        self.weight_decay, False,
+                    )
+                    p.data = np.asarray(p_new)
+                    if state is None:
+                        state = {}
+                        self.state[key] = state
+                    state["m"] = np.asarray(m_new)
+                    state["v"] = np.asarray(v_new)
+                    continue
+                except Exception:
+                    pass  # 降级到 NumPy 路径
             if self.weight_decay != 0:
                 # L2 正则化（耦合 weight decay）
                 g = g + self.weight_decay * p.data
-            key = id(p)
-            state = self.state.get(key, None)
             if state is None:
                 state = {
                     "m": np.zeros_like(p.data, dtype=np.float32),
@@ -208,6 +264,29 @@ class AdamW(Optimizer):
                 g = p.grad
                 key = id(p)
                 state = self.state.get(key, None)
+                # Part1 Rust 内核：wd 为解耦（decoupled=True）
+                if _rs_ok(p, g):
+                    try:
+                        if state is None:
+                            m0 = np.zeros_like(p.data, dtype=np.float32)
+                            v0 = np.zeros_like(p.data, dtype=np.float32)
+                        else:
+                            m0, v0 = state["m"], state["v"]
+                        p_new, m_new, v_new = _VERSE_RS.adam_step(
+                            p.data, g, m0, v0,
+                            self.lr, self.beta1, self.beta2, self.eps,
+                            1.0 - self.beta1 ** self.t, 1.0 - self.beta2 ** self.t,
+                            wd, True,
+                        )
+                        p.data = np.asarray(p_new)
+                        if state is None:
+                            state = {}
+                            self.state[key] = state
+                        state["m"] = np.asarray(m_new)
+                        state["v"] = np.asarray(v_new)
+                        continue
+                    except Exception:
+                        pass  # 降级到 NumPy 路径
                 if state is None:
                     state = {
                         "m": np.zeros_like(p.data, dtype=np.float32),
@@ -279,6 +358,30 @@ class NAdamW(Optimizer):
                 if p.grad is None:
                     continue
                 g = p.grad
+                key = id(p)
+                state = self.state.get(key, None)
+                # Part1 Rust 内核（仅 NumPy float32 路径）
+                if _rs_ok(p, g):
+                    try:
+                        if state is None:
+                            m0 = np.zeros_like(p.data, dtype=np.float32)
+                            v0 = np.zeros_like(p.data, dtype=np.float32)
+                        else:
+                            m0, v0 = state["m"], state["v"]
+                        p_new, m_new, v_new = _VERSE_RS.nadamw_step(
+                            p.data, g, m0, v0,
+                            self.lr, self.beta1, self.beta2, self.eps,
+                            bc1, bc2, wd,
+                        )
+                        p.data = np.asarray(p_new)
+                        if state is None:
+                            state = {}
+                            self.state[key] = state
+                        state["m"] = np.asarray(m_new)
+                        state["v"] = np.asarray(v_new)
+                        continue
+                    except Exception:
+                        pass  # 降级到 NumPy 路径
                 is_torch = _is_torch_data(p.data)
                 # 选择后端工具函数
                 if is_torch:
@@ -287,8 +390,6 @@ class NAdamW(Optimizer):
                 else:
                     _sqrt = np.sqrt
                     _zeros_like = lambda x: np.zeros_like(x, dtype=np.float32)
-                key = id(p)
-                state = self.state.get(key, None)
                 if state is None:
                     state = {
                         "m": _zeros_like(p.data),
@@ -371,6 +472,41 @@ class RMSProp(Optimizer):
                 if p.grad is None:
                     continue
                 g = p.grad
+                key = id(p)
+                state = self.state.get(key, None)
+                # Part1 Rust 内核（仅 NumPy float32 路径）
+                if _rs_ok(p, g):
+                    try:
+                        if state is None:
+                            v0 = np.zeros_like(p.data, dtype=np.float32)
+                            buf0 = (
+                                np.zeros_like(p.data, dtype=np.float32)
+                                if mom != 0 else None
+                            )
+                            avg0 = (
+                                np.zeros_like(p.data, dtype=np.float32)
+                                if centered else None
+                            )
+                        else:
+                            v0 = state["v"]
+                            buf0 = state.get("buf")
+                            avg0 = state.get("avg")
+                        p_new, v_new, buf_new, avg_new = _VERSE_RS.rmsprop_step(
+                            p.data, g, v0, buf0, avg0,
+                            self.lr, self.alpha, self.eps, wd, mom, centered,
+                        )
+                        p.data = np.asarray(p_new)
+                        if state is None:
+                            state = {}
+                            self.state[key] = state
+                        state["v"] = np.asarray(v_new)
+                        if buf_new is not None:
+                            state["buf"] = np.asarray(buf_new)
+                        if avg_new is not None:
+                            state["avg"] = np.asarray(avg_new)
+                        continue
+                    except Exception:
+                        pass  # 降级到 NumPy 路径
                 if wd != 0:
                     g = g + wd * p.data
                 is_torch = _is_torch_data(p.data)
@@ -380,8 +516,6 @@ class RMSProp(Optimizer):
                 else:
                     _sqrt = np.sqrt
                     _zeros_like = lambda x: np.zeros_like(x, dtype=np.float32)
-                key = id(p)
-                state = self.state.get(key, None)
                 if state is None:
                     state = {"v": _zeros_like(p.data)}
                     if mom != 0:
