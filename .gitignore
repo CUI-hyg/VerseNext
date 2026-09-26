@@ -1,0 +1,39 @@
+# =============================================================================
+# VerseNext_Exp .gitignore
+# =============================================================================
+
+# ---- 凭据 / 本地工具配置（含明文 API key，绝不入库）----
+.codebuddy/
+**/.codebuddy/
+.env
+.env.*
+
+# ---- 模型权重（单文件约 2.4GB，超出 GitHub 100MB 限制）----
+*.pt
+*.pth
+*.safetensors
+*.ckpt
+CometSpark/checkpoints/
+
+# ---- Python 缓存与构建产物 ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+build/
+dist/
+.venv/
+venv/
+
+# ---- 自研算子编译产物 ----
+src/verse-nn/verse_nn/kernels/_build/
+**/csrc/ascend/_cann_work/
+*.so
+
+# ---- 生成的数据缓存 ----
+CometSpark/data/.token_cache/
+
+# ---- 系统 / 编辑器 ----
+.DS_Store
+*.swp

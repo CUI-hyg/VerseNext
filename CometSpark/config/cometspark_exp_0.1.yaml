@@ -1,0 +1,49 @@
+# CometSpark-Exp-0.1 核心配置
+# 与 verse_trainer.trainer.TrainerConfig 字段对齐，可被 run.py 直接加载。
+# 词表大小必须覆盖 tokenizer/tokenizer.json 的最大 token id (248076)。
+
+model_name: cometspark
+
+model:
+  vocab_size: 248077
+  d_model: 128
+  num_layers: 12
+  num_heads: 4
+  num_kv_heads: null      # null = 标准 MHA
+  ffn_hidden_dim: null    # null = 自动 8/3*d_model 对齐 256
+  max_seq_len: 256
+  dropout: 0.0
+  tie_weights: true
+  gradient_checkpointing: false
+  attn_type: sdpa         # 0.1 为稠密基线（显式写出，不受后续默认值影响）
+  dsa_index_loss_weight: 0.1
+
+data:
+  batch_size: 2
+  seq_len: 32
+  seed: 42
+  drop_last: true
+
+optim:
+  name: adamw
+  lr: 3.0e-4
+  weight_decay: 0.1
+  beta1: 0.9
+  beta2: 0.95
+  grad_clip: 1.0
+  warmup_steps: 100
+  max_steps: 300          # 与 steps 对齐（余弦衰减地平线）
+  min_lr_ratio: 0.1
+
+steps: 300
+log_every: 10
+eval_every: 25
+eval_batches: 20
+ckpt_dir: checkpoints
+ckpt_every: 100          # 每 100 步保存周期 checkpoint
+device: auto
+dtype: auto
+compile: false
+grad_accum_steps: 4
+num_threads: 8          # 实测 8 线程吞吐最优（362 tok/s，较 4 线程 +13%）
+seed: 42

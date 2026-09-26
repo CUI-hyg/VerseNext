@@ -1,0 +1,21 @@
+[project]
+name = "versenext"
+version = "0.1.0"
+description = "VerseNext: 高性能 Transformer 神经网络框架，内置 RSI（递归自进化）能力"
+requires-python = ">=3.10"
+
+[tool.uv.workspace]
+members = ["src/*"]
+
+[tool.uv.sources]
+verse-core = { workspace = true }
+verse-nn = { workspace = true }
+verse-trainer = { workspace = true }
+verse-rsi = { workspace = true }
+verse-cli = { workspace = true }
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

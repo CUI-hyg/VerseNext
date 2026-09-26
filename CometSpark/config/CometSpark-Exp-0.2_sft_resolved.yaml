@@ -1,0 +1,57 @@
+model:
+  vocab_size: 248077
+  d_model: 128
+  num_layers: 12
+  num_heads: 4
+  num_kv_heads: null
+  ffn_hidden_dim: null
+  max_seq_len: 256
+  dropout: 0.0
+  tie_weights: true
+  gradient_checkpointing: false
+  attn_type: sdpa
+  dsa_index_head_dim: 32
+  dsa_top_k: 64
+  dsa_index_loss_weight: 0.1
+  kda_chunk_size: 64
+data:
+  batch_size: 2
+  seq_len: 150
+  seed: 42
+  drop_last: true
+optim:
+  name: adamw
+  lr: 0.0003
+  weight_decay: 0.1
+  beta1: 0.9
+  beta2: 0.95
+  grad_clip: 1.0
+  warmup_steps: 100
+  max_steps: 300
+  min_lr_ratio: 0.1
+model_name: cometspark
+steps: 300
+log_every: 10
+eval_every: 25
+eval_batches: 20
+ckpt_dir: /mnt/workspace/VerseNext_Exp/CometSpark/checkpoints
+ckpt_every: 100
+device: auto
+dtype: auto
+compile: false
+grad_accum_steps: 4
+seed: 48
+num_threads: 8
+lora:
+  r: 8
+  lora_alpha: 16.0
+  lora_dropout: 0.05
+  target_modules:
+  - q_proj
+  - kv_proj
+  - o_proj
+  - qkv_proj
+  - gate_up_proj
+loss_plot: true
+save_best_only: true
+early_stop_patience: 5
