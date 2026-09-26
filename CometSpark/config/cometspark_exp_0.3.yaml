@@ -1,0 +1,71 @@
+# CometSpark-Exp-0.3 核心配置（正式采用 Dense 架构，约 0.6B）
+# 与 verse_trainer.trainer.TrainerConfig 字段对齐，可被 run.py 直接加载。
+# 词表大小必须覆盖 tokenizer/tokenizer.json 的最大 token id (248076)。
+#
+# 相对 0.2 的变化：
+# - 架构正式采用 Dense（attn_type=sdpa），弃用 DSA 稀疏注意力，降低乱码
+# - 参数量约 200M -> 615M（d_model 512 -> 1024，层数 24 -> 32，GQA 16:4）
+# - gradient_checkpointing=true：0.6B fp32 在 CPU 上靠它压住激活内存
+# - loss_chunk_size>0：分块 lm_head + CE，避免 (B,S,248k) logits 峰值
+# - batch/seq 调小 + grad_accum 调大：在 50% 内存上限内保持有效 batch
+
+model_name: cometspark
+
+model:
+  vocab_size: 248077
+  d_model: 1024
+  num_layers: 32
+  num_heads: 16
+  num_kv_heads: 4         # GQA：16 Q 头共享 4 KV 头（KV 缓存降至 1/4）
+  ffn_hidden_dim: null    # null = 自动 8/3*d_model 对齐 256 -> 2816
+  max_seq_len: 512
+  dropout: 0.0
+  tie_weights: true
+  gradient_checkpointing: true
+  attn_type: sdpa         # v0.3 起正式采用 Dense 注意力
+  dsa_index_head_dim: 32
+  dsa_top_k: 64
+  dsa_index_loss_weight: 0.0
+
+data:
+  batch_size: 1
+  seq_len: 256
+  seed: 42
+  drop_last: true
+
+optim:
+  name: adamw
+  lr: 3.0e-4
+  weight_decay: 0.1
+  beta1: 0.9
+  beta2: 0.95
+  grad_clip: 1.0
+  warmup_steps: 200
+  max_steps: 2000         # 与 steps 对齐（余弦衰减地平线）
+  min_lr_ratio: 0.1
+
+steps: 2000
+log_every: 10
+eval_every: 100
+eval_batches: 20
+ckpt_dir: checkpoints
+ckpt_every: 100
+loss_plot: true           # 每个 eval 检查点刷新 loss 曲线 -> checkpoints/loss_curve.png
+plot_every_eval: true
+save_best_only: true
+save_last: true              # 每个 ckpt_every 覆盖保存 *_last.pt，崩溃后可续训
+early_stop_patience: 5
+cleanup_intermediate: true   # 训练完成只保留 final，删除周期 checkpoint
+final_keep_optimizer: true   # final 保留优化器状态（可续训）
+loss_chunk_size: 128         # 分块 CE，压住大词表 logits 峰值
+device: auto
+dtype: auto
+compile: false
+grad_accum_steps: 16         # 有效 batch = 1 * 16 = 16 条（4096 tokens）
+num_threads: 0               # 0 = 自动（按 resources.cpu_fraction 取 50% 核数）
+resources:
+  enabled: true
+  cpu_fraction: 0.5          # CPU 线程 <= 50%
+  mem_fraction: 0.5          # 内存软上限 <= 50%
+  gpu_mem_fraction: 0.5      # CUDA 显存 <= 50%
+seed: 48

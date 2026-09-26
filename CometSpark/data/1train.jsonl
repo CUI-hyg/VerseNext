@@ -1,0 +1,4071 @@
+{"text": "The quick brown fox jumps over the lazy dog."}
+{"text": "深度学习使用神经网络来学习数据表示。"}
+{"text": "Python is a popular programming language."}
+{"text": "自然语言处理研究计算机与人类语言的交互。"}
+{"text": "Artificial intelligence is the simulation of human intelligence."}
+{"text": "大语言模型通过预训练和微调获得语言能力。"}
+{"text": "Machine learning algorithms improve through experience."}
+{"text": "今天的天气很好，适合出门散步。"}
+{"text": "Knowledge is power, and learning is its key."}
+{"text": "代码是人与计算机沟通的桥梁。"}
+{"text": "Practice makes perfect, persistence leads to success."}
+{"text": "数学是科学的基础，逻辑是数学的基础。"}
+{"text": "Time flies when you are having fun."}
+{"text": "音乐是心灵的语言，艺术是情感的表达。"}
+{"text": "A journey of a thousand miles begins with a single step."}
+{"text": "76 plus 5 equals 81."}
+{"text": "The curious monkey rests in the yard."}
+{"text": "Artificial intelligence helps computers understand humans."}
+{"text": "假期里，老师在操场上安静地读书。"}
+{"text": "人工智能是人工智能的重要分支。"}
+{"text": "上午，小红在河边慢慢地散步。"}
+{"text": "清晨，老师在公园里慢慢地散步。"}
+{"text": "傍晚，机器人在操场上专心地画画。"}
+{"text": "50的平方是2500。"}
+{"text": "83+90=173"}
+{"text": "Natural language processing is a branch of AI."}
+{"text": "傍晚，医生在教室里静静地思考。"}
+{"text": "74×94=6956"}
+{"text": "傍晚，小红在图书馆认真地写字。"}
+{"text": "傍晚，弟弟在花园里认真地写字。"}
+{"text": "假期里，小狗在图书馆开心地跑步。"}
+{"text": "深度学习改变着我们的生活方式。"}
+{"text": "71+29=100"}
+{"text": "数字387是一个自然数。"}
+{"text": "下午，猫咪在厨房里安静地读书。"}
+{"text": "The young rabbit walks in the garden."}
+{"text": "The curious fox sits on the farm."}
+{"text": "Data science is an important research topic."}
+{"text": "The curious rabbit eats on the farm."}
+{"text": "数字33是一个自然数。"}
+{"text": "69 plus 53 equals 122."}
+{"text": "中午，老师在图书馆快乐地唱歌。"}
+{"text": "94加46等于140。"}
+{"text": "中午，老师在教室里静静地思考。"}
+{"text": "9 times 5 is 45."}
+{"text": "The black cat rests on the farm."}
+{"text": "58+74=132"}
+{"text": "134的平方是17956。"}
+{"text": "晚上，老师在河边认真地写字。"}
+{"text": "The black bear rests near the river."}
+{"text": "57×30=1710"}
+{"text": "The black cat plays in the forest."}
+{"text": "The black rabbit sits under the tree."}
+{"text": "The curious bear runs on the farm."}
+{"text": "The brave rabbit jumps in the park."}
+{"text": "上午，小红在公园里慢慢地散步。"}
+{"text": "人工智能正在快速发展。"}
+{"text": "下午，医生在花园里安静地读书。"}
+{"text": "数字434是一个自然数。"}
+{"text": "Neural networks learns patterns from data."}
+{"text": "40 plus 70 equals 110."}
+{"text": "下午，奶奶在操场上开心地跑步。"}
+{"text": "下午，小明在花园里专心地画画。"}
+{"text": "The black dog sits under the tree."}
+{"text": "The brave horse plays in the forest."}
+{"text": "48 plus 94 equals 142."}
+{"text": "The brave fox runs in the park."}
+{"text": "上午，姐姐在河边认真地写字。"}
+{"text": "278的平方是77284。"}
+{"text": "94乘以93等于8742。"}
+{"text": "98加37等于135。"}
+{"text": "傍晚，奶奶在花园里安静地读书。"}
+{"text": "57加28等于85。"}
+{"text": "69+73=142"}
+{"text": "99 plus 4 equals 103."}
+{"text": "数字277是一个自然数。"}
+{"text": "上午，奶奶在公园里努力地学习。"}
+{"text": "The red bear jumps in the yard."}
+{"text": "The happy bear eats in the park."}
+{"text": "大语言模型正在快速发展。"}
+{"text": "神经网络正在快速发展。"}
+{"text": "机器学习仍在不断演进。"}
+{"text": "周末，弟弟在树下安静地读书。"}
+{"text": "Reinforcement learning helps computers understand humans."}
+{"text": "314的平方是98596。"}
+{"text": "深度学习让计算机变得更聪明。"}
+{"text": "47+15=62"}
+{"text": "中午，医生在花园里开心地跑步。"}
+{"text": "96 plus 5 equals 101."}
+{"text": "上午，奶奶在图书馆快乐地唱歌。"}
+{"text": "50 plus 90 equals 140."}
+{"text": "28+12=40"}
+{"text": "晚上，小狗在操场上努力地学习。"}
+{"text": "数字702是一个自然数。"}
+{"text": "假期里，奶奶在厨房里安静地读书。"}
+{"text": "The small bear sits in the park."}
+{"text": "The young horse sits on the farm."}
+{"text": "Neural networks requires large datasets."}
+{"text": "83×90=7470"}
+{"text": "强化学习改变着我们的生活方式。"}
+{"text": "The black fox sits under the tree."}
+{"text": "自然语言处理已经应用于日常生活。"}
+{"text": "The clever bird walks in the park."}
+{"text": "The red bear sleeps on the hill."}
+{"text": "39加6等于45。"}
+{"text": "69×29=2001"}
+{"text": "上午，小红在公园里专心地画画。"}
+{"text": "37 plus 25 equals 62."}
+{"text": "21+48=69"}
+{"text": "The clever monkey eats on the farm."}
+{"text": "清晨，机器人在操场上仔细地观察。"}
+{"text": "The small rabbit sits in the garden."}
+{"text": "The happy fox rests near the river."}
+{"text": "The clever cat plays in the garden."}
+{"text": "清晨，猫咪在花园里开心地跑步。"}
+{"text": "92×55=5060"}
+{"text": "The clever horse plays in the forest."}
+{"text": "88 plus 32 equals 120."}
+{"text": "84×11=924"}
+{"text": "Deep learning is widely used in industry."}
+{"text": "中午，猫咪在图书馆静静地思考。"}
+{"text": "12 plus 43 equals 55."}
+{"text": "下午，医生在花园里开心地跑步。"}
+{"text": "The curious horse jumps under the tree."}
+{"text": "数字802是一个自然数。"}
+{"text": "474的平方是224676。"}
+{"text": "The brave monkey walks in the garden."}
+{"text": "The curious rabbit plays near the river."}
+{"text": "17乘以52等于884。"}
+{"text": "晚上，弟弟在操场上静静地思考。"}
+{"text": "The young horse sleeps near the river."}
+{"text": "The young dog plays in the forest."}
+{"text": "9 times 1 is 9."}
+{"text": "5 times 4 is 20."}
+{"text": "The young horse plays in the yard."}
+{"text": "The young dog walks in the yard."}
+{"text": "假期里，小明在花园里开心地跑步。"}
+{"text": "2+29=31"}
+{"text": "The young bear eats near the river."}
+{"text": "The curious bird sleeps in the yard."}
+{"text": "53+65=118"}
+{"text": "数据挖掘已经应用于日常生活。"}
+{"text": "The red dog sits under the tree."}
+{"text": "Python helps computers understand humans."}
+{"text": "24 plus 33 equals 57."}
+{"text": "Natural language processing is changing the world."}
+{"text": "傍晚，姐姐在树下专心地画画。"}
+{"text": "The curious monkey runs on the farm."}
+{"text": "91 plus 55 equals 146."}
+{"text": "69 plus 5 equals 74."}
+{"text": "62乘以1等于62。"}
+{"text": "晚上，医生在厨房里认真地写字。"}
+{"text": "Artificial intelligence learns patterns from data."}
+{"text": "下午，小红在河边努力地学习。"}
+{"text": "4 plus 90 equals 94."}
+{"text": "数字245是一个自然数。"}
+{"text": "6乘以16等于96。"}
+{"text": "43加24等于67。"}
+{"text": "Deep learning is a branch of AI."}
+{"text": "下午，弟弟在图书馆专心地画画。"}
+{"text": "50 plus 38 equals 88."}
+{"text": "周末，机器人在教室里慢慢地散步。"}
+{"text": "清晨，小红在树下开心地跑步。"}
+{"text": "周末，弟弟在公园里快乐地唱歌。"}
+{"text": "The small rabbit walks on the hill."}
+{"text": "人工智能让计算机变得更聪明。"}
+{"text": "The curious horse eats in the forest."}
+{"text": "29 plus 87 equals 116."}
+{"text": "数据挖掘吸引了众多研究者。"}
+{"text": "周末，小红在花园里努力地学习。"}
+{"text": "16 plus 14 equals 30."}
+{"text": "91乘以94等于8554。"}
+{"text": "周末，机器人在厨房里慢慢地散步。"}
+{"text": "53 plus 94 equals 147."}
+{"text": "数字81是一个自然数。"}
+{"text": "The black dog runs in the garden."}
+{"text": "清晨，医生在教室里快乐地唱歌。"}
+{"text": "The small rabbit jumps in the park."}
+{"text": "晚上，爷爷在河边静静地思考。"}
+{"text": "下午，小狗在教室里快乐地唱歌。"}
+{"text": "The happy dog plays in the forest."}
+{"text": "The small fox jumps in the yard."}
+{"text": "31×1=31"}
+{"text": "57 plus 91 equals 148."}
+{"text": "Python learns patterns from data."}
+{"text": "50+65=115"}
+{"text": "清晨，小红在图书馆仔细地观察。"}
+{"text": "The black dog runs on the farm."}
+{"text": "40 plus 58 equals 98."}
+{"text": "4 times 6 is 24."}
+{"text": "中午，姐姐在图书馆慢慢地散步。"}
+{"text": "177的平方是31329。"}
+{"text": "晚上，医生在图书馆仔细地观察。"}
+{"text": "中午，机器人在操场上静静地思考。"}
+{"text": "Reinforcement learning is an important research topic."}
+{"text": "58乘以74等于4292。"}
+{"text": "中午，小红在操场上开心地跑步。"}
+{"text": "周末，姐姐在厨房里专心地画画。"}
+{"text": "20 plus 95 equals 115."}
+{"text": "The clever horse sleeps on the hill."}
+{"text": "The happy fox runs in the yard."}
+{"text": "The small cat sits on the farm."}
+{"text": "The red fox walks in the garden."}
+{"text": "The happy dog jumps near the river."}
+{"text": "清晨，奶奶在花园里慢慢地散步。"}
+{"text": "中午，医生在公园里开心地跑步。"}
+{"text": "The small monkey eats in the forest."}
+{"text": "54 plus 0 equals 54."}
+{"text": "71 plus 86 equals 157."}
+{"text": "晚上，机器人在图书馆快乐地唱歌。"}
+{"text": "75+97=172"}
+{"text": "The brave rabbit sleeps in the forest."}
+{"text": "The happy rabbit plays in the park."}
+{"text": "数字455是一个自然数。"}
+{"text": "The curious horse sits under the tree."}
+{"text": "数字462是一个自然数。"}
+{"text": "32 plus 67 equals 99."}
+{"text": "52加95等于147。"}
+{"text": "431的平方是185761。"}
+{"text": "The young horse runs under the tree."}
+{"text": "晚上，弟弟在河边专心地画画。"}
+{"text": "数字927是一个自然数。"}
+{"text": "9加84等于93。"}
+{"text": "傍晚，爷爷在河边仔细地观察。"}
+{"text": "The brave bear rests under the tree."}
+{"text": "Deep learning is changing the world."}
+{"text": "Machine learning is a branch of AI."}
+{"text": "假期里，机器人在河边认真地写字。"}
+{"text": "晚上，爷爷在操场上专心地画画。"}
+{"text": "The brave rabbit runs on the hill."}
+{"text": "The black fox eats on the hill."}
+{"text": "下午，小狗在厨房里努力地学习。"}
+{"text": "200的平方是40000。"}
+{"text": "The small horse eats under the tree."}
+{"text": "Machine learning helps computers understand humans."}
+{"text": "The young fox jumps under the tree."}
+{"text": "12 plus 60 equals 72."}
+{"text": "422的平方是178084。"}
+{"text": "The small cat eats in the yard."}
+{"text": "The red bird walks on the farm."}
+{"text": "The black fox jumps on the farm."}
+{"text": "强化学习已经应用于日常生活。"}
+{"text": "44 plus 39 equals 83."}
+{"text": "Large language models requires large datasets."}
+{"text": "上午，猫咪在教室里专心地画画。"}
+{"text": "30+65=95"}
+{"text": "90 plus 52 equals 142."}
+{"text": "强化学习吸引了众多研究者。"}
+{"text": "The happy bear runs near the river."}
+{"text": "假期里，小红在厨房里认真地写字。"}
+{"text": "晚上，小红在图书馆努力地学习。"}
+{"text": "晚上，奶奶在教室里仔细地观察。"}
+{"text": "数字309是一个自然数。"}
+{"text": "下午，机器人在树下认真地写字。"}
+{"text": "机器学习让计算机变得更聪明。"}
+{"text": "68×92=6256"}
+{"text": "周末，爷爷在树下安静地读书。"}
+{"text": "32+80=112"}
+{"text": "傍晚，机器人在厨房里慢慢地散步。"}
+{"text": "16 plus 31 equals 47."}
+{"text": "数字87是一个自然数。"}
+{"text": "The happy cat rests in the yard."}
+{"text": "The black dog sits near the river."}
+{"text": "The happy horse eats in the garden."}
+{"text": "假期里，医生在教室里努力地学习。"}
+{"text": "下午，医生在河边慢慢地散步。"}
+{"text": "下午，弟弟在花园里专心地画画。"}
+{"text": "The curious monkey plays under the tree."}
+{"text": "45加29等于74。"}
+{"text": "5 plus 98 equals 103."}
+{"text": "数字628是一个自然数。"}
+{"text": "34 plus 80 equals 114."}
+{"text": "Neural networks helps computers understand humans."}
+{"text": "The happy monkey runs in the garden."}
+{"text": "数字290是一个自然数。"}
+{"text": "35 plus 53 equals 88."}
+{"text": "上午，奶奶在河边静静地思考。"}
+{"text": "The black fox plays in the park."}
+{"text": "The clever cat walks in the forest."}
+{"text": "24×83=1992"}
+{"text": "傍晚，医生在树下静静地思考。"}
+{"text": "清晨，小红在树下专心地画画。"}
+{"text": "12 plus 11 equals 23."}
+{"text": "周末，老师在树下快乐地唱歌。"}
+{"text": "The brave horse runs in the forest."}
+{"text": "清晨，姐姐在公园里开心地跑步。"}
+{"text": "39+37=76"}
+{"text": "The curious bird sits in the park."}
+{"text": "The curious horse plays in the garden."}
+{"text": "58×87=5046"}
+{"text": "计算机视觉让计算机变得更聪明。"}
+{"text": "The brave fox sits on the farm."}
+{"text": "神经网络已经应用于日常生活。"}
+{"text": "傍晚，小红在树下静静地思考。"}
+{"text": "The brave rabbit plays under the tree."}
+{"text": "晚上，奶奶在操场上慢慢地散步。"}
+{"text": "70乘以97等于6790。"}
+{"text": "The brave horse jumps in the forest."}
+{"text": "61 plus 37 equals 98."}
+{"text": "91+32=123"}
+{"text": "数字29是一个自然数。"}
+{"text": "数字440是一个自然数。"}
+{"text": "The happy cat plays on the farm."}
+{"text": "93 plus 43 equals 136."}
+{"text": "383的平方是146689。"}
+{"text": "6乘以37等于222。"}
+{"text": "The brave cat runs under the tree."}
+{"text": "假期里，小狗在公园里快乐地唱歌。"}
+{"text": "算法仍在不断演进。"}
+{"text": "56乘以97等于5432。"}
+{"text": "数字675是一个自然数。"}
+{"text": "Python requires large datasets."}
+{"text": "数字506是一个自然数。"}
+{"text": "Artificial intelligence is an important research topic."}
+{"text": "周末，姐姐在厨房里静静地思考。"}
+{"text": "The small monkey walks near the river."}
+{"text": "Artificial intelligence requires large datasets."}
+{"text": "1 times 4 is 4."}
+{"text": "The young horse walks in the park."}
+{"text": "40+22=62"}
+{"text": "晚上，爷爷在树下开心地跑步。"}
+{"text": "90乘以77等于6930。"}
+{"text": "273的平方是74529。"}
+{"text": "假期里，机器人在树下开心地跑步。"}
+{"text": "The red fox rests on the hill."}
+{"text": "中午，小明在操场上开心地跑步。"}
+{"text": "中午，医生在图书馆慢慢地散步。"}
+{"text": "Large language models is changing the world."}
+{"text": "The black monkey sits near the river."}
+{"text": "The red dog plays near the river."}
+{"text": "傍晚，老师在花园里仔细地观察。"}
+{"text": "晚上，小明在厨房里慢慢地散步。"}
+{"text": "12+52=64"}
+{"text": "26乘以89等于2314。"}
+{"text": "3 plus 17 equals 20."}
+{"text": "Machine learning is an important research topic."}
+{"text": "中午，机器人在花园里慢慢地散步。"}
+{"text": "The curious monkey rests on the farm."}
+{"text": "374的平方是139876。"}
+{"text": "The curious horse sits in the garden."}
+{"text": "数字378是一个自然数。"}
+{"text": "46 plus 18 equals 64."}
+{"text": "6 times 4 is 24."}
+{"text": "27 plus 10 equals 37."}
+{"text": "假期里，小红在教室里慢慢地散步。"}
+{"text": "89 plus 39 equals 128."}
+{"text": "37 plus 14 equals 51."}
+{"text": "The black fox rests under the tree."}
+{"text": "周末，猫咪在操场上努力地学习。"}
+{"text": "9+86=95"}
+{"text": "假期里，老师在厨房里安静地读书。"}
+{"text": "清晨，机器人在公园里安静地读书。"}
+{"text": "12乘以42等于504。"}
+{"text": "晚上，猫咪在河边努力地学习。"}
+{"text": "4 times 7 is 28."}
+{"text": "The curious cat rests in the garden."}
+{"text": "The red bird walks in the park."}
+{"text": "The happy monkey sits in the park."}
+{"text": "The happy monkey sits on the farm."}
+{"text": "The brave monkey sits in the park."}
+{"text": "The brave bear sits under the tree."}
+{"text": "11 plus 14 equals 25."}
+{"text": "晚上，猫咪在公园里开心地跑步。"}
+{"text": "Python is widely used in industry."}
+{"text": "清晨，爷爷在树下慢慢地散步。"}
+{"text": "清晨，医生在图书馆认真地写字。"}
+{"text": "周末，奶奶在图书馆专心地画画。"}
+{"text": "傍晚，机器人在公园里认真地写字。"}
+{"text": "Artificial intelligence is a branch of AI."}
+{"text": "The happy horse eats in the park."}
+{"text": "94 plus 10 equals 104."}
+{"text": "中午，猫咪在教室里专心地画画。"}
+{"text": "The small cat walks on the hill."}
+{"text": "56 plus 28 equals 84."}
+{"text": "The black rabbit runs in the forest."}
+{"text": "Neural networks is a popular programming language."}
+{"text": "The happy fox walks on the hill."}
+{"text": "数字471是一个自然数。"}
+{"text": "The red cat jumps under the tree."}
+{"text": "58×56=3248"}
+{"text": "4 times 9 is 36."}
+{"text": "Large language models learns patterns from data."}
+{"text": "The curious fox eats in the forest."}
+{"text": "The curious rabbit runs near the river."}
+{"text": "39×37=1443"}
+{"text": "The small dog sleeps under the tree."}
+{"text": "The young bird plays in the yard."}
+{"text": "The curious bird runs in the forest."}
+{"text": "Large language models is a popular programming language."}
+{"text": "傍晚，爷爷在公园里专心地画画。"}
+{"text": "78 plus 10 equals 88."}
+{"text": "36加75等于111。"}
+{"text": "晚上，小明在树下努力地学习。"}
+{"text": "The curious bear sleeps in the yard."}
+{"text": "58×29=1682"}
+{"text": "清晨，小红在河边仔细地观察。"}
+{"text": "1 times 3 is 3."}
+{"text": "数据挖掘让计算机变得更聪明。"}
+{"text": "自然语言处理正在快速发展。"}
+{"text": "44+59=103"}
+{"text": "72乘以15等于1080。"}
+{"text": "The curious rabbit jumps in the park."}
+{"text": "The brave horse walks in the forest."}
+{"text": "65乘以78等于5070。"}
+{"text": "人工智能吸引了众多研究者。"}
+{"text": "73 plus 46 equals 119."}
+{"text": "76加69等于145。"}
+{"text": "数字468是一个自然数。"}
+{"text": "4 times 4 is 16."}
+{"text": "下午，弟弟在操场上专心地画画。"}
+{"text": "77 plus 12 equals 89."}
+{"text": "78+69=147"}
+{"text": "87乘以16等于1392。"}
+{"text": "数字951是一个自然数。"}
+{"text": "The brave cat rests in the garden."}
+{"text": "下午，小狗在树下快乐地唱歌。"}
+{"text": "4 plus 86 equals 90."}
+{"text": "中午，奶奶在花园里快乐地唱歌。"}
+{"text": "The brave rabbit walks under the tree."}
+{"text": "假期里，小红在河边努力地学习。"}
+{"text": "数字867是一个自然数。"}
+{"text": "The red horse rests under the tree."}
+{"text": "15 plus 2 equals 17."}
+{"text": "周末，奶奶在操场上快乐地唱歌。"}
+{"text": "44加32等于76。"}
+{"text": "76乘以70等于5320。"}
+{"text": "The clever cat jumps on the hill."}
+{"text": "上午，奶奶在树下努力地学习。"}
+{"text": "The clever bird jumps on the hill."}
+{"text": "The young horse eats in the yard."}
+{"text": "周末，猫咪在厨房里慢慢地散步。"}
+{"text": "假期里，老师在花园里快乐地唱歌。"}
+{"text": "The happy monkey jumps in the garden."}
+{"text": "12乘以39等于468。"}
+{"text": "The small bear plays near the river."}
+{"text": "清晨，小狗在河边静静地思考。"}
+{"text": "数字271是一个自然数。"}
+{"text": "The clever dog jumps near the river."}
+{"text": "上午，弟弟在公园里认真地写字。"}
+{"text": "The small dog sits in the forest."}
+{"text": "假期里，奶奶在操场上静静地思考。"}
+{"text": "清晨，小明在花园里认真地写字。"}
+{"text": "The happy horse sits on the farm."}
+{"text": "清晨，小红在厨房里努力地学习。"}
+{"text": "数字600是一个自然数。"}
+{"text": "The brave horse walks near the river."}
+{"text": "94加45等于139。"}
+{"text": "晚上，医生在图书馆慢慢地散步。"}
+{"text": "傍晚，奶奶在图书馆安静地读书。"}
+{"text": "96加76等于172。"}
+{"text": "下午，姐姐在树下仔细地观察。"}
+{"text": "53 plus 34 equals 87."}
+{"text": "The small monkey runs near the river."}
+{"text": "Deep learning helps computers understand humans."}
+{"text": "下午，医生在操场上慢慢地散步。"}
+{"text": "Computer vision is a popular programming language."}
+{"text": "葡萄是紫色的。"}
+{"text": "55 plus 97 equals 152."}
+{"text": "0+55=55"}
+{"text": "2 plus 95 equals 97."}
+{"text": "The curious bird runs on the hill."}
+{"text": "The red horse sleeps near the river."}
+{"text": "52×64=3328"}
+{"text": "中午，机器人在公园里专心地画画。"}
+{"text": "The small cat walks in the park."}
+{"text": "数字162是一个自然数。"}
+{"text": "96乘以46等于4416。"}
+{"text": "72 plus 80 equals 152."}
+{"text": "58加29等于87。"}
+{"text": "傍晚，小红在操场上安静地读书。"}
+{"text": "60 plus 11 equals 71."}
+{"text": "80加0等于80。"}
+{"text": "晚上，小明在教室里静静地思考。"}
+{"text": "The happy monkey plays on the farm."}
+{"text": "98乘以41等于4018。"}
+{"text": "周末，机器人在花园里开心地跑步。"}
+{"text": "晚上，机器人在图书馆慢慢地散步。"}
+{"text": "The red monkey rests on the farm."}
+{"text": "数字976是一个自然数。"}
+{"text": "45 plus 25 equals 70."}
+{"text": "The red bird plays in the forest."}
+{"text": "数字292是一个自然数。"}
+{"text": "91的平方是8281。"}
+{"text": "19 plus 98 equals 117."}
+{"text": "15 plus 36 equals 51."}
+{"text": "74+46=120"}
+{"text": "晚上，弟弟在教室里专心地画画。"}
+{"text": "假期里，弟弟在图书馆仔细地观察。"}
+{"text": "数字49是一个自然数。"}
+{"text": "傍晚，机器人在花园里静静地思考。"}
+{"text": "23+91=114"}
+{"text": "清晨，小狗在操场上专心地画画。"}
+{"text": "下午，奶奶在公园里安静地读书。"}
+{"text": "The brave cat plays in the garden."}
+{"text": "The curious bird sits near the river."}
+{"text": "Deep learning learns patterns from data."}
+{"text": "The black fox sits on the hill."}
+{"text": "24 plus 16 equals 40."}
+{"text": "下午，医生在厨房里慢慢地散步。"}
+{"text": "下午，爷爷在河边安静地读书。"}
+{"text": "21 plus 80 equals 101."}
+{"text": "The happy dog walks in the yard."}
+{"text": "20 plus 32 equals 52."}
+{"text": "The red rabbit walks in the forest."}
+{"text": "机器学习正在快速发展。"}
+{"text": "清晨，小狗在花园里专心地画画。"}
+{"text": "9 times 3 is 27."}
+{"text": "99 plus 9 equals 108."}
+{"text": "16+1=17"}
+{"text": "The brave dog sits on the hill."}
+{"text": "63×45=2835"}
+{"text": "The clever monkey eats in the park."}
+{"text": "371的平方是137641。"}
+{"text": "21 plus 34 equals 55."}
+{"text": "数字418是一个自然数。"}
+{"text": "Large language models helps computers understand humans."}
+{"text": "25+47=72"}
+{"text": "数字127是一个自然数。"}
+{"text": "数字46是一个自然数。"}
+{"text": "2 plus 17 equals 19."}
+{"text": "数字370是一个自然数。"}
+{"text": "数字437是一个自然数。"}
+{"text": "数字862是一个自然数。"}
+{"text": "8 plus 81 equals 89."}
+{"text": "数字259是一个自然数。"}
+{"text": "83+1=84"}
+{"text": "The small dog jumps in the yard."}
+{"text": "458的平方是209764。"}
+{"text": "20加36等于56。"}
+{"text": "73+67=140"}
+{"text": "39的平方是1521。"}
+{"text": "439的平方是192721。"}
+{"text": "135的平方是18225。"}
+{"text": "下午，医生在操场上静静地思考。"}
+{"text": "中午，小红在公园里快乐地唱歌。"}
+{"text": "47×10=470"}
+{"text": "上午，医生在厨房里认真地写字。"}
+{"text": "晚上，老师在教室里开心地跑步。"}
+{"text": "The red horse walks under the tree."}
+{"text": "71×29=2059"}
+{"text": "清晨，老师在河边专心地画画。"}
+{"text": "The black bear eats near the river."}
+{"text": "90×23=2070"}
+{"text": "14 plus 74 equals 88."}
+{"text": "The brave bear jumps near the river."}
+{"text": "8 plus 63 equals 71."}
+{"text": "70 plus 18 equals 88."}
+{"text": "The curious bear jumps near the river."}
+{"text": "The curious monkey sits in the park."}
+{"text": "30加9等于39。"}
+{"text": "The small bird rests in the yard."}
+{"text": "31+1=32"}
+{"text": "人工智能需要大量的数据和算力。"}
+{"text": "假期里，老师在教室里快乐地唱歌。"}
+{"text": "87加54等于141。"}
+{"text": "上午，奶奶在图书馆安静地读书。"}
+{"text": "下午，弟弟在树下开心地跑步。"}
+{"text": "The clever bird sits in the garden."}
+{"text": "神经网络仍在不断演进。"}
+{"text": "神经网络改变着我们的生活方式。"}
+{"text": "傍晚，猫咪在操场上安静地读书。"}
+{"text": "周末，医生在教室里认真地写字。"}
+{"text": "18+63=81"}
+{"text": "The red bird rests under the tree."}
+{"text": "62 plus 86 equals 148."}
+{"text": "30×65=1950"}
+{"text": "39+36=75"}
+{"text": "晚上，猫咪在教室里慢慢地散步。"}
+{"text": "下午，奶奶在公园里认真地写字。"}
+{"text": "24 plus 39 equals 63."}
+{"text": "The clever bear rests near the river."}
+{"text": "数字178是一个自然数。"}
+{"text": "The brave dog runs in the forest."}
+{"text": "周末，猫咪在图书馆开心地跑步。"}
+{"text": "The black horse sleeps in the park."}
+{"text": "60 plus 92 equals 152."}
+{"text": "Data science learns patterns from data."}
+{"text": "算法改变着我们的生活方式。"}
+{"text": "156的平方是24336。"}
+{"text": "7 times 4 is 28."}
+{"text": "数据挖掘是人工智能的重要分支。"}
+{"text": "上午，小明在教室里认真地写字。"}
+{"text": "The brave fox rests near the river."}
+{"text": "清晨，姐姐在花园里慢慢地散步。"}
+{"text": "数字713是一个自然数。"}
+{"text": "傍晚，姐姐在公园里认真地写字。"}
+{"text": "The happy fox plays on the hill."}
+{"text": "18×0=0"}
+{"text": "54 plus 20 equals 74."}
+{"text": "144的平方是20736。"}
+{"text": "Natural language processing learns patterns from data."}
+{"text": "20×6=120"}
+{"text": "17 plus 44 equals 61."}
+{"text": "晚上，猫咪在图书馆仔细地观察。"}
+{"text": "93加92等于185。"}
+{"text": "78+64=142"}
+{"text": "清晨，小红在河边快乐地唱歌。"}
+{"text": "The young horse runs on the farm."}
+{"text": "The clever cat eats in the park."}
+{"text": "25 plus 53 equals 78."}
+{"text": "中午，小明在公园里静静地思考。"}
+{"text": "上午，机器人在河边静静地思考。"}
+{"text": "The happy fox sits under the tree."}
+{"text": "33×74=2442"}
+{"text": "The young bear plays in the yard."}
+{"text": "上午，奶奶在操场上认真地写字。"}
+{"text": "70+33=103"}
+{"text": "假期里，机器人在厨房里仔细地观察。"}
+{"text": "晚上，弟弟在图书馆开心地跑步。"}
+{"text": "晚上，爷爷在操场上安静地读书。"}
+{"text": "13加20等于33。"}
+{"text": "35×51=1785"}
+{"text": "50+9=59"}
+{"text": "The small monkey eats in the garden."}
+{"text": "神经网络需要大量的数据和算力。"}
+{"text": "17 plus 97 equals 114."}
+{"text": "55+74=129"}
+{"text": "晚上，机器人在教室里安静地读书。"}
+{"text": "中午，小狗在厨房里安静地读书。"}
+{"text": "周末，机器人在教室里安静地读书。"}
+{"text": "The happy rabbit sleeps near the river."}
+{"text": "The brave bear sleeps in the park."}
+{"text": "数字1000是一个自然数。"}
+{"text": "266的平方是70756。"}
+{"text": "The happy bear sits in the forest."}
+{"text": "Machine learning requires large datasets."}
+{"text": "87 plus 71 equals 158."}
+{"text": "上午，老师在操场上安静地读书。"}
+{"text": "The brave horse sits on the farm."}
+{"text": "清晨，猫咪在河边快乐地唱歌。"}
+{"text": "The curious cat plays on the hill."}
+{"text": "20×72=1440"}
+{"text": "88乘以87等于7656。"}
+{"text": "清晨，老师在河边认真地写字。"}
+{"text": "数字413是一个自然数。"}
+{"text": "73 plus 29 equals 102."}
+{"text": "数字265是一个自然数。"}
+{"text": "95加12等于107。"}
+{"text": "85+55=140"}
+{"text": "The red dog eats in the park."}
+{"text": "Data science helps computers understand humans."}
+{"text": "6加83等于89。"}
+{"text": "数字436是一个自然数。"}
+{"text": "86×49=4214"}
+{"text": "The small dog eats in the park."}
+{"text": "65 plus 83 equals 148."}
+{"text": "假期里，小狗在花园里开心地跑步。"}
+{"text": "The young dog eats in the forest."}
+{"text": "191的平方是36481。"}
+{"text": "50加58等于108。"}
+{"text": "The clever cat sleeps in the garden."}
+{"text": "中午，姐姐在树下安静地读书。"}
+{"text": "32乘以27等于864。"}
+{"text": "Reinforcement learning requires large datasets."}
+{"text": "晚上，小狗在教室里静静地思考。"}
+{"text": "44加44等于88。"}
+{"text": "13加68等于81。"}
+{"text": "22乘以6等于132。"}
+{"text": "97×44=4268"}
+{"text": "数字38是一个自然数。"}
+{"text": "The black fox sleeps in the forest."}
+{"text": "The young dog runs in the garden."}
+{"text": "周末，姐姐在厨房里努力地学习。"}
+{"text": "56×63=3528"}
+{"text": "393的平方是154449。"}
+{"text": "63+45=108"}
+{"text": "清晨，机器人在公园里开心地跑步。"}
+{"text": "清晨，小明在图书馆认真地写字。"}
+{"text": "71×7=497"}
+{"text": "The brave monkey eats under the tree."}
+{"text": "The curious bird jumps under the tree."}
+{"text": "24加83等于107。"}
+{"text": "3 times 5 is 15."}
+{"text": "上午，猫咪在操场上快乐地唱歌。"}
+{"text": "假期里，猫咪在操场上快乐地唱歌。"}
+{"text": "晚上，小狗在花园里快乐地唱歌。"}
+{"text": "上午，弟弟在河边专心地画画。"}
+{"text": "深度学习吸引了众多研究者。"}
+{"text": "90+77=167"}
+{"text": "46 plus 26 equals 72."}
+{"text": "周末，猫咪在树下安静地读书。"}
+{"text": "The young fox sits near the river."}
+{"text": "The clever monkey plays near the river."}
+{"text": "假期里，机器人在树下认真地写字。"}
+{"text": "The curious monkey walks near the river."}
+{"text": "The small cat plays in the park."}
+{"text": "4×12=48"}
+{"text": "上午，奶奶在教室里开心地跑步。"}
+{"text": "数字645是一个自然数。"}
+{"text": "下午，爷爷在厨房里静静地思考。"}
+{"text": "算法是人工智能的重要分支。"}
+{"text": "晚上，奶奶在操场上静静地思考。"}
+{"text": "The curious bird plays in the park."}
+{"text": "下午，小明在树下努力地学习。"}
+{"text": "The brave fox walks on the hill."}
+{"text": "12乘以52等于624。"}
+{"text": "83 plus 8 equals 91."}
+{"text": "The curious bird sits in the forest."}
+{"text": "69+85=154"}
+{"text": "The black rabbit runs in the park."}
+{"text": "The young dog eats in the garden."}
+{"text": "傍晚，老师在图书馆安静地读书。"}
+{"text": "下午，小红在图书馆安静地读书。"}
+{"text": "清晨，弟弟在厨房里仔细地观察。"}
+{"text": "假期里，爷爷在图书馆专心地画画。"}
+{"text": "数字200是一个自然数。"}
+{"text": "数字707是一个自然数。"}
+{"text": "清晨，姐姐在图书馆快乐地唱歌。"}
+{"text": "36加58等于94。"}
+{"text": "The happy bear eats on the farm."}
+{"text": "The red rabbit runs in the park."}
+{"text": "37×61=2257"}
+{"text": "人工智能仍在不断演进。"}
+{"text": "47加78等于125。"}
+{"text": "83 plus 51 equals 134."}
+{"text": "26+45=71"}
+{"text": "上午，老师在公园里努力地学习。"}
+{"text": "上午，猫咪在厨房里开心地跑步。"}
+{"text": "The red fox jumps on the hill."}
+{"text": "The happy horse eats under the tree."}
+{"text": "95 plus 58 equals 153."}
+{"text": "11 plus 96 equals 107."}
+{"text": "The small rabbit runs under the tree."}
+{"text": "大语言模型需要大量的数据和算力。"}
+{"text": "48+88=136"}
+{"text": "44乘以39等于1716。"}
+{"text": "37 plus 81 equals 118."}
+{"text": "76+64=140"}
+{"text": "The red cat walks under the tree."}
+{"text": "数字949是一个自然数。"}
+{"text": "The small bear sits in the yard."}
+{"text": "周末，小狗在树下静静地思考。"}
+{"text": "清晨，小明在教室里开心地跑步。"}
+{"text": "Large language models is a branch of AI."}
+{"text": "数字711是一个自然数。"}
+{"text": "中午，小明在厨房里仔细地观察。"}
+{"text": "0乘以55等于0。"}
+{"text": "59乘以2等于118。"}
+{"text": "17 plus 92 equals 109."}
+{"text": "15 plus 40 equals 55."}
+{"text": "41+43=84"}
+{"text": "18乘以66等于1188。"}
+{"text": "The brave bear rests in the park."}
+{"text": "90乘以20等于1800。"}
+{"text": "晚上，机器人在花园里静静地思考。"}
+{"text": "The black horse runs under the tree."}
+{"text": "Reinforcement learning is a popular programming language."}
+{"text": "The curious dog sleeps on the hill."}
+{"text": "数字618是一个自然数。"}
+{"text": "54 plus 24 equals 78."}
+{"text": "周末，小明在河边安静地读书。"}
+{"text": "52加33等于85。"}
+{"text": "上午，弟弟在教室里专心地画画。"}
+{"text": "傍晚，医生在花园里开心地跑步。"}
+{"text": "傍晚，小红在图书馆努力地学习。"}
+{"text": "The young dog sleeps under the tree."}
+{"text": "大语言模型改变着我们的生活方式。"}
+{"text": "47 plus 66 equals 113."}
+{"text": "75×2=150"}
+{"text": "49加17等于66。"}
+{"text": "62 plus 16 equals 78."}
+{"text": "傍晚，小狗在操场上认真地写字。"}
+{"text": "The black horse jumps in the park."}
+{"text": "晚上，机器人在河边认真地写字。"}
+{"text": "自然语言处理让计算机变得更聪明。"}
+{"text": "The small bear plays in the forest."}
+{"text": "下午，小狗在教室里认真地写字。"}
+{"text": "数字544是一个自然数。"}
+{"text": "79 plus 58 equals 137."}
+{"text": "90 plus 97 equals 187."}
+{"text": "30 plus 35 equals 65."}
+{"text": "77 plus 96 equals 173."}
+{"text": "The happy bear runs in the forest."}
+{"text": "32加56等于88。"}
+{"text": "数字957是一个自然数。"}
+{"text": "6 times 8 is 48."}
+{"text": "数字134是一个自然数。"}
+{"text": "The brave bird walks on the farm."}
+{"text": "54加50等于104。"}
+{"text": "中午，小明在公园里专心地画画。"}
+{"text": "清晨，老师在树下认真地写字。"}
+{"text": "86乘以89等于7654。"}
+{"text": "40 plus 11 equals 51."}
+{"text": "上午，爷爷在树下慢慢地散步。"}
+{"text": "数字663是一个自然数。"}
+{"text": "自然语言处理吸引了众多研究者。"}
+{"text": "The curious rabbit jumps under the tree."}
+{"text": "27 plus 5 equals 32."}
+{"text": "45加97等于142。"}
+{"text": "The happy bear plays on the hill."}
+{"text": "Large language models is an important research topic."}
+{"text": "51 plus 52 equals 103."}
+{"text": "The happy fox sleeps on the farm."}
+{"text": "大海是蓝色的。"}
+{"text": "假期里，医生在教室里安静地读书。"}
+{"text": "8乘以23等于184。"}
+{"text": "The happy horse eats in the forest."}
+{"text": "下午，奶奶在教室里专心地画画。"}
+{"text": "46加76等于122。"}
+{"text": "46 plus 22 equals 68."}
+{"text": "The curious fox runs in the forest."}
+{"text": "72 plus 92 equals 164."}
+{"text": "86乘以70等于6020。"}
+{"text": "10×66=660"}
+{"text": "中午，爷爷在河边仔细地观察。"}
+{"text": "63 plus 23 equals 86."}
+{"text": "傍晚，机器人在树下快乐地唱歌。"}
+{"text": "69+88=157"}
+{"text": "The brave monkey sits in the yard."}
+{"text": "The curious bear sleeps in the garden."}
+{"text": "数字366是一个自然数。"}
+{"text": "23乘以99等于2277。"}
+{"text": "The young fox walks on the farm."}
+{"text": "清晨，小红在树下安静地读书。"}
+{"text": "晚上，小狗在操场上快乐地唱歌。"}
+{"text": "数字198是一个自然数。"}
+{"text": "86 plus 90 equals 176."}
+{"text": "85乘以61等于5185。"}
+{"text": "95加94等于189。"}
+{"text": "清晨，机器人在操场上静静地思考。"}
+{"text": "29 plus 0 equals 29."}
+{"text": "20+72=92"}
+{"text": "77×32=2464"}
+{"text": "数字913是一个自然数。"}
+{"text": "算法正在快速发展。"}
+{"text": "93×94=8742"}
+{"text": "The clever horse plays on the farm."}
+{"text": "中午，老师在河边认真地写字。"}
+{"text": "数字258是一个自然数。"}
+{"text": "74 plus 85 equals 159."}
+{"text": "45 plus 35 equals 80."}
+{"text": "95 plus 19 equals 114."}
+{"text": "7 times 8 is 56."}
+{"text": "The small horse walks near the river."}
+{"text": "The brave monkey eats on the hill."}
+{"text": "67+79=146"}
+{"text": "80 plus 42 equals 122."}
+{"text": "62 plus 26 equals 88."}
+{"text": "79 plus 94 equals 173."}
+{"text": "Python is an important research topic."}
+{"text": "60×90=5400"}
+{"text": "25 plus 77 equals 102."}
+{"text": "The red bird plays in the yard."}
+{"text": "13 plus 36 equals 49."}
+{"text": "71×35=2485"}
+{"text": "中午，小明在树下努力地学习。"}
+{"text": "周末，老师在河边专心地画画。"}
+{"text": "清晨，老师在河边仔细地观察。"}
+{"text": "46 plus 70 equals 116."}
+{"text": "82+37=119"}
+{"text": "The small cat eats in the garden."}
+{"text": "晚上，姐姐在河边开心地跑步。"}
+{"text": "自然语言处理需要大量的数据和算力。"}
+{"text": "中午，机器人在公园里努力地学习。"}
+{"text": "53+56=109"}
+{"text": "数字244是一个自然数。"}
+{"text": "晚上，姐姐在河边快乐地唱歌。"}
+{"text": "The curious horse plays in the forest."}
+{"text": "中午，弟弟在厨房里开心地跑步。"}
+{"text": "10+66=76"}
+{"text": "The curious rabbit jumps in the yard."}
+{"text": "94×46=4324"}
+{"text": "上午，奶奶在操场上专心地画画。"}
+{"text": "76×64=4864"}
+{"text": "94乘以52等于4888。"}
+{"text": "49 plus 68 equals 117."}
+{"text": "17 plus 18 equals 35."}
+{"text": "81的平方是6561。"}
+{"text": "75 plus 5 equals 80."}
+{"text": "The happy bear rests in the park."}
+{"text": "28 plus 73 equals 101."}
+{"text": "数字794是一个自然数。"}
+{"text": "The curious cat jumps on the farm."}
+{"text": "27 plus 76 equals 103."}
+{"text": "The red dog jumps on the farm."}
+{"text": "强化学习是人工智能的重要分支。"}
+{"text": "假期里，小红在河边慢慢地散步。"}
+{"text": "61×42=2562"}
+{"text": "7 plus 92 equals 99."}
+{"text": "The black cat walks near the river."}
+{"text": "晚上，猫咪在教室里仔细地观察。"}
+{"text": "61乘以41等于2501。"}
+{"text": "The curious rabbit sleeps on the farm."}
+{"text": "The red dog sits in the yard."}
+{"text": "7 plus 77 equals 84."}
+{"text": "机器学习是人工智能的重要分支。"}
+{"text": "数字164是一个自然数。"}
+{"text": "The curious monkey eats in the yard."}
+{"text": "448的平方是200704。"}
+{"text": "Natural language processing is a popular programming language."}
+{"text": "The small monkey eats in the park."}
+{"text": "上午，姐姐在树下开心地跑步。"}
+{"text": "The red fox plays in the garden."}
+{"text": "The clever bear sits in the park."}
+{"text": "16 plus 29 equals 45."}
+{"text": "59乘以28等于1652。"}
+{"text": "94+56=150"}
+{"text": "数字985是一个自然数。"}
+{"text": "数字153是一个自然数。"}
+{"text": "9乘以84等于756。"}
+{"text": "51乘以85等于4335。"}
+{"text": "假期里，弟弟在厨房里安静地读书。"}
+{"text": "周末，猫咪在公园里静静地思考。"}
+{"text": "The clever dog jumps in the garden."}
+{"text": "数字481是一个自然数。"}
+{"text": "36 plus 8 equals 44."}
+{"text": "中午，医生在图书馆专心地画画。"}
+{"text": "37 plus 67 equals 104."}
+{"text": "数字113是一个自然数。"}
+{"text": "The brave monkey runs near the river."}
+{"text": "71乘以4等于284。"}
+{"text": "The brave horse sleeps on the hill."}
+{"text": "55 plus 12 equals 67."}
+{"text": "48 plus 48 equals 96."}
+{"text": "Natural language processing is an important research topic."}
+{"text": "神经网络让计算机变得更聪明。"}
+{"text": "数字632是一个自然数。"}
+{"text": "数字207是一个自然数。"}
+{"text": "中午，医生在图书馆努力地学习。"}
+{"text": "98 plus 8 equals 106."}
+{"text": "40+90=130"}
+{"text": "45 plus 94 equals 139."}
+{"text": "周末，奶奶在教室里安静地读书。"}
+{"text": "87+16=103"}
+{"text": "48 plus 99 equals 147."}
+{"text": "中午，医生在操场上静静地思考。"}
+{"text": "The black cat eats under the tree."}
+{"text": "上午，老师在图书馆认真地写字。"}
+{"text": "数字696是一个自然数。"}
+{"text": "69×88=6072"}
+{"text": "486的平方是236196。"}
+{"text": "清晨，弟弟在公园里慢慢地散步。"}
+{"text": "The clever horse rests on the hill."}
+{"text": "下午，小狗在厨房里仔细地观察。"}
+{"text": "26+34=60"}
+{"text": "假期里，小狗在公园里专心地画画。"}
+{"text": "傍晚，小明在教室里快乐地唱歌。"}
+{"text": "7 plus 10 equals 17."}
+{"text": "The small fox jumps in the garden."}
+{"text": "50乘以25等于1250。"}
+{"text": "52 plus 92 equals 144."}
+{"text": "17×12=204"}
+{"text": "The brave bird runs on the hill."}
+{"text": "80加3等于83。"}
+{"text": "下午，小明在厨房里安静地读书。"}
+{"text": "21+50=71"}
+{"text": "21乘以48等于1008。"}
+{"text": "周末，小红在树下专心地画画。"}
+{"text": "晚上，小红在图书馆认真地写字。"}
+{"text": "数字400是一个自然数。"}
+{"text": "The red monkey jumps in the yard."}
+{"text": "480的平方是230400。"}
+{"text": "傍晚，小狗在图书馆开心地跑步。"}
+{"text": "21乘以30等于630。"}
+{"text": "数据挖掘改变着我们的生活方式。"}
+{"text": "47 plus 9 equals 56."}
+{"text": "晚上，小红在教室里专心地画画。"}
+{"text": "79×67=5293"}
+{"text": "中午，猫咪在厨房里仔细地观察。"}
+{"text": "上午，姐姐在厨房里认真地写字。"}
+{"text": "8 plus 34 equals 42."}
+{"text": "傍晚，爷爷在教室里仔细地观察。"}
+{"text": "The curious rabbit sleeps near the river."}
+{"text": "晚上，姐姐在教室里慢慢地散步。"}
+{"text": "17 plus 64 equals 81."}
+{"text": "The red bird jumps in the park."}
+{"text": "92加65等于157。"}
+{"text": "数字375是一个自然数。"}
+{"text": "数字360是一个自然数。"}
+{"text": "晚上，小狗在厨房里认真地写字。"}
+{"text": "The red fox walks in the forest."}
+{"text": "假期里，老师在公园里专心地画画。"}
+{"text": "53 plus 35 equals 88."}
+{"text": "38乘以44等于1672。"}
+{"text": "95乘以94等于8930。"}
+{"text": "The red fox sleeps in the forest."}
+{"text": "深度学习需要大量的数据和算力。"}
+{"text": "The curious dog sits in the garden."}
+{"text": "69 plus 59 equals 128."}
+{"text": "The black horse sleeps in the yard."}
+{"text": "傍晚，小红在厨房里安静地读书。"}
+{"text": "下午，猫咪在厨房里仔细地观察。"}
+{"text": "The clever fox sleeps in the forest."}
+{"text": "假期里，老师在操场上努力地学习。"}
+{"text": "自然语言处理改变着我们的生活方式。"}
+{"text": "83×80=6640"}
+{"text": "The young fox rests under the tree."}
+{"text": "The curious bird plays near the river."}
+{"text": "The curious fox sleeps in the forest."}
+{"text": "56加6等于62。"}
+{"text": "473的平方是223729。"}
+{"text": "计算机视觉仍在不断演进。"}
+{"text": "59的平方是3481。"}
+{"text": "计算机视觉是人工智能的重要分支。"}
+{"text": "数字665是一个自然数。"}
+{"text": "61 plus 4 equals 65."}
+{"text": "清晨，老师在公园里静静地思考。"}
+{"text": "The red dog rests on the farm."}
+{"text": "3乘以27等于81。"}
+{"text": "13 plus 90 equals 103."}
+{"text": "The black bird plays on the farm."}
+{"text": "The clever rabbit walks on the farm."}
+{"text": "傍晚，弟弟在花园里静静地思考。"}
+{"text": "60 plus 27 equals 87."}
+{"text": "傍晚，姐姐在树下努力地学习。"}
+{"text": "93 plus 97 equals 190."}
+{"text": "晚上，姐姐在公园里仔细地观察。"}
+{"text": "62乘以19等于1178。"}
+{"text": "The black fox eats near the river."}
+{"text": "22 plus 98 equals 120."}
+{"text": "The happy dog jumps on the hill."}
+{"text": "Computer vision learns patterns from data."}
+{"text": "62+1=63"}
+{"text": "102的平方是10404。"}
+{"text": "上午，弟弟在花园里努力地学习。"}
+{"text": "67乘以79等于5293。"}
+{"text": "The young dog plays on the farm."}
+{"text": "The brave dog sleeps on the hill."}
+{"text": "74×71=5254"}
+{"text": "上午，小狗在树下安静地读书。"}
+{"text": "The clever rabbit sleeps on the hill."}
+{"text": "33+46=79"}
+{"text": "28 plus 74 equals 102."}
+{"text": "下午，猫咪在公园里静静地思考。"}
+{"text": "92加25等于117。"}
+{"text": "下午，弟弟在花园里快乐地唱歌。"}
+{"text": "147的平方是21609。"}
+{"text": "The brave rabbit jumps on the farm."}
+{"text": "晚上，猫咪在树下努力地学习。"}
+{"text": "The clever horse eats on the hill."}
+{"text": "18加2等于20。"}
+{"text": "数字790是一个自然数。"}
+{"text": "The curious dog sits in the forest."}
+{"text": "65加68等于133。"}
+{"text": "79 plus 47 equals 126."}
+{"text": "数字433是一个自然数。"}
+{"text": "59×54=3186"}
+{"text": "周末，奶奶在公园里认真地写字。"}
+{"text": "深度学习正在快速发展。"}
+{"text": "63 plus 2 equals 65."}
+{"text": "The young rabbit rests in the forest."}
+{"text": "数字30是一个自然数。"}
+{"text": "下午，小狗在教室里努力地学习。"}
+{"text": "98乘以49等于4802。"}
+{"text": "数字340是一个自然数。"}
+{"text": "The brave bird sleeps in the forest."}
+{"text": "数字904是一个自然数。"}
+{"text": "The curious rabbit eats in the yard."}
+{"text": "数字981是一个自然数。"}
+{"text": "下午，猫咪在树下仔细地观察。"}
+{"text": "11 plus 25 equals 36."}
+{"text": "93+52=145"}
+{"text": "30乘以70等于2100。"}
+{"text": "11 plus 65 equals 76."}
+{"text": "37 plus 29 equals 66."}
+{"text": "22+85=107"}
+{"text": "83×5=415"}
+{"text": "The black horse walks in the yard."}
+{"text": "晚上，奶奶在树下开心地跑步。"}
+{"text": "The red horse plays in the garden."}
+{"text": "80乘以6等于480。"}
+{"text": "The happy horse sits in the park."}
+{"text": "周末，小明在河边慢慢地散步。"}
+{"text": "25+97=122"}
+{"text": "上午，弟弟在操场上慢慢地散步。"}
+{"text": "傍晚，小狗在公园里认真地写字。"}
+{"text": "上午，弟弟在河边慢慢地散步。"}
+{"text": "傍晚，奶奶在河边静静地思考。"}
+{"text": "The black bear eats in the yard."}
+{"text": "人工智能已经应用于日常生活。"}
+{"text": "The black dog eats in the forest."}
+{"text": "21加26等于47。"}
+{"text": "The clever bear eats in the forest."}
+{"text": "The red bird runs under the tree."}
+{"text": "Python is a branch of AI."}
+{"text": "36 plus 53 equals 89."}
+{"text": "上午，小明在教室里静静地思考。"}
+{"text": "清晨，姐姐在公园里快乐地唱歌。"}
+{"text": "假期里，爷爷在河边专心地画画。"}
+{"text": "周末，老师在公园里仔细地观察。"}
+{"text": "138的平方是19044。"}
+{"text": "39+68=107"}
+{"text": "晚上，姐姐在图书馆静静地思考。"}
+{"text": "33乘以87等于2871。"}
+{"text": "The happy cat sits in the forest."}
+{"text": "The brave cat walks under the tree."}
+{"text": "41×19=779"}
+{"text": "The black cat sits in the park."}
+{"text": "上午，小红在教室里安静地读书。"}
+{"text": "18×2=36"}
+{"text": "中午，医生在花园里安静地读书。"}
+{"text": "清晨，猫咪在图书馆专心地画画。"}
+{"text": "下午，机器人在公园里安静地读书。"}
+{"text": "71加7等于78。"}
+{"text": "中午，老师在厨房里仔细地观察。"}
+{"text": "晚上，机器人在树下专心地画画。"}
+{"text": "16的平方是256。"}
+{"text": "The happy rabbit jumps on the farm."}
+{"text": "数据挖掘正在快速发展。"}
+{"text": "6 times 2 is 12."}
+{"text": "傍晚，机器人在操场上认真地写字。"}
+{"text": "57+1=58"}
+{"text": "周末，机器人在厨房里开心地跑步。"}
+{"text": "93×75=6975"}
+{"text": "周末，小狗在树下安静地读书。"}
+{"text": "26×87=2262"}
+{"text": "The clever monkey eats in the forest."}
+{"text": "The curious bear sits on the hill."}
+{"text": "Neural networks is changing the world."}
+{"text": "周末，爷爷在厨房里仔细地观察。"}
+{"text": "The black fox runs on the farm."}
+{"text": "The curious cat walks in the garden."}
+{"text": "10加93等于103。"}
+{"text": "清晨，小狗在图书馆安静地读书。"}
+{"text": "The clever bird sleeps in the yard."}
+{"text": "30 plus 23 equals 53."}
+{"text": "中午，奶奶在厨房里努力地学习。"}
+{"text": "数字784是一个自然数。"}
+{"text": "傍晚，姐姐在教室里快乐地唱歌。"}
+{"text": "26 plus 1 equals 27."}
+{"text": "数字590是一个自然数。"}
+{"text": "清晨，弟弟在厨房里静静地思考。"}
+{"text": "The clever monkey jumps in the park."}
+{"text": "数字489是一个自然数。"}
+{"text": "下午，奶奶在树下静静地思考。"}
+{"text": "数字241是一个自然数。"}
+{"text": "97加44等于141。"}
+{"text": "The happy fox eats on the farm."}
+{"text": "中午，机器人在河边仔细地观察。"}
+{"text": "晚上，猫咪在厨房里仔细地观察。"}
+{"text": "92×40=3680"}
+{"text": "99 plus 36 equals 135."}
+{"text": "9 plus 7 equals 16."}
+{"text": "上午，小狗在图书馆快乐地唱歌。"}
+{"text": "数字52是一个自然数。"}
+{"text": "The red cat sleeps in the garden."}
+{"text": "The brave monkey jumps in the yard."}
+{"text": "清晨，老师在教室里认真地写字。"}
+{"text": "The brave bird eats in the yard."}
+{"text": "数字768是一个自然数。"}
+{"text": "The black bird sleeps under the tree."}
+{"text": "The small cat sleeps under the tree."}
+{"text": "清晨，小红在厨房里仔细地观察。"}
+{"text": "数字349是一个自然数。"}
+{"text": "The young monkey rests near the river."}
+{"text": "清晨，小狗在花园里静静地思考。"}
+{"text": "179的平方是32041。"}
+{"text": "The small dog sits near the river."}
+{"text": "假期里，弟弟在操场上仔细地观察。"}
+{"text": "68+19=87"}
+{"text": "周末，爷爷在花园里努力地学习。"}
+{"text": "下午，小红在公园里认真地写字。"}
+{"text": "清晨，医生在图书馆快乐地唱歌。"}
+{"text": "The clever cat runs in the garden."}
+{"text": "49乘以83等于4067。"}
+{"text": "下午，机器人在河边专心地画画。"}
+{"text": "数字876是一个自然数。"}
+{"text": "58加93等于151。"}
+{"text": "数字856是一个自然数。"}
+{"text": "上午，小红在河边安静地读书。"}
+{"text": "13 plus 31 equals 44."}
+{"text": "338的平方是114244。"}
+{"text": "晚上，医生在公园里仔细地观察。"}
+{"text": "傍晚，机器人在厨房里专心地画画。"}
+{"text": "数字992是一个自然数。"}
+{"text": "数字796是一个自然数。"}
+{"text": "下午，爷爷在图书馆认真地写字。"}
+{"text": "The red monkey sleeps in the yard."}
+{"text": "68×19=1292"}
+{"text": "数字371是一个自然数。"}
+{"text": "50×9=450"}
+{"text": "The clever fox walks near the river."}
+{"text": "The small bear rests on the hill."}
+{"text": "The brave dog eats in the garden."}
+{"text": "The black bird sits near the river."}
+{"text": "53+39=92"}
+{"text": "The red bear walks near the river."}
+{"text": "下午，小明在图书馆开心地跑步。"}
+{"text": "清晨，小明在树下努力地学习。"}
+{"text": "The happy dog runs near the river."}
+{"text": "The brave bear eats under the tree."}
+{"text": "12+75=87"}
+{"text": "56×54=3024"}
+{"text": "20乘以36等于720。"}
+{"text": "3 times 8 is 24."}
+{"text": "80×0=0"}
+{"text": "47 plus 95 equals 142."}
+{"text": "51的平方是2601。"}
+{"text": "清晨，爷爷在操场上慢慢地散步。"}
+{"text": "数字238是一个自然数。"}
+{"text": "43×52=2236"}
+{"text": "The brave bird eats near the river."}
+{"text": "488的平方是238144。"}
+{"text": "周末，猫咪在河边认真地写字。"}
+{"text": "上午，医生在教室里安静地读书。"}
+{"text": "The happy rabbit rests on the farm."}
+{"text": "The black bird runs on the farm."}
+{"text": "周末，姐姐在树下仔细地观察。"}
+{"text": "493的平方是243049。"}
+{"text": "清晨，奶奶在图书馆快乐地唱歌。"}
+{"text": "The black dog plays in the yard."}
+{"text": "61+42=103"}
+{"text": "数字112是一个自然数。"}
+{"text": "The black cat plays on the hill."}
+{"text": "The clever monkey jumps near the river."}
+{"text": "假期里，机器人在教室里开心地跑步。"}
+{"text": "0 plus 66 equals 66."}
+{"text": "97 plus 37 equals 134."}
+{"text": "82加91等于173。"}
+{"text": "中午，奶奶在教室里快乐地唱歌。"}
+{"text": "34 plus 84 equals 118."}
+{"text": "The red dog sleeps under the tree."}
+{"text": "1 times 2 is 2."}
+{"text": "The happy bear jumps under the tree."}
+{"text": "假期里，小明在厨房里快乐地唱歌。"}
+{"text": "晚上，奶奶在操场上努力地学习。"}
+{"text": "82 plus 7 equals 89."}
+{"text": "The curious fox eats on the farm."}
+{"text": "The happy bear sits near the river."}
+{"text": "上午，小红在操场上仔细地观察。"}
+{"text": "59 plus 88 equals 147."}
+{"text": "The happy fox runs on the farm."}
+{"text": "The curious bear rests on the hill."}
+{"text": "周末，医生在厨房里专心地画画。"}
+{"text": "The red rabbit jumps near the river."}
+{"text": "13+38=51"}
+{"text": "242的平方是58564。"}
+{"text": "上午，医生在教室里努力地学习。"}
+{"text": "数字687是一个自然数。"}
+{"text": "12×65=780"}
+{"text": "58 plus 36 equals 94."}
+{"text": "4+67=71"}
+{"text": "晚上，弟弟在厨房里开心地跑步。"}
+{"text": "The red horse eats on the hill."}
+{"text": "假期里，小狗在花园里慢慢地散步。"}
+{"text": "The brave cat walks on the farm."}
+{"text": "傍晚，猫咪在厨房里努力地学习。"}
+{"text": "周末，老师在河边静静地思考。"}
+{"text": "周末，爷爷在花园里静静地思考。"}
+{"text": "The red bird jumps near the river."}
+{"text": "深度学习已经应用于日常生活。"}
+{"text": "74+94=168"}
+{"text": "6 plus 2 equals 8."}
+{"text": "数字542是一个自然数。"}
+{"text": "15+10=25"}
+{"text": "The red bear sleeps in the yard."}
+{"text": "18乘以39等于702。"}
+{"text": "Data science is a popular programming language."}
+{"text": "傍晚，小明在操场上开心地跑步。"}
+{"text": "12 plus 92 equals 104."}
+{"text": "75 plus 71 equals 146."}
+{"text": "25×90=2250"}
+{"text": "The curious cat sleeps on the farm."}
+{"text": "26加87等于113。"}
+{"text": "The black horse jumps on the farm."}
+{"text": "The clever rabbit sleeps in the park."}
+{"text": "42×62=2604"}
+{"text": "The brave fox eats on the farm."}
+{"text": "14加5等于19。"}
+{"text": "傍晚，弟弟在河边仔细地观察。"}
+{"text": "中午，小红在河边静静地思考。"}
+{"text": "The small bird sleeps in the garden."}
+{"text": "77 plus 23 equals 100."}
+{"text": "15 plus 57 equals 72."}
+{"text": "假期里，机器人在花园里安静地读书。"}
+{"text": "31加19等于50。"}
+{"text": "97 plus 46 equals 143."}
+{"text": "35 plus 28 equals 63."}
+{"text": "Deep learning requires large datasets."}
+{"text": "78×7=546"}
+{"text": "The curious bear rests in the yard."}
+{"text": "The happy fox jumps on the farm."}
+{"text": "26×45=1170"}
+{"text": "周末，姐姐在河边开心地跑步。"}
+{"text": "76乘以69等于5244。"}
+{"text": "The happy bear sleeps in the garden."}
+{"text": "算法已经应用于日常生活。"}
+{"text": "83×79=6557"}
+{"text": "Computer vision is a branch of AI."}
+{"text": "上午，医生在花园里专心地画画。"}
+{"text": "下午，小红在树下安静地读书。"}
+{"text": "The curious dog sleeps on the farm."}
+{"text": "The curious bear jumps on the farm."}
+{"text": "54+7=61"}
+{"text": "清晨，弟弟在河边仔细地观察。"}
+{"text": "上午，机器人在树下努力地学习。"}
+{"text": "The young bear sits under the tree."}
+{"text": "81 plus 64 equals 145."}
+{"text": "85乘以11等于935。"}
+{"text": "The curious cat plays in the forest."}
+{"text": "数字780是一个自然数。"}
+{"text": "傍晚，奶奶在操场上努力地学习。"}
+{"text": "The brave cat sits in the forest."}
+{"text": "晚上，医生在公园里专心地画画。"}
+{"text": "90 plus 57 equals 147."}
+{"text": "194的平方是37636。"}
+{"text": "周末，老师在公园里安静地读书。"}
+{"text": "319的平方是101761。"}
+{"text": "The clever cat walks in the park."}
+{"text": "61 plus 61 equals 122."}
+{"text": "算法需要大量的数据和算力。"}
+{"text": "The happy dog eats on the farm."}
+{"text": "机器学习需要大量的数据和算力。"}
+{"text": "清晨，小狗在树下仔细地观察。"}
+{"text": "491的平方是241081。"}
+{"text": "下午，医生在操场上专心地画画。"}
+{"text": "神经网络是人工智能的重要分支。"}
+{"text": "63 plus 35 equals 98."}
+{"text": "97加73等于170。"}
+{"text": "清晨，爷爷在公园里快乐地唱歌。"}
+{"text": "The brave dog walks near the river."}
+{"text": "The young fox runs in the garden."}
+{"text": "下午，小狗在厨房里慢慢地散步。"}
+{"text": "The young dog sits near the river."}
+{"text": "43×24=1032"}
+{"text": "88乘以93等于8184。"}
+{"text": "数字729是一个自然数。"}
+{"text": "21×65=1365"}
+{"text": "傍晚，弟弟在图书馆努力地学习。"}
+{"text": "数字808是一个自然数。"}
+{"text": "The young cat runs under the tree."}
+{"text": "16×59=944"}
+{"text": "数字772是一个自然数。"}
+{"text": "周末，姐姐在公园里专心地画画。"}
+{"text": "0+74=74"}
+{"text": "29乘以50等于1450。"}
+{"text": "晚上，弟弟在图书馆慢慢地散步。"}
+{"text": "59+54=113"}
+{"text": "The red bear eats in the forest."}
+{"text": "数字593是一个自然数。"}
+{"text": "The curious horse walks in the garden."}
+{"text": "The small bear sleeps under the tree."}
+{"text": "29 plus 34 equals 63."}
+{"text": "下午，小狗在教室里安静地读书。"}
+{"text": "数字634是一个自然数。"}
+{"text": "周末，机器人在操场上认真地写字。"}
+{"text": "267的平方是71289。"}
+{"text": "The brave horse eats under the tree."}
+{"text": "58 plus 10 equals 68."}
+{"text": "晚上，机器人在图书馆开心地跑步。"}
+{"text": "中午，老师在教室里快乐地唱歌。"}
+{"text": "上午，猫咪在操场上认真地写字。"}
+{"text": "The small dog plays on the hill."}
+{"text": "1 times 5 is 5."}
+{"text": "22×22=484"}
+{"text": "The clever rabbit jumps on the farm."}
+{"text": "1 plus 58 equals 59."}
+{"text": "The clever cat runs on the hill."}
+{"text": "The small cat walks under the tree."}
+{"text": "36乘以5等于180。"}
+{"text": "上午，医生在河边认真地写字。"}
+{"text": "假期里，奶奶在树下仔细地观察。"}
+{"text": "计算机视觉吸引了众多研究者。"}
+{"text": "40+54=94"}
+{"text": "晚上，猫咪在教室里努力地学习。"}
+{"text": "The clever monkey walks in the garden."}
+{"text": "晚上，小狗在教室里专心地画画。"}
+{"text": "The small bird plays in the park."}
+{"text": "The black cat runs in the forest."}
+{"text": "3 plus 93 equals 96."}
+{"text": "93的平方是8649。"}
+{"text": "The black rabbit eats in the park."}
+{"text": "周末，姐姐在操场上专心地画画。"}
+{"text": "周末，奶奶在河边静静地思考。"}
+{"text": "数字527是一个自然数。"}
+{"text": "50乘以18等于900。"}
+{"text": "252的平方是63504。"}
+{"text": "数字769是一个自然数。"}
+{"text": "98加41等于139。"}
+{"text": "55 plus 65 equals 120."}
+{"text": "周末，机器人在厨房里认真地写字。"}
+{"text": "The black rabbit jumps under the tree."}
+{"text": "假期里，弟弟在公园里安静地读书。"}
+{"text": "清晨，小红在教室里努力地学习。"}
+{"text": "The red cat walks in the garden."}
+{"text": "Machine learning is a popular programming language."}
+{"text": "The clever horse jumps under the tree."}
+{"text": "傍晚，奶奶在公园里安静地读书。"}
+{"text": "The young fox rests near the river."}
+{"text": "The young monkey jumps on the hill."}
+{"text": "傍晚，猫咪在厨房里静静地思考。"}
+{"text": "36+88=124"}
+{"text": "56 plus 52 equals 108."}
+{"text": "上午，小狗在花园里努力地学习。"}
+{"text": "The young bear sits on the hill."}
+{"text": "63×0=0"}
+{"text": "51 plus 22 equals 73."}
+{"text": "22+6=28"}
+{"text": "下午，老师在树下认真地写字。"}
+{"text": "中午，小狗在厨房里慢慢地散步。"}
+{"text": "57加27等于84。"}
+{"text": "大语言模型已经应用于日常生活。"}
+{"text": "数字502是一个自然数。"}
+{"text": "51+29=80"}
+{"text": "假期里，姐姐在花园里安静地读书。"}
+{"text": "350的平方是122500。"}
+{"text": "26加88等于114。"}
+{"text": "31 plus 11 equals 42."}
+{"text": "481的平方是231361。"}
+{"text": "30×64=1920"}
+{"text": "假期里，小红在教室里静静地思考。"}
+{"text": "清晨，小红在花园里认真地写字。"}
+{"text": "中午，弟弟在厨房里仔细地观察。"}
+{"text": "7 times 5 is 35."}
+{"text": "上午，弟弟在树下专心地画画。"}
+{"text": "上午，老师在河边快乐地唱歌。"}
+{"text": "中午，医生在图书馆认真地写字。"}
+{"text": "数字532是一个自然数。"}
+{"text": "The clever dog jumps under the tree."}
+{"text": "The small dog plays in the garden."}
+{"text": "上午，医生在树下安静地读书。"}
+{"text": "66 plus 96 equals 162."}
+{"text": "傍晚，爷爷在树下静静地思考。"}
+{"text": "The red cat rests in the garden."}
+{"text": "17乘以13等于221。"}
+{"text": "数字35是一个自然数。"}
+{"text": "数字230是一个自然数。"}
+{"text": "89+29=118"}
+{"text": "3 times 9 is 27."}
+{"text": "29+50=79"}
+{"text": "傍晚，姐姐在操场上努力地学习。"}
+{"text": "傍晚，姐姐在操场上认真地写字。"}
+{"text": "The happy bird jumps in the park."}
+{"text": "晚上，姐姐在河边慢慢地散步。"}
+{"text": "56×24=1344"}
+{"text": "25+90=115"}
+{"text": "清晨，弟弟在图书馆快乐地唱歌。"}
+{"text": "8 times 6 is 48."}
+{"text": "225的平方是50625。"}
+{"text": "数字507是一个自然数。"}
+{"text": "中午，猫咪在公园里仔细地观察。"}
+{"text": "12乘以75等于900。"}
+{"text": "上午，机器人在操场上安静地读书。"}
+{"text": "中午，弟弟在教室里认真地写字。"}
+{"text": "计算机视觉需要大量的数据和算力。"}
+{"text": "假期里，机器人在厨房里认真地写字。"}
+{"text": "The happy cat jumps near the river."}
+{"text": "The small cat eats on the hill."}
+{"text": "61 plus 87 equals 148."}
+{"text": "The small cat sits under the tree."}
+{"text": "30 plus 38 equals 68."}
+{"text": "62 plus 6 equals 68."}
+{"text": "假期里，小红在厨房里慢慢地散步。"}
+{"text": "75×78=5850"}
+{"text": "The young monkey jumps near the river."}
+{"text": "The clever fox jumps on the farm."}
+{"text": "259的平方是67081。"}
+{"text": "28×62=1736"}
+{"text": "晚上，爷爷在厨房里快乐地唱歌。"}
+{"text": "The small horse rests on the hill."}
+{"text": "28加62等于90。"}
+{"text": "假期里，小狗在花园里仔细地观察。"}
+{"text": "47 plus 35 equals 82."}
+{"text": "数字92是一个自然数。"}
+{"text": "数字727是一个自然数。"}
+{"text": "The happy horse runs under the tree."}
+{"text": "93×47=4371"}
+{"text": "The brave cat jumps in the yard."}
+{"text": "The black monkey walks under the tree."}
+{"text": "The black cat eats in the park."}
+{"text": "The black rabbit sits in the yard."}
+{"text": "222的平方是49284。"}
+{"text": "97 plus 43 equals 140."}
+{"text": "The clever dog runs on the hill."}
+{"text": "The young cat jumps in the park."}
+{"text": "The red bird rests in the forest."}
+{"text": "The small bear sits in the garden."}
+{"text": "中午，爷爷在操场上安静地读书。"}
+{"text": "64乘以26等于1664。"}
+{"text": "中午，奶奶在树下慢慢地散步。"}
+{"text": "The small fox runs in the yard."}
+{"text": "傍晚，医生在操场上仔细地观察。"}
+{"text": "199的平方是39601。"}
+{"text": "42 plus 93 equals 135."}
+{"text": "357的平方是127449。"}
+{"text": "6乘以67等于402。"}
+{"text": "上午，弟弟在树下慢慢地散步。"}
+{"text": "33加74等于107。"}
+{"text": "82加74等于156。"}
+{"text": "数字410是一个自然数。"}
+{"text": "The red bear sleeps near the river."}
+{"text": "The red dog runs on the farm."}
+{"text": "The black rabbit plays in the garden."}
+{"text": "数字154是一个自然数。"}
+{"text": "The small fox runs under the tree."}
+{"text": "The curious fox jumps in the forest."}
+{"text": "38 plus 79 equals 117."}
+{"text": "301的平方是90601。"}
+{"text": "清晨，奶奶在河边快乐地唱歌。"}
+{"text": "68 plus 47 equals 115."}
+{"text": "周末，机器人在树下慢慢地散步。"}
+{"text": "79加56等于135。"}
+{"text": "傍晚，爷爷在操场上安静地读书。"}
+{"text": "数字98是一个自然数。"}
+{"text": "The happy bird runs on the hill."}
+{"text": "傍晚，机器人在教室里快乐地唱歌。"}
+{"text": "傍晚，姐姐在厨房里静静地思考。"}
+{"text": "78 plus 73 equals 151."}
+{"text": "17×39=663"}
+{"text": "数字284是一个自然数。"}
+{"text": "清晨，小红在操场上安静地读书。"}
+{"text": "The brave cat runs on the farm."}
+{"text": "62加64等于126。"}
+{"text": "12 plus 84 equals 96."}
+{"text": "54加3等于57。"}
+{"text": "21×74=1554"}
+{"text": "The clever bear runs in the yard."}
+{"text": "清晨，姐姐在图书馆认真地写字。"}
+{"text": "The young bear sleeps in the yard."}
+{"text": "60加65等于125。"}
+{"text": "神经网络吸引了众多研究者。"}
+{"text": "The red bird plays under the tree."}
+{"text": "数字296是一个自然数。"}
+{"text": "中午，爷爷在厨房里快乐地唱歌。"}
+{"text": "59加28等于87。"}
+{"text": "37乘以44等于1628。"}
+{"text": "假期里，医生在厨房里认真地写字。"}
+{"text": "79×51=4029"}
+{"text": "The curious dog rests near the river."}
+{"text": "数字138是一个自然数。"}
+{"text": "The clever fox sits near the river."}
+{"text": "The red cat sits in the park."}
+{"text": "周末，奶奶在公园里仔细地观察。"}
+{"text": "中午，小明在厨房里开心地跑步。"}
+{"text": "中午，姐姐在教室里认真地写字。"}
+{"text": "The clever rabbit rests near the river."}
+{"text": "中午，猫咪在花园里静静地思考。"}
+{"text": "晚上，猫咪在图书馆静静地思考。"}
+{"text": "The brave rabbit runs in the garden."}
+{"text": "83 plus 87 equals 170."}
+{"text": "The clever dog rests in the park."}
+{"text": "415的平方是172225。"}
+{"text": "59×77=4543"}
+{"text": "周末，弟弟在操场上开心地跑步。"}
+{"text": "2×29=58"}
+{"text": "The red bear plays in the park."}
+{"text": "The happy dog jumps in the garden."}
+{"text": "370的平方是136900。"}
+{"text": "The red bear walks in the forest."}
+{"text": "93加47等于140。"}
+{"text": "3 times 6 is 18."}
+{"text": "71 plus 85 equals 156."}
+{"text": "The small monkey runs in the forest."}
+{"text": "57乘以28等于1596。"}
+{"text": "19加93等于112。"}
+{"text": "晚上，医生在公园里认真地写字。"}
+{"text": "The red horse sits near the river."}
+{"text": "清晨，老师在树下努力地学习。"}
+{"text": "周末，医生在操场上努力地学习。"}
+{"text": "数字467是一个自然数。"}
+{"text": "The red monkey runs in the yard."}
+{"text": "The young cat walks on the hill."}
+{"text": "清晨，老师在厨房里快乐地唱歌。"}
+{"text": "中午，老师在操场上安静地读书。"}
+{"text": "2 plus 19 equals 21."}
+{"text": "86 plus 99 equals 185."}
+{"text": "中午，弟弟在图书馆开心地跑步。"}
+{"text": "清晨，姐姐在河边努力地学习。"}
+{"text": "The young dog walks in the forest."}
+{"text": "269的平方是72361。"}
+{"text": "The young dog plays near the river."}
+{"text": "The happy rabbit rests on the hill."}
+{"text": "晚上，奶奶在河边静静地思考。"}
+{"text": "The small dog rests on the hill."}
+{"text": "8 times 4 is 32."}
+{"text": "The young monkey plays near the river."}
+{"text": "下午，小狗在河边专心地画画。"}
+{"text": "数字6是一个自然数。"}
+{"text": "The small dog walks on the hill."}
+{"text": "The young fox sleeps on the hill."}
+{"text": "12加39等于51。"}
+{"text": "42 plus 96 equals 138."}
+{"text": "The brave fox plays under the tree."}
+{"text": "60 plus 61 equals 121."}
+{"text": "The red horse runs on the farm."}
+{"text": "清晨，医生在教室里开心地跑步。"}
+{"text": "10×19=190"}
+{"text": "91加23等于114。"}
+{"text": "94加52等于146。"}
+{"text": "假期里，小红在操场上慢慢地散步。"}
+{"text": "66 plus 6 equals 72."}
+{"text": "上午，弟弟在厨房里仔细地观察。"}
+{"text": "The red bird sleeps in the park."}
+{"text": "4 times 1 is 4."}
+{"text": "下午，机器人在树下开心地跑步。"}
+{"text": "周末，医生在树下安静地读书。"}
+{"text": "99的平方是9801。"}
+{"text": "The curious bear sits on the farm."}
+{"text": "The young monkey plays in the forest."}
+{"text": "清晨，小红在教室里安静地读书。"}
+{"text": "2 times 6 is 12."}
+{"text": "65 plus 27 equals 92."}
+{"text": "The young fox sits in the yard."}
+{"text": "中午，机器人在树下认真地写字。"}
+{"text": "Natural language processing requires large datasets."}
+{"text": "数字845是一个自然数。"}
+{"text": "The brave bear jumps on the hill."}
+{"text": "周末，爷爷在公园里快乐地唱歌。"}
+{"text": "假期里，弟弟在树下慢慢地散步。"}
+{"text": "The brave dog walks under the tree."}
+{"text": "The red bird sits near the river."}
+{"text": "清晨，小狗在厨房里努力地学习。"}
+{"text": "数字705是一个自然数。"}
+{"text": "The red dog sleeps on the hill."}
+{"text": "傍晚，医生在教室里安静地读书。"}
+{"text": "36+91=127"}
+{"text": "17 plus 62 equals 79."}
+{"text": "傍晚，医生在操场上静静地思考。"}
+{"text": "大语言模型让计算机变得更聪明。"}
+{"text": "傍晚，小红在操场上仔细地观察。"}
+{"text": "The small bear jumps on the farm."}
+{"text": "下午，小红在厨房里努力地学习。"}
+{"text": "The young fox runs in the park."}
+{"text": "The clever bird eats in the yard."}
+{"text": "62 plus 41 equals 103."}
+{"text": "数字773是一个自然数。"}
+{"text": "198的平方是39204。"}
+{"text": "The curious monkey rests in the forest."}
+{"text": "37 plus 10 equals 47."}
+{"text": "71加4等于75。"}
+{"text": "44乘以44等于1936。"}
+{"text": "The happy bird plays in the garden."}
+{"text": "数字610是一个自然数。"}
+{"text": "14 plus 13 equals 27."}
+{"text": "The happy bird plays on the hill."}
+{"text": "The clever fox plays on the hill."}
+{"text": "The black monkey sleeps in the park."}
+{"text": "The black horse plays under the tree."}
+{"text": "The clever fox rests under the tree."}
+{"text": "晚上，奶奶在树下认真地写字。"}
+{"text": "18 plus 89 equals 107."}
+{"text": "The small bear walks near the river."}
+{"text": "上午，小红在图书馆专心地画画。"}
+{"text": "110的平方是12100。"}
+{"text": "11加91等于102。"}
+{"text": "215的平方是46225。"}
+{"text": "The small cat rests on the farm."}
+{"text": "38乘以17等于646。"}
+{"text": "78+7=85"}
+{"text": "周末，医生在图书馆静静地思考。"}
+{"text": "74的平方是5476。"}
+{"text": "92乘以25等于2300。"}
+{"text": "42 plus 0 equals 42."}
+{"text": "95 plus 57 equals 152."}
+{"text": "The brave cat runs in the park."}
+{"text": "上午，爷爷在花园里慢慢地散步。"}
+{"text": "晚上，姐姐在公园里静静地思考。"}
+{"text": "280的平方是78400。"}
+{"text": "13×68=884"}
+{"text": "下午，奶奶在树下仔细地观察。"}
+{"text": "The small monkey eats on the hill."}
+{"text": "50+18=68"}
+{"text": "33乘以46等于1518。"}
+{"text": "30×9=270"}
+{"text": "80 plus 86 equals 166."}
+{"text": "周末，小明在操场上仔细地观察。"}
+{"text": "中午，医生在厨房里静静地思考。"}
+{"text": "清晨，奶奶在花园里认真地写字。"}
+{"text": "The small fox runs near the river."}
+{"text": "498的平方是248004。"}
+{"text": "晚上，弟弟在花园里努力地学习。"}
+{"text": "42加58等于100。"}
+{"text": "数字925是一个自然数。"}
+{"text": "97 plus 30 equals 127."}
+{"text": "上午，猫咪在公园里慢慢地散步。"}
+{"text": "The brave horse sits in the park."}
+{"text": "Computer vision is widely used in industry."}
+{"text": "中午，猫咪在公园里慢慢地散步。"}
+{"text": "假期里，小红在花园里慢慢地散步。"}
+{"text": "The clever dog plays in the yard."}
+{"text": "80加54等于134。"}
+{"text": "晚上，小狗在教室里努力地学习。"}
+{"text": "清晨，机器人在教室里慢慢地散步。"}
+{"text": "The black fox runs in the garden."}
+{"text": "清晨，姐姐在树下开心地跑步。"}
+{"text": "假期里，小明在河边安静地读书。"}
+{"text": "The young horse runs in the garden."}
+{"text": "The clever horse rests in the garden."}
+{"text": "数字573是一个自然数。"}
+{"text": "周末，爷爷在花园里慢慢地散步。"}
+{"text": "53乘以56等于2968。"}
+{"text": "407的平方是165649。"}
+{"text": "上午，弟弟在教室里安静地读书。"}
+{"text": "晚上，医生在操场上专心地画画。"}
+{"text": "The clever bear jumps in the yard."}
+{"text": "69×44=3036"}
+{"text": "下午，弟弟在树下安静地读书。"}
+{"text": "数字668是一个自然数。"}
+{"text": "中午，小狗在操场上认真地写字。"}
+{"text": "51乘以35等于1785。"}
+{"text": "晚上，弟弟在厨房里仔细地观察。"}
+{"text": "中午，猫咪在厨房里专心地画画。"}
+{"text": "The red monkey sits on the hill."}
+{"text": "98 plus 46 equals 144."}
+{"text": "中午，医生在河边慢慢地散步。"}
+{"text": "89 plus 52 equals 141."}
+{"text": "The clever cat sleeps on the farm."}
+{"text": "数字166是一个自然数。"}
+{"text": "傍晚，爷爷在图书馆仔细地观察。"}
+{"text": "The small monkey sleeps on the hill."}
+{"text": "The young dog runs near the river."}
+{"text": "假期里，姐姐在教室里开心地跑步。"}
+{"text": "Deep learning is a popular programming language."}
+{"text": "The small bird eats in the garden."}
+{"text": "31×24=744"}
+{"text": "The black cat sleeps under the tree."}
+{"text": "8 times 7 is 56."}
+{"text": "上午，小红在图书馆开心地跑步。"}
+{"text": "66 plus 60 equals 126."}
+{"text": "晚上，小狗在操场上安静地读书。"}
+{"text": "The black dog sleeps under the tree."}
+{"text": "75×97=7275"}
+{"text": "6加23等于29。"}
+{"text": "清晨，小狗在操场上静静地思考。"}
+{"text": "上午，小红在树下专心地画画。"}
+{"text": "17+39=56"}
+{"text": "数字685是一个自然数。"}
+{"text": "傍晚，爷爷在河边认真地写字。"}
+{"text": "12+65=77"}
+{"text": "6+67=73"}
+{"text": "33×13=429"}
+{"text": "53 plus 25 equals 78."}
+{"text": "傍晚，奶奶在操场上专心地画画。"}
+{"text": "67 plus 20 equals 87."}
+{"text": "18加22等于40。"}
+{"text": "The happy monkey rests under the tree."}
+{"text": "The clever bear jumps on the hill."}
+{"text": "The red dog runs near the river."}
+{"text": "376的平方是141376。"}
+{"text": "数字357是一个自然数。"}
+{"text": "清晨，小明在厨房里快乐地唱歌。"}
+{"text": "66乘以1等于66。"}
+{"text": "The small horse jumps on the hill."}
+{"text": "中午，奶奶在操场上努力地学习。"}
+{"text": "The clever fox runs in the garden."}
+{"text": "下午，猫咪在花园里专心地画画。"}
+{"text": "The happy cat jumps in the forest."}
+{"text": "傍晚，猫咪在厨房里开心地跑步。"}
+{"text": "傍晚，姐姐在花园里仔细地观察。"}
+{"text": "清晨，小狗在操场上快乐地唱歌。"}
+{"text": "假期里，猫咪在公园里努力地学习。"}
+{"text": "清晨，小红在厨房里安静地读书。"}
+{"text": "88 plus 13 equals 101."}
+{"text": "The small bird walks in the garden."}
+{"text": "数字828是一个自然数。"}
+{"text": "The red bear rests in the garden."}
+{"text": "57×66=3762"}
+{"text": "数字421是一个自然数。"}
+{"text": "The young horse eats under the tree."}
+{"text": "数字655是一个自然数。"}
+{"text": "下午，姐姐在操场上静静地思考。"}
+{"text": "数字747是一个自然数。"}
+{"text": "52×33=1716"}
+{"text": "The black rabbit rests under the tree."}
+{"text": "The brave rabbit walks in the garden."}
+{"text": "The curious cat rests in the park."}
+{"text": "5 times 2 is 10."}
+{"text": "8 times 5 is 40."}
+{"text": "131的平方是17161。"}
+{"text": "The black rabbit runs in the garden."}
+{"text": "45 plus 79 equals 124."}
+{"text": "The young dog runs in the park."}
+{"text": "中午，小明在厨房里快乐地唱歌。"}
+{"text": "12 plus 38 equals 50."}
+{"text": "48 plus 58 equals 106."}
+{"text": "The small monkey jumps under the tree."}
+{"text": "数字24是一个自然数。"}
+{"text": "数字698是一个自然数。"}
+{"text": "下午，姐姐在树下静静地思考。"}
+{"text": "下午，小红在花园里仔细地观察。"}
+{"text": "下午，老师在操场上安静地读书。"}
+{"text": "0×32=0"}
+{"text": "数字751是一个自然数。"}
+{"text": "Reinforcement learning is a branch of AI."}
+{"text": "晚上，机器人在操场上仔细地观察。"}
+{"text": "中午，奶奶在图书馆仔细地观察。"}
+{"text": "305的平方是93025。"}
+{"text": "67+89=156"}
+{"text": "下午，小狗在树下安静地读书。"}
+{"text": "12+42=54"}
+{"text": "清晨，小狗在树下慢慢地散步。"}
+{"text": "7 plus 1 equals 8."}
+{"text": "The curious horse runs in the park."}
+{"text": "The clever fox walks in the garden."}
+{"text": "周末，小红在厨房里认真地写字。"}
+{"text": "47+10=57"}
+{"text": "下午，小狗在花园里仔细地观察。"}
+{"text": "The brave dog walks in the forest."}
+{"text": "23乘以49等于1127。"}
+{"text": "数字490是一个自然数。"}
+{"text": "58+25=83"}
+{"text": "58 plus 90 equals 148."}
+{"text": "26加65等于91。"}
+{"text": "The small dog walks in the yard."}
+{"text": "The clever fox runs in the yard."}
+{"text": "下午，奶奶在树下开心地跑步。"}
+{"text": "The red rabbit walks on the hill."}
+{"text": "52×37=1924"}
+{"text": "假期里，爷爷在河边努力地学习。"}
+{"text": "数字883是一个自然数。"}
+{"text": "中午，医生在厨房里努力地学习。"}
+{"text": "The black cat sleeps in the garden."}
+{"text": "The young rabbit runs on the farm."}
+{"text": "上午，弟弟在河边开心地跑步。"}
+{"text": "The black bird eats in the forest."}
+{"text": "数字264是一个自然数。"}
+{"text": "76×5=380"}
+{"text": "68乘以65等于4420。"}
+{"text": "下午，小狗在公园里开心地跑步。"}
+{"text": "The black horse runs in the forest."}
+{"text": "The red dog jumps in the yard."}
+{"text": "The black rabbit sits on the farm."}
+{"text": "89 plus 14 equals 103."}
+{"text": "The black fox plays near the river."}
+{"text": "The red horse plays in the forest."}
+{"text": "The brave bear plays under the tree."}
+{"text": "The small fox eats on the farm."}
+{"text": "362的平方是131044。"}
+{"text": "The clever bear jumps near the river."}
+{"text": "2 times 2 is 4."}
+{"text": "数字84是一个自然数。"}
+{"text": "清晨，爷爷在操场上专心地画画。"}
+{"text": "数字666是一个自然数。"}
+{"text": "The young cat rests in the garden."}
+{"text": "353的平方是124609。"}
+{"text": "数字485是一个自然数。"}
+{"text": "The brave fox sits under the tree."}
+{"text": "中午，机器人在教室里静静地思考。"}
+{"text": "The black dog plays in the garden."}
+{"text": "清晨，老师在操场上静静地思考。"}
+{"text": "73 plus 21 equals 94."}
+{"text": "16 plus 24 equals 40."}
+{"text": "24 plus 62 equals 86."}
+{"text": "10×76=760"}
+{"text": "傍晚，小红在公园里专心地画画。"}
+{"text": "The small bird eats near the river."}
+{"text": "17乘以72等于1224。"}
+{"text": "1 times 6 is 6."}
+{"text": "傍晚，小明在图书馆快乐地唱歌。"}
+{"text": "The curious fox walks near the river."}
+{"text": "The brave monkey jumps in the garden."}
+{"text": "The curious bird walks under the tree."}
+{"text": "数字639是一个自然数。"}
+{"text": "假期里，老师在操场上仔细地观察。"}
+{"text": "7 times 2 is 14."}
+{"text": "假期里，老师在河边开心地跑步。"}
+{"text": "The small rabbit sleeps in the park."}
+{"text": "The young cat eats in the yard."}
+{"text": "清晨，弟弟在树下安静地读书。"}
+{"text": "假期里，爷爷在河边静静地思考。"}
+{"text": "83加19等于102。"}
+{"text": "41 plus 61 equals 102."}
+{"text": "The happy bear walks on the farm."}
+{"text": "下午，医生在树下仔细地观察。"}
+{"text": "The brave cat rests in the park."}
+{"text": "数字551是一个自然数。"}
+{"text": "18 plus 60 equals 78."}
+{"text": "The clever cat eats in the garden."}
+{"text": "The curious rabbit sits on the farm."}
+{"text": "上午，小红在公园里静静地思考。"}
+{"text": "The brave cat rests in the yard."}
+{"text": "中午，爷爷在花园里专心地画画。"}
+{"text": "周末，小红在花园里静静地思考。"}
+{"text": "The red bird jumps in the garden."}
+{"text": "The red dog sits near the river."}
+{"text": "0×74=0"}
+{"text": "3乘以97等于291。"}
+{"text": "数字619是一个自然数。"}
+{"text": "86加70等于156。"}
+{"text": "The black rabbit runs in the yard."}
+{"text": "晚上，猫咪在图书馆安静地读书。"}
+{"text": "9 plus 8 equals 17."}
+{"text": "The red dog jumps in the garden."}
+{"text": "假期里，爷爷在树下仔细地观察。"}
+{"text": "78 plus 37 equals 115."}
+{"text": "21加30等于51。"}
+{"text": "The curious cat sits in the park."}
+{"text": "68 plus 45 equals 113."}
+{"text": "The curious fox walks on the farm."}
+{"text": "The curious cat eats in the forest."}
+{"text": "晚上，弟弟在操场上努力地学习。"}
+{"text": "中午，小明在图书馆静静地思考。"}
+{"text": "数字807是一个自然数。"}
+{"text": "傍晚，医生在公园里认真地写字。"}
+{"text": "数字450是一个自然数。"}
+{"text": "28 plus 56 equals 84."}
+{"text": "中午，小明在花园里开心地跑步。"}
+{"text": "41×30=1230"}
+{"text": "数字313是一个自然数。"}
+{"text": "40×49=1960"}
+{"text": "The small bear sleeps in the forest."}
+{"text": "49乘以60等于2940。"}
+{"text": "12+27=39"}
+{"text": "清晨，奶奶在厨房里开心地跑步。"}
+{"text": "The young dog runs in the forest."}
+{"text": "傍晚，弟弟在操场上认真地写字。"}
+{"text": "假期里，弟弟在树下仔细地观察。"}
+{"text": "The happy bear sleeps on the hill."}
+{"text": "周末，小红在厨房里安静地读书。"}
+{"text": "假期里，小红在花园里认真地写字。"}
+{"text": "傍晚，小红在公园里快乐地唱歌。"}
+{"text": "16+59=75"}
+{"text": "数字382是一个自然数。"}
+{"text": "81加90等于171。"}
+{"text": "清晨，奶奶在树下慢慢地散步。"}
+{"text": "18乘以49等于882。"}
+{"text": "The black bird sleeps on the hill."}
+{"text": "上午，猫咪在河边开心地跑步。"}
+{"text": "The clever cat jumps in the park."}
+{"text": "235的平方是55225。"}
+{"text": "数字100是一个自然数。"}
+{"text": "45加0等于45。"}
+{"text": "The curious cat sits in the yard."}
+{"text": "上午，猫咪在教室里开心地跑步。"}
+{"text": "62加19等于81。"}
+{"text": "2 times 7 is 14."}
+{"text": "71乘以10等于710。"}
+{"text": "假期里，爷爷在图书馆努力地学习。"}
+{"text": "The happy bear runs under the tree."}
+{"text": "The young horse sleeps under the tree."}
+{"text": "数字907是一个自然数。"}
+{"text": "The brave fox rests in the garden."}
+{"text": "The small dog walks near the river."}
+{"text": "数字749是一个自然数。"}
+{"text": "29乘以58等于1682。"}
+{"text": "晚上，老师在河边专心地画画。"}
+{"text": "The curious monkey runs in the forest."}
+{"text": "中午，小明在河边努力地学习。"}
+{"text": "93 plus 69 equals 162."}
+{"text": "中午，小红在教室里努力地学习。"}
+{"text": "晚上，猫咪在花园里慢慢地散步。"}
+{"text": "33+48=81"}
+{"text": "清晨，奶奶在树下快乐地唱歌。"}
+{"text": "77加32等于109。"}
+{"text": "23+99=122"}
+{"text": "The clever fox rests on the farm."}
+{"text": "80加85等于165。"}
+{"text": "228的平方是51984。"}
+{"text": "30加70等于100。"}
+{"text": "晚上，机器人在厨房里快乐地唱歌。"}
+{"text": "56×71=3976"}
+{"text": "The red dog jumps near the river."}
+{"text": "9 plus 55 equals 64."}
+{"text": "假期里，弟弟在教室里专心地画画。"}
+{"text": "The black rabbit jumps in the forest."}
+{"text": "30加64等于94。"}
+{"text": "79 plus 62 equals 141."}
+{"text": "The clever monkey runs on the farm."}
+{"text": "晚上，小狗在公园里专心地画画。"}
+{"text": "The red bear runs in the yard."}
+{"text": "23 plus 77 equals 100."}
+{"text": "51 plus 9 equals 60."}
+{"text": "下午，老师在教室里快乐地唱歌。"}
+{"text": "The small cat jumps on the farm."}
+{"text": "60 plus 5 equals 65."}
+{"text": "强化学习让计算机变得更聪明。"}
+{"text": "中午，老师在河边快乐地唱歌。"}
+{"text": "傍晚，小狗在河边快乐地唱歌。"}
+{"text": "52+70=122"}
+{"text": "68加65等于133。"}
+{"text": "下午，奶奶在操场上静静地思考。"}
+{"text": "清晨，弟弟在操场上专心地画画。"}
+{"text": "上午，弟弟在厨房里安静地读书。"}
+{"text": "The small horse plays in the yard."}
+{"text": "The red bird sleeps in the forest."}
+{"text": "假期里，奶奶在树下努力地学习。"}
+{"text": "The young bear plays in the forest."}
+{"text": "116的平方是13456。"}
+{"text": "下午，猫咪在操场上快乐地唱歌。"}
+{"text": "数字40是一个自然数。"}
+{"text": "The young cat runs in the park."}
+{"text": "下午，小狗在河边仔细地观察。"}
+{"text": "32 plus 38 equals 70."}
+{"text": "6+16=22"}
+{"text": "72 plus 9 equals 81."}
+{"text": "数字398是一个自然数。"}
+{"text": "傍晚，医生在河边安静地读书。"}
+{"text": "数字377是一个自然数。"}
+{"text": "The curious dog rests in the garden."}
+{"text": "The clever dog plays under the tree."}
+{"text": "The clever rabbit sits in the yard."}
+{"text": "假期里，姐姐在操场上仔细地观察。"}
+{"text": "30+7=37"}
+{"text": "The brave dog plays in the forest."}
+{"text": "下午，爷爷在公园里努力地学习。"}
+{"text": "上午，机器人在花园里静静地思考。"}
+{"text": "411的平方是168921。"}
+{"text": "377的平方是142129。"}
+{"text": "42 plus 82 equals 124."}
+{"text": "Machine learning is changing the world."}
+{"text": "24加4等于28。"}
+{"text": "The brave bird jumps in the forest."}
+{"text": "30 plus 80 equals 110."}
+{"text": "数字310是一个自然数。"}
+{"text": "The happy bird rests in the yard."}
+{"text": "上午，老师在厨房里安静地读书。"}
+{"text": "The red fox runs in the yard."}
+{"text": "84+11=95"}
+{"text": "The black bear eats on the hill."}
+{"text": "The black bird sleeps on the farm."}
+{"text": "The small monkey sleeps in the yard."}
+{"text": "26乘以17等于442。"}
+{"text": "20加55等于75。"}
+{"text": "假期里，小红在花园里开心地跑步。"}
+{"text": "The happy horse rests near the river."}
+{"text": "55 plus 86 equals 141."}
+{"text": "周末，小红在花园里安静地读书。"}
+{"text": "The clever fox sits in the forest."}
+{"text": "中午，爷爷在河边专心地画画。"}
+{"text": "数字946是一个自然数。"}
+{"text": "傍晚，弟弟在教室里仔细地观察。"}
+{"text": "The black rabbit plays near the river."}
+{"text": "96加46等于142。"}
+{"text": "30 plus 36 equals 66."}
+{"text": "12 plus 46 equals 58."}
+{"text": "数字328是一个自然数。"}
+{"text": "48乘以76等于3648。"}
+{"text": "89乘以29等于2581。"}
+{"text": "The red monkey eats under the tree."}
+{"text": "上午，姐姐在河边静静地思考。"}
+{"text": "清晨，老师在公园里快乐地唱歌。"}
+{"text": "数字714是一个自然数。"}
+{"text": "The small bird runs on the farm."}
+{"text": "The small fox runs in the forest."}
+{"text": "香蕉是黄色的。"}
+{"text": "下午，机器人在厨房里开心地跑步。"}
+{"text": "上午，弟弟在树下静静地思考。"}
+{"text": "0 plus 18 equals 18."}
+{"text": "数字286是一个自然数。"}
+{"text": "The brave cat plays near the river."}
+{"text": "清晨，爷爷在河边努力地学习。"}
+{"text": "96加74等于170。"}
+{"text": "下午，弟弟在厨房里快乐地唱歌。"}
+{"text": "The small cat jumps in the park."}
+{"text": "8 times 3 is 24."}
+{"text": "The clever bird jumps under the tree."}
+{"text": "上午，小明在厨房里仔细地观察。"}
+{"text": "晚上，老师在图书馆慢慢地散步。"}
+{"text": "The black fox plays on the farm."}
+{"text": "The brave rabbit runs in the yard."}
+{"text": "The young rabbit sits in the garden."}
+{"text": "数字818是一个自然数。"}
+{"text": "The brave rabbit sleeps under the tree."}
+{"text": "54×50=2700"}
+{"text": "晚上，猫咪在教室里专心地画画。"}
+{"text": "数字782是一个自然数。"}
+{"text": "94加94等于188。"}
+{"text": "The curious horse eats near the river."}
+{"text": "397的平方是157609。"}
+{"text": "The young dog jumps near the river."}
+{"text": "19+15=34"}
+{"text": "6×94=564"}
+{"text": "The small bear plays under the tree."}
+{"text": "数字958是一个自然数。"}
+{"text": "56×6=336"}
+{"text": "中午，姐姐在花园里开心地跑步。"}
+{"text": "傍晚，医生在厨房里快乐地唱歌。"}
+{"text": "下午，弟弟在厨房里开心地跑步。"}
+{"text": "清晨，小明在公园里专心地画画。"}
+{"text": "96的平方是9216。"}
+{"text": "The clever fox jumps in the park."}
+{"text": "The clever horse walks on the hill."}
+{"text": "93×92=8556"}
+{"text": "The happy bear walks in the forest."}
+{"text": "晚上，猫咪在图书馆开心地跑步。"}
+{"text": "86加89等于175。"}
+{"text": "49乘以14等于686。"}
+{"text": "55 plus 9 equals 64."}
+{"text": "数字483是一个自然数。"}
+{"text": "21乘以26等于546。"}
+{"text": "周末，姐姐在花园里认真地写字。"}
+{"text": "The small dog eats on the hill."}
+{"text": "78 plus 48 equals 126."}
+{"text": "中午，小狗在河边慢慢地散步。"}
+{"text": "18+0=18"}
+{"text": "60 plus 46 equals 106."}
+{"text": "傍晚，爷爷在图书馆认真地写字。"}
+{"text": "数字814是一个自然数。"}
+{"text": "96 plus 85 equals 181."}
+{"text": "数字172是一个自然数。"}
+{"text": "25 plus 63 equals 88."}
+{"text": "94加93等于187。"}
+{"text": "假期里，奶奶在厨房里努力地学习。"}
+{"text": "0 plus 25 equals 25."}
+{"text": "37 plus 61 equals 98."}
+{"text": "The brave monkey sits on the hill."}
+{"text": "460的平方是211600。"}
+{"text": "The clever fox sleeps in the yard."}
+{"text": "The red bear rests on the farm."}
+{"text": "The red monkey rests near the river."}
+{"text": "125的平方是15625。"}
+{"text": "The black cat rests in the park."}
+{"text": "假期里，老师在河边仔细地观察。"}
+{"text": "9 times 4 is 36."}
+{"text": "The black cat plays under the tree."}
+{"text": "The black monkey walks in the yard."}
+{"text": "The brave horse eats in the forest."}
+{"text": "82 plus 77 equals 159."}
+{"text": "中午，爷爷在图书馆快乐地唱歌。"}
+{"text": "数字251是一个自然数。"}
+{"text": "傍晚，医生在厨房里开心地跑步。"}
+{"text": "假期里，老师在河边专心地画画。"}
+{"text": "数字937是一个自然数。"}
+{"text": "60×65=3900"}
+{"text": "晚上，机器人在树下静静地思考。"}
+{"text": "下午，医生在操场上仔细地观察。"}
+{"text": "中午，医生在公园里努力地学习。"}
+{"text": "The happy monkey sleeps on the hill."}
+{"text": "下午，小明在河边开心地跑步。"}
+{"text": "上午，小狗在树下努力地学习。"}
+{"text": "66加35等于101。"}
+{"text": "34 plus 89 equals 123."}
+{"text": "81×14=1134"}
+{"text": "The clever horse plays in the park."}
+{"text": "下午，机器人在花园里快乐地唱歌。"}
+{"text": "傍晚，猫咪在树下静静地思考。"}
+{"text": "The curious monkey sleeps in the garden."}
+{"text": "31+68=99"}
+{"text": "52乘以95等于4940。"}
+{"text": "数字678是一个自然数。"}
+{"text": "The clever bird plays in the park."}
+{"text": "The small monkey plays under the tree."}
+{"text": "假期里，机器人在教室里静静地思考。"}
+{"text": "The small fox sleeps in the park."}
+{"text": "清晨，小明在树下静静地思考。"}
+{"text": "17+38=55"}
+{"text": "The brave dog sits in the park."}
+{"text": "傍晚，老师在河边安静地读书。"}
+{"text": "The small bear runs in the garden."}
+{"text": "26 plus 9 equals 35."}
+{"text": "15×86=1290"}
+{"text": "The small dog rests in the forest."}
+{"text": "中午，猫咪在树下快乐地唱歌。"}
+{"text": "下午，机器人在厨房里快乐地唱歌。"}
+{"text": "The brave monkey plays in the garden."}
+{"text": "The curious horse plays in the yard."}
+{"text": "数字365是一个自然数。"}
+{"text": "21乘以77等于1617。"}
+{"text": "17乘以49等于833。"}
+{"text": "The brave dog runs near the river."}
+{"text": "中午，机器人在图书馆专心地画画。"}
+{"text": "26+10=36"}
+{"text": "36乘以58等于2088。"}
+{"text": "7 times 7 is 49."}
+{"text": "数字168是一个自然数。"}
+{"text": "晚上，小狗在操场上静静地思考。"}
+{"text": "中午，老师在操场上努力地学习。"}
+{"text": "10 plus 99 equals 109."}
+{"text": "The happy rabbit sits in the yard."}
+{"text": "上午，爷爷在厨房里开心地跑步。"}
+{"text": "The young horse plays on the hill."}
+{"text": "68的平方是4624。"}
+{"text": "数字12是一个自然数。"}
+{"text": "The happy fox sits on the hill."}
+{"text": "数字781是一个自然数。"}
+{"text": "周末，机器人在厨房里安静地读书。"}
+{"text": "36×75=2700"}
+{"text": "假期里，小狗在花园里快乐地唱歌。"}
+{"text": "76乘以27等于2052。"}
+{"text": "14 plus 18 equals 32."}
+{"text": "数字152是一个自然数。"}
+{"text": "94乘以45等于4230。"}
+{"text": "211的平方是44521。"}
+{"text": "35+28=63"}
+{"text": "93 plus 10 equals 103."}
+{"text": "The curious dog walks in the yard."}
+{"text": "95 plus 84 equals 179."}
+{"text": "51加35等于86。"}
+{"text": "The curious rabbit sleeps under the tree."}
+{"text": "The small fox sleeps in the forest."}
+{"text": "下午，小明在花园里开心地跑步。"}
+{"text": "清晨，猫咪在花园里慢慢地散步。"}
+{"text": "2 plus 79 equals 81."}
+{"text": "The red bear sits near the river."}
+{"text": "数字679是一个自然数。"}
+{"text": "假期里，小狗在河边快乐地唱歌。"}
+{"text": "The brave dog rests in the forest."}
+{"text": "傍晚，奶奶在教室里开心地跑步。"}
+{"text": "数字144是一个自然数。"}
+{"text": "清晨，小狗在教室里慢慢地散步。"}
+{"text": "The small cat jumps on the hill."}
+{"text": "9 times 6 is 54."}
+{"text": "假期里，医生在公园里快乐地唱歌。"}
+{"text": "The curious dog plays near the river."}
+{"text": "周末，老师在厨房里努力地学习。"}
+{"text": "The red rabbit sleeps near the river."}
+{"text": "The young bear sits in the garden."}
+{"text": "The black rabbit sleeps in the garden."}
+{"text": "20乘以74等于1480。"}
+{"text": "假期里，小狗在树下开心地跑步。"}
+{"text": "21+46=67"}
+{"text": "上午，小红在公园里仔细地观察。"}
+{"text": "晚上，医生在河边专心地画画。"}
+{"text": "10 plus 0 equals 10."}
+{"text": "The young monkey walks in the garden."}
+{"text": "217的平方是47089。"}
+{"text": "上午，机器人在操场上快乐地唱歌。"}
+{"text": "数字594是一个自然数。"}
+{"text": "The young rabbit runs in the garden."}
+{"text": "The curious horse walks near the river."}
+{"text": "The happy horse plays near the river."}
+{"text": "傍晚，奶奶在花园里慢慢地散步。"}
+{"text": "中午，姐姐在公园里认真地写字。"}
+{"text": "下午，老师在教室里静静地思考。"}
+{"text": "26+70=96"}
+{"text": "9 times 2 is 18."}
+{"text": "The curious bird rests in the park."}
+{"text": "83加80等于163。"}
+{"text": "The young fox runs in the yard."}
+{"text": "24 plus 52 equals 76."}
+{"text": "假期里，奶奶在花园里开心地跑步。"}
+{"text": "周末，老师在河边认真地写字。"}
+{"text": "傍晚，猫咪在图书馆开心地跑步。"}
+{"text": "The happy horse walks in the park."}
+{"text": "The happy cat jumps in the park."}
+{"text": "28×98=2744"}
+{"text": "假期里，姐姐在花园里静静地思考。"}
+{"text": "The happy cat eats in the garden."}
+{"text": "72 plus 4 equals 76."}
+{"text": "40乘以90等于3600。"}
+{"text": "清晨，小红在树下仔细地观察。"}
+{"text": "The black monkey sits in the park."}
+{"text": "The red dog walks on the farm."}
+{"text": "The small horse sits on the hill."}
+{"text": "50 plus 1 equals 51."}
+{"text": "87 plus 84 equals 171."}
+{"text": "傍晚，小明在树下努力地学习。"}
+{"text": "The red horse plays on the hill."}
+{"text": "41 plus 58 equals 99."}
+{"text": "The red rabbit sleeps on the hill."}
+{"text": "下午，老师在公园里专心地画画。"}
+{"text": "6 plus 72 equals 78."}
+{"text": "14加55等于69。"}
+{"text": "54乘以7等于378。"}
+{"text": "下午，奶奶在花园里安静地读书。"}
+{"text": "53 plus 80 equals 133."}
+{"text": "2 times 1 is 2."}
+{"text": "下午，医生在公园里专心地画画。"}
+{"text": "下午，小红在树下努力地学习。"}
+{"text": "The red rabbit plays on the hill."}
+{"text": "The black cat sits under the tree."}
+{"text": "The black horse jumps in the forest."}
+{"text": "8 times 2 is 16."}
+{"text": "The happy horse rests in the forest."}
+{"text": "99 plus 13 equals 112."}
+{"text": "The black monkey plays in the yard."}
+{"text": "84 plus 95 equals 179."}
+{"text": "The black bird eats on the farm."}
+{"text": "上午，爷爷在河边开心地跑步。"}
+{"text": "The red cat runs in the park."}
+{"text": "17+72=89"}
+{"text": "81+71=152"}
+{"text": "傍晚，小狗在树下慢慢地散步。"}
+{"text": "清晨，弟弟在公园里开心地跑步。"}
+{"text": "The red rabbit rests in the garden."}
+{"text": "假期里，小狗在河边认真地写字。"}
+{"text": "数字733是一个自然数。"}
+{"text": "The brave rabbit rests in the forest."}
+{"text": "32加27等于59。"}
+{"text": "The curious fox sits in the garden."}
+{"text": "The happy horse plays in the yard."}
+{"text": "86+36=122"}
+{"text": "假期里，小明在操场上认真地写字。"}
+{"text": "中午，医生在操场上慢慢地散步。"}
+{"text": "The curious horse plays on the hill."}
+{"text": "数字114是一个自然数。"}
+{"text": "17加13等于30。"}
+{"text": "上午，弟弟在花园里快乐地唱歌。"}
+{"text": "上午，奶奶在图书馆努力地学习。"}
+{"text": "晚上，猫咪在图书馆慢慢地散步。"}
+{"text": "上午，老师在图书馆安静地读书。"}
+{"text": "下午，医生在厨房里认真地写字。"}
+{"text": "95 plus 37 equals 132."}
+{"text": "39 plus 82 equals 121."}
+{"text": "76 plus 4 equals 80."}
+{"text": "78 plus 11 equals 89."}
+{"text": "周末，小红在公园里快乐地唱歌。"}
+{"text": "傍晚，猫咪在操场上快乐地唱歌。"}
+{"text": "67乘以7等于469。"}
+{"text": "39乘以36等于1404。"}
+{"text": "周末，老师在教室里开心地跑步。"}
+{"text": "93 plus 78 equals 171."}
+{"text": "82 plus 62 equals 144."}
+{"text": "The brave monkey plays in the forest."}
+{"text": "下午，机器人在图书馆努力地学习。"}
+{"text": "傍晚，机器人在厨房里努力地学习。"}
+{"text": "中午，老师在图书馆认真地写字。"}
+{"text": "54 plus 32 equals 86."}
+{"text": "85+11=96"}
+{"text": "The young bird jumps in the forest."}
+{"text": "69加44等于113。"}
+{"text": "52 plus 33 equals 85."}
+{"text": "The young fox plays in the garden."}
+{"text": "The young horse walks near the river."}
+{"text": "数字91是一个自然数。"}
+{"text": "中午，小明在厨房里静静地思考。"}
+{"text": "数字57是一个自然数。"}
+{"text": "The happy monkey jumps in the forest."}
+{"text": "数字368是一个自然数。"}
+{"text": "7 times 9 is 63."}
+{"text": "7的平方是49。"}
+{"text": "81+14=95"}
+{"text": "The young horse walks on the farm."}
+{"text": "36 plus 85 equals 121."}
+{"text": "Neural networks is widely used in industry."}
+{"text": "43+19=62"}
+{"text": "The black monkey eats under the tree."}
+{"text": "The curious horse rests in the forest."}
+{"text": "16 plus 78 equals 94."}
+{"text": "The young bird jumps in the garden."}
+{"text": "数字246是一个自然数。"}
+{"text": "清晨，弟弟在花园里静静地思考。"}
+{"text": "76 plus 0 equals 76."}
+{"text": "The black horse eats in the yard."}
+{"text": "周末，小明在花园里认真地写字。"}
+{"text": "83+5=88"}
+{"text": "The clever bird walks on the farm."}
+{"text": "The brave bird sits on the farm."}
+{"text": "中午，小狗在河边努力地学习。"}
+{"text": "73+57=130"}
+{"text": "数字469是一个自然数。"}
+{"text": "11乘以91等于1001。"}
+{"text": "中午，弟弟在树下慢慢地散步。"}
+{"text": "上午，奶奶在图书馆专心地画画。"}
+{"text": "32的平方是1024。"}
+{"text": "中午，小明在公园里安静地读书。"}
+{"text": "The clever fox sits in the park."}
+{"text": "65×55=3575"}
+{"text": "The small monkey runs on the farm."}
+{"text": "晚上，弟弟在花园里专心地画画。"}
+{"text": "The brave bird rests in the park."}
+{"text": "The black bear sits on the hill."}
+{"text": "The red bear plays in the forest."}
+{"text": "The clever fox sleeps near the river."}
+{"text": "59加2等于61。"}
+{"text": "数字268是一个自然数。"}
+{"text": "9 plus 45 equals 54."}
+{"text": "78 plus 2 equals 80."}
+{"text": "59 plus 70 equals 129."}
+{"text": "下午，小红在树下静静地思考。"}
+{"text": "The brave fox runs on the farm."}
+{"text": "周末，小明在花园里快乐地唱歌。"}
+{"text": "49×17=833"}
+{"text": "中午，弟弟在图书馆专心地画画。"}
+{"text": "晚上，老师在图书馆快乐地唱歌。"}
+{"text": "65加78等于143。"}
+{"text": "The happy rabbit runs in the garden."}
+{"text": "14 plus 33 equals 47."}
+{"text": "数字760是一个自然数。"}
+{"text": "清晨，医生在厨房里快乐地唱歌。"}
+{"text": "30 plus 55 equals 85."}
+{"text": "上午，弟弟在树下安静地读书。"}
+{"text": "傍晚，猫咪在操场上专心地画画。"}
+{"text": "40×54=2160"}
+{"text": "71加35等于106。"}
+{"text": "The red fox sleeps near the river."}
+{"text": "晚上，姐姐在花园里慢慢地散步。"}
+{"text": "The curious bear plays in the park."}
+{"text": "The young rabbit eats under the tree."}
+{"text": "The red fox rests in the garden."}
+{"text": "38加44等于82。"}
+{"text": "周末，奶奶在操场上努力地学习。"}
+{"text": "上午，小狗在河边开心地跑步。"}
+{"text": "The curious rabbit walks in the yard."}
+{"text": "19×13=247"}
+{"text": "清晨，爷爷在公园里开心地跑步。"}
+{"text": "晚上，机器人在操场上安静地读书。"}
+{"text": "18加49等于67。"}
+{"text": "380的平方是144400。"}
+{"text": "80×54=4320"}
+{"text": "晚上，小明在河边慢慢地散步。"}
+{"text": "下午，猫咪在花园里安静地读书。"}
+{"text": "The red rabbit rests near the river."}
+{"text": "下午，爷爷在操场上专心地画画。"}
+{"text": "数字577是一个自然数。"}
+{"text": "35 plus 51 equals 86."}
+{"text": "The brave rabbit runs on the farm."}
+{"text": "The brave fox plays on the farm."}
+{"text": "99加25等于124。"}
+{"text": "清晨，爷爷在公园里专心地画画。"}
+{"text": "上午，小明在树下认真地写字。"}
+{"text": "78 plus 36 equals 114."}
+{"text": "上午，弟弟在教室里仔细地观察。"}
+{"text": "16×28=448"}
+{"text": "周末，爷爷在厨房里专心地画画。"}
+{"text": "数字846是一个自然数。"}
+{"text": "37加44等于81。"}
+{"text": "5 times 8 is 40."}
+{"text": "96 plus 80 equals 176."}
+{"text": "The clever monkey rests in the garden."}
+{"text": "479的平方是229441。"}
+{"text": "上午，机器人在公园里努力地学习。"}
+{"text": "The black bird walks in the yard."}
+{"text": "The black horse sits on the farm."}
+{"text": "The small bear plays on the farm."}
+{"text": "The clever rabbit rests in the park."}
+{"text": "下午，猫咪在树下专心地画画。"}
+{"text": "下午，机器人在河边快乐地唱歌。"}
+{"text": "104的平方是10816。"}
+{"text": "The red horse walks near the river."}
+{"text": "The black fox runs in the park."}
+{"text": "假期里，机器人在河边仔细地观察。"}
+{"text": "The curious fox sleeps on the farm."}
+{"text": "上午，小狗在教室里快乐地唱歌。"}
+{"text": "The brave rabbit eats near the river."}
+{"text": "16 plus 18 equals 34."}
+{"text": "The red fox jumps under the tree."}
+{"text": "79 plus 5 equals 84."}
+{"text": "上午，机器人在河边快乐地唱歌。"}
+{"text": "30乘以7等于210。"}
+{"text": "傍晚，姐姐在教室里努力地学习。"}
+{"text": "清晨，医生在操场上专心地画画。"}
+{"text": "The curious horse runs on the hill."}
+{"text": "The happy fox jumps in the forest."}
+{"text": "The happy fox sits in the yard."}
+{"text": "周末，机器人在树下静静地思考。"}
+{"text": "25 plus 44 equals 69."}
+{"text": "77 plus 16 equals 93."}
+{"text": "清晨，小明在操场上快乐地唱歌。"}
+{"text": "47 plus 30 equals 77."}
+{"text": "周末，奶奶在花园里静静地思考。"}
+{"text": "23 plus 92 equals 115."}
+{"text": "The curious fox rests near the river."}
+{"text": "74 plus 92 equals 166."}
+{"text": "The young rabbit sleeps under the tree."}
+{"text": "77 plus 56 equals 133."}
+{"text": "The small fox plays on the hill."}
+{"text": "假期里，老师在河边慢慢地散步。"}
+{"text": "76 plus 84 equals 160."}
+{"text": "The young monkey sits in the garden."}
+{"text": "周末，姐姐在公园里开心地跑步。"}
+{"text": "The small dog sits in the garden."}
+{"text": "The happy bird walks on the farm."}
+{"text": "The happy dog walks near the river."}
+{"text": "86+49=135"}
+{"text": "中午，老师在厨房里快乐地唱歌。"}
+{"text": "206的平方是42436。"}
+{"text": "The black dog plays in the forest."}
+{"text": "The curious bear runs in the garden."}
+{"text": "The young dog rests in the garden."}
+{"text": "The curious bird runs in the park."}
+{"text": "中午，老师在河边专心地画画。"}
+{"text": "The happy fox runs in the park."}
+{"text": "周末，小狗在树下专心地画画。"}
+{"text": "傍晚，老师在图书馆努力地学习。"}
+{"text": "晚上，姐姐在河边努力地学习。"}
+{"text": "The red fox rests near the river."}
+{"text": "The young cat sits near the river."}
+{"text": "上午，猫咪在公园里安静地读书。"}
+{"text": "下午，小明在教室里开心地跑步。"}
+{"text": "晚上，爷爷在花园里快乐地唱歌。"}
+{"text": "中午，医生在厨房里安静地读书。"}
+{"text": "56加97等于153。"}
+{"text": "96乘以83等于7968。"}
+{"text": "50×65=3250"}
+{"text": "The red bear plays under the tree."}
+{"text": "周末，医生在公园里认真地写字。"}
+{"text": "78 plus 49 equals 127."}
+{"text": "25乘以47等于1175。"}
+{"text": "53乘以65等于3445。"}
+{"text": "44+39=83"}
+{"text": "假期里，弟弟在树下开心地跑步。"}
+{"text": "The small bird sits on the hill."}
+{"text": "11乘以97等于1067。"}
+{"text": "The small rabbit runs on the farm."}
+{"text": "假期里，医生在操场上快乐地唱歌。"}
+{"text": "傍晚，弟弟在操场上静静地思考。"}
+{"text": "The curious dog eats on the hill."}
+{"text": "85×55=4675"}
+{"text": "上午，弟弟在树下努力地学习。"}
+{"text": "The brave bear sleeps in the yard."}
+{"text": "The red cat walks on the hill."}
+{"text": "上午，小狗在图书馆仔细地观察。"}
+{"text": "The brave bird rests in the garden."}
+{"text": "下午，医生在厨房里仔细地观察。"}
+{"text": "10加76等于86。"}
+{"text": "2 times 4 is 8."}
+{"text": "50+25=75"}
+{"text": "36+12=48"}
+{"text": "The young bird sleeps in the forest."}
+{"text": "72 plus 57 equals 129."}
+{"text": "上午，猫咪在教室里仔细地观察。"}
+{"text": "33 plus 39 equals 72."}
+{"text": "The brave horse rests on the farm."}
+{"text": "The happy horse plays under the tree."}
+{"text": "306的平方是93636。"}
+{"text": "中午，猫咪在花园里开心地跑步。"}
+{"text": "99乘以25等于2475。"}
+{"text": "The curious bear eats near the river."}
+{"text": "下午，爷爷在树下仔细地观察。"}
+{"text": "26加17等于43。"}
+{"text": "The young bird rests in the yard."}
+{"text": "77 plus 29 equals 106."}
+{"text": "The curious bird sleeps in the park."}
+{"text": "34的平方是1156。"}
+{"text": "74+71=145"}
+{"text": "The clever bird jumps on the farm."}
+{"text": "50加0等于50。"}
+{"text": "193的平方是37249。"}
+{"text": "8加76等于84。"}
+{"text": "79加51等于130。"}
+{"text": "晚上，弟弟在厨房里静静地思考。"}
+{"text": "66+1=67"}
+{"text": "上午，老师在操场上专心地画画。"}
+{"text": "23加44等于67。"}
+{"text": "The curious bear sleeps in the forest."}
+{"text": "晚上，老师在厨房里努力地学习。"}
+{"text": "周末，老师在树下开心地跑步。"}
+{"text": "The black bear walks under the tree."}
+{"text": "数字995是一个自然数。"}
+{"text": "数字133是一个自然数。"}
+{"text": "70 plus 19 equals 89."}
+{"text": "The small bear sleeps in the park."}
+{"text": "中午，奶奶在花园里安静地读书。"}
+{"text": "傍晚，医生在操场上快乐地唱歌。"}
+{"text": "19加13等于32。"}
+{"text": "清晨，小红在树下快乐地唱歌。"}
+{"text": "The small cat runs in the yard."}
+{"text": "434的平方是188356。"}
+{"text": "88×22=1936"}
+{"text": "The red bear walks in the garden."}
+{"text": "傍晚，老师在操场上仔细地观察。"}
+{"text": "中午，爷爷在河边认真地写字。"}
+{"text": "The clever fox walks on the farm."}
+{"text": "The clever bear plays under the tree."}
+{"text": "数字541是一个自然数。"}
+{"text": "The curious bear sits under the tree."}
+{"text": "假期里，老师在公园里认真地写字。"}
+{"text": "傍晚，姐姐在厨房里安静地读书。"}
+{"text": "The black bear runs near the river."}
+{"text": "The small bird sits under the tree."}
+{"text": "50加56等于106。"}
+{"text": "The happy dog plays in the park."}
+{"text": "数字102是一个自然数。"}
+{"text": "The brave rabbit sits in the forest."}
+{"text": "32 plus 97 equals 129."}
+{"text": "中午，小狗在操场上专心地画画。"}
+{"text": "The young monkey sits in the forest."}
+{"text": "The black bird jumps on the farm."}
+{"text": "The curious monkey runs in the park."}
+{"text": "The young monkey eats on the farm."}
+{"text": "63 plus 87 equals 150."}
+{"text": "The red fox rests in the park."}
+{"text": "The brave bird eats under the tree."}
+{"text": "数字79是一个自然数。"}
+{"text": "1 times 8 is 8."}
+{"text": "The clever monkey plays in the yard."}
+{"text": "晚上，奶奶在教室里静静地思考。"}
+{"text": "3 times 7 is 21."}
+{"text": "The happy bird plays near the river."}
+{"text": "数字430是一个自然数。"}
+{"text": "上午，弟弟在花园里安静地读书。"}
+{"text": "上午，老师在公园里专心地画画。"}
+{"text": "上午，奶奶在教室里慢慢地散步。"}
+{"text": "The red rabbit rests on the farm."}
+{"text": "90乘以15等于1350。"}
+{"text": "晚上，小明在操场上快乐地唱歌。"}
+{"text": "The black fox rests in the park."}
+{"text": "假期里，医生在树下开心地跑步。"}
+{"text": "The clever bird jumps in the garden."}
+{"text": "假期里，姐姐在公园里努力地学习。"}
+{"text": "1 plus 87 equals 88."}
+{"text": "周末，奶奶在公园里慢慢地散步。"}
+{"text": "The young horse plays in the park."}
+{"text": "30×13=390"}
+{"text": "95×34=3230"}
+{"text": "8的平方是64。"}
+{"text": "85加98等于183。"}
+{"text": "The young rabbit rests under the tree."}
+{"text": "The clever dog sleeps under the tree."}
+{"text": "上午，爷爷在操场上静静地思考。"}
+{"text": "晚上，小狗在花园里专心地画画。"}
+{"text": "59加77等于136。"}
+{"text": "The black bear sleeps near the river."}
+{"text": "10乘以91等于910。"}
+{"text": "18+39=57"}
+{"text": "9 times 7 is 63."}
+{"text": "The brave bird eats in the forest."}
+{"text": "数字390是一个自然数。"}
+{"text": "The small bird plays under the tree."}
+{"text": "假期里，小明在厨房里安静地读书。"}
+{"text": "The red horse sits in the garden."}
+{"text": "48×87=4176"}
+{"text": "数字612是一个自然数。"}
+{"text": "263的平方是69169。"}
+{"text": "The small dog jumps on the hill."}
+{"text": "The brave bird sleeps near the river."}
+{"text": "周末，机器人在教室里努力地学习。"}
+{"text": "清晨，小狗在图书馆慢慢地散步。"}
+{"text": "The red bear rests near the river."}
+{"text": "33×20=660"}
+{"text": "The red bear sits on the farm."}
+{"text": "The red bird plays on the hill."}
+{"text": "497的平方是247009。"}
+{"text": "34 plus 75 equals 109."}
+{"text": "31×21=651"}
+{"text": "数字853是一个自然数。"}
+{"text": "清晨，爷爷在教室里开心地跑步。"}
+{"text": "The brave bird sits in the forest."}
+{"text": "The small cat sleeps on the hill."}
+{"text": "60 plus 51 equals 111."}
+{"text": "假期里，老师在图书馆静静地思考。"}
+{"text": "傍晚，小明在厨房里努力地学习。"}
+{"text": "数字774是一个自然数。"}
+{"text": "85 plus 8 equals 93."}
+{"text": "The small bird runs under the tree."}
+{"text": "晚上，爷爷在厨房里专心地画画。"}
+{"text": "中午，奶奶在树下静静地思考。"}
+{"text": "数字99是一个自然数。"}
+{"text": "74×83=6142"}
+{"text": "20+6=26"}
+{"text": "中午，爷爷在树下专心地画画。"}
+{"text": "假期里，小红在厨房里专心地画画。"}
+{"text": "下午，爷爷在树下开心地跑步。"}
+{"text": "The black monkey jumps in the forest."}
+{"text": "The red monkey rests in the garden."}
+{"text": "数字298是一个自然数。"}
+{"text": "下午，小红在教室里仔细地观察。"}
+{"text": "45乘以97等于4365。"}
+{"text": "数字933是一个自然数。"}
+{"text": "清晨，弟弟在图书馆安静地读书。"}
+{"text": "The small cat jumps under the tree."}
+{"text": "数字596是一个自然数。"}
+{"text": "40 plus 38 equals 78."}
+{"text": "The young horse sits under the tree."}
+{"text": "4 times 3 is 12."}
+{"text": "清晨，老师在花园里开心地跑步。"}
+{"text": "33 plus 90 equals 123."}
+{"text": "假期里，爷爷在花园里专心地画画。"}
+{"text": "The brave fox walks in the yard."}
+{"text": "周末，小狗在图书馆仔细地观察。"}
+{"text": "7 times 3 is 21."}
+{"text": "The small cat eats on the farm."}
+{"text": "The happy bird walks under the tree."}
+{"text": "The happy fox sits in the garden."}
+{"text": "数字835是一个自然数。"}
+{"text": "The red rabbit jumps under the tree."}
+{"text": "周末，小明在厨房里仔细地观察。"}
+{"text": "中午，老师在图书馆开心地跑步。"}
+{"text": "晚上，小红在教室里慢慢地散步。"}
+{"text": "The brave cat eats under the tree."}
+{"text": "The black dog rests in the forest."}
+{"text": "The curious cat jumps under the tree."}
+{"text": "5 times 3 is 15."}
+{"text": "The brave bear plays in the forest."}
+{"text": "The happy bear plays in the yard."}
+{"text": "358的平方是128164。"}
+{"text": "The black rabbit sits in the park."}
+{"text": "上午，小明在公园里快乐地唱歌。"}
+{"text": "67 plus 6 equals 73."}
+{"text": "周末，小狗在树下认真地写字。"}
+{"text": "清晨，弟弟在河边开心地跑步。"}
+{"text": "下午，医生在厨房里专心地画画。"}
+{"text": "29 plus 8 equals 37."}
+{"text": "The curious rabbit plays on the hill."}
+{"text": "The curious cat eats in the yard."}
+{"text": "下午，医生在操场上安静地读书。"}
+{"text": "周末，小明在河边仔细地观察。"}
+{"text": "42 plus 64 equals 106."}
+{"text": "上午，奶奶在公园里慢慢地散步。"}
+{"text": "The young fox eats in the yard."}
+{"text": "下午，小狗在树下认真地写字。"}
+{"text": "The black bear sleeps on the farm."}
+{"text": "周末，小红在操场上努力地学习。"}
+{"text": "上午，姐姐在操场上仔细地观察。"}
+{"text": "45×0=0"}
+{"text": "6乘以83等于498。"}
+{"text": "452的平方是204304。"}
+{"text": "The happy cat sits under the tree."}
+{"text": "The brave monkey rests in the yard."}
+{"text": "The red dog rests near the river."}
+{"text": "The red monkey eats in the forest."}
+{"text": "The small dog sleeps in the forest."}
+{"text": "85加0等于85。"}
+{"text": "数字463是一个自然数。"}
+{"text": "The small rabbit walks in the garden."}
+{"text": "The happy bear plays in the garden."}
+{"text": "46 plus 80 equals 126."}
+{"text": "82×74=6068"}
+{"text": "6 times 9 is 54."}
+{"text": "The black horse walks in the park."}
+{"text": "61 plus 81 equals 142."}
+{"text": "68+51=119"}
+{"text": "66 plus 99 equals 165."}
+{"text": "假期里，小狗在公园里安静地读书。"}
+{"text": "The curious cat runs in the park."}
+{"text": "数字126是一个自然数。"}
+{"text": "336的平方是112896。"}
+{"text": "中午，小红在厨房里慢慢地散步。"}
+{"text": "9 times 8 is 72."}
+{"text": "163的平方是26569。"}
+{"text": "90加20等于110。"}
+{"text": "The young fox eats on the hill."}
+{"text": "The young horse rests near the river."}
+{"text": "周末，姐姐在图书馆快乐地唱歌。"}
+{"text": "2 times 8 is 16."}
+{"text": "傍晚，猫咪在树下快乐地唱歌。"}
+{"text": "The brave dog sleeps in the park."}
+{"text": "205的平方是42025。"}
+{"text": "The clever cat runs in the park."}
+{"text": "上午，小明在公园里开心地跑步。"}
+{"text": "数字20是一个自然数。"}
+{"text": "傍晚，小狗在花园里开心地跑步。"}
+{"text": "79加67等于146。"}
+{"text": "傍晚，老师在图书馆仔细地观察。"}
+{"text": "假期里，小红在河边快乐地唱歌。"}
+{"text": "The brave horse jumps in the park."}
+{"text": "清晨，小明在操场上慢慢地散步。"}
+{"text": "5 plus 51 equals 56."}
+{"text": "晚上，老师在厨房里专心地画画。"}
+{"text": "数字999是一个自然数。"}
+{"text": "58×61=3538"}
+{"text": "下午，爷爷在河边努力地学习。"}
+{"text": "下午，奶奶在操场上仔细地观察。"}
+{"text": "上午，姐姐在公园里仔细地观察。"}
+{"text": "The curious rabbit sits on the hill."}
+{"text": "168的平方是28224。"}
+{"text": "171的平方是29241。"}
+{"text": "清晨，姐姐在厨房里开心地跑步。"}
+{"text": "The curious monkey rests in the park."}
+{"text": "The brave rabbit walks on the farm."}
+{"text": "The black rabbit eats in the garden."}
+{"text": "The red cat rests in the forest."}
+{"text": "中午，爷爷在树下静静地思考。"}
+{"text": "92 plus 63 equals 155."}
+{"text": "The curious bird sits in the garden."}
+{"text": "上午，姐姐在公园里慢慢地散步。"}
+{"text": "52乘以70等于3640。"}
+{"text": "上午，猫咪在厨房里慢慢地散步。"}
+{"text": "下午，机器人在公园里开心地跑步。"}
+{"text": "数字293是一个自然数。"}
+{"text": "The happy bird runs in the yard."}
+{"text": "下午，机器人在厨房里努力地学习。"}
+{"text": "The young rabbit sleeps in the garden."}
+{"text": "假期里，小狗在树下静静地思考。"}
+{"text": "The small cat plays in the garden."}
+{"text": "清晨，老师在操场上开心地跑步。"}
+{"text": "58×73=4234"}
+{"text": "37 plus 75 equals 112."}
+{"text": "1加46等于47。"}
+{"text": "19×93=1767"}
+{"text": "The clever monkey sleeps in the forest."}
+{"text": "The black rabbit jumps on the hill."}
+{"text": "The happy rabbit rests in the park."}
+{"text": "112的平方是12544。"}
+{"text": "48乘以88等于4224。"}
+{"text": "90加15等于105。"}
+{"text": "80+6=86"}
+{"text": "数字743是一个自然数。"}
+{"text": "下午，小红在图书馆努力地学习。"}
+{"text": "假期里，小狗在树下认真地写字。"}
+{"text": "84加62等于146。"}
+{"text": "中午，爷爷在树下仔细地观察。"}
+{"text": "0+32=32"}
+{"text": "30 plus 30 equals 60."}
+{"text": "54 plus 38 equals 92."}
+{"text": "傍晚，猫咪在公园里慢慢地散步。"}
+{"text": "下午，老师在教室里慢慢地散步。"}
+{"text": "98乘以14等于1372。"}
+{"text": "The happy bear plays on the farm."}
+{"text": "The happy fox jumps on the hill."}
+{"text": "The young fox rests on the farm."}
+{"text": "The black fox sleeps on the farm."}
+{"text": "清晨，爷爷在花园里专心地画画。"}
+{"text": "The happy bird jumps near the river."}
+{"text": "6 times 7 is 42."}
+{"text": "24×47=1128"}
+{"text": "中午，弟弟在教室里安静地读书。"}
+{"text": "晚上，老师在操场上专心地画画。"}
+{"text": "周末，弟弟在河边开心地跑步。"}
+{"text": "The clever bear walks in the yard."}
+{"text": "The brave cat jumps near the river."}
+{"text": "268的平方是71824。"}
+{"text": "35 plus 5 equals 40."}
+{"text": "假期里，小红在操场上静静地思考。"}
+{"text": "假期里，猫咪在教室里开心地跑步。"}
+{"text": "The happy rabbit runs on the farm."}
+{"text": "The small monkey sits in the forest."}
+{"text": "中午，姐姐在河边努力地学习。"}
+{"text": "The red bird sleeps on the farm."}
+{"text": "假期里，小明在河边仔细地观察。"}
+{"text": "傍晚，小红在厨房里努力地学习。"}
+{"text": "周末，猫咪在花园里仔细地观察。"}
+{"text": "晚上，小红在厨房里静静地思考。"}
+{"text": "The clever rabbit walks under the tree."}
+{"text": "晚上，奶奶在公园里认真地写字。"}
+{"text": "假期里，弟弟在教室里开心地跑步。"}
+{"text": "数字640是一个自然数。"}
+{"text": "假期里，机器人在厨房里慢慢地散步。"}
+{"text": "The young fox jumps in the yard."}
+{"text": "The small bird rests in the park."}
+{"text": "20加74等于94。"}
+{"text": "上午，老师在图书馆静静地思考。"}
+{"text": "48+87=135"}
+{"text": "The happy fox sleeps in the yard."}
+{"text": "下午，小狗在公园里安静地读书。"}
+{"text": "36×91=3276"}
+{"text": "32乘以56等于1792。"}
+{"text": "数字868是一个自然数。"}
+{"text": "晚上，猫咪在花园里认真地写字。"}
+{"text": "The red cat eats on the farm."}
+{"text": "10×93=930"}
+{"text": "中午，奶奶在厨房里慢慢地散步。"}
+{"text": "假期里，姐姐在厨房里努力地学习。"}
+{"text": "23×91=2093"}
+{"text": "The young rabbit runs in the yard."}
+{"text": "The black bear plays in the park."}
+{"text": "中午，医生在图书馆仔细地观察。"}
+{"text": "The black rabbit plays on the hill."}
+{"text": "70 plus 98 equals 168."}
+{"text": "98+14=112"}
+{"text": "中午，弟弟在树下仔细地观察。"}
+{"text": "34 plus 66 equals 100."}
+{"text": "傍晚，小明在图书馆安静地读书。"}
+{"text": "The brave bird runs in the forest."}
+{"text": "The curious bear jumps in the yard."}
+{"text": "The brave fox walks in the garden."}
+{"text": "52 plus 95 equals 147."}
+{"text": "数字664是一个自然数。"}
+{"text": "4的平方是16。"}
+{"text": "25 plus 46 equals 71."}
+{"text": "The brave horse rests in the forest."}
+{"text": "The happy fox sleeps near the river."}
+{"text": "傍晚，小红在树下快乐地唱歌。"}
+{"text": "10 plus 98 equals 108."}
+{"text": "下午，老师在河边静静地思考。"}
+{"text": "假期里，医生在图书馆努力地学习。"}
+{"text": "The brave rabbit rests on the farm."}
+{"text": "中午，小红在公园里仔细地观察。"}
+{"text": "10×21=210"}
+{"text": "The curious fox jumps near the river."}
+{"text": "傍晚，爷爷在花园里快乐地唱歌。"}
+{"text": "18乘以4等于72。"}
+{"text": "傍晚，小明在公园里仔细地观察。"}
+{"text": "假期里，机器人在教室里快乐地唱歌。"}
+{"text": "The young bear rests in the forest."}
+{"text": "数字588是一个自然数。"}
+{"text": "中午，姐姐在操场上仔细地观察。"}
+{"text": "The red dog walks under the tree."}
+{"text": "The small horse eats in the forest."}
+{"text": "43×19=817"}
+{"text": "The curious bear walks under the tree."}
+{"text": "58加61等于119。"}
+{"text": "The red cat eats on the hill."}
+{"text": "The brave dog sits in the yard."}
+{"text": "57+30=87"}
+{"text": "The curious monkey walks in the park."}
+{"text": "清晨，姐姐在花园里开心地跑步。"}
+{"text": "31乘以32等于992。"}
+{"text": "10加21等于31。"}
+{"text": "中午，小明在河边专心地画画。"}
+{"text": "数字536是一个自然数。"}
+{"text": "傍晚，弟弟在图书馆慢慢地散步。"}
+{"text": "清晨，小红在厨房里快乐地唱歌。"}
+{"text": "71加10等于81。"}
+{"text": "清晨，奶奶在教室里专心地画画。"}
+{"text": "40 plus 87 equals 127."}
+{"text": "下午，姐姐在河边努力地学习。"}
+{"text": "下午，爷爷在花园里认真地写字。"}
+{"text": "The young fox jumps in the park."}
+{"text": "数字621是一个自然数。"}
+{"text": "下午，小狗在厨房里开心地跑步。"}
+{"text": "26×88=2288"}
+{"text": "18+66=84"}
+{"text": "The clever bird walks in the yard."}
+{"text": "The black rabbit runs on the hill."}
+{"text": "42×58=2436"}
+{"text": "96×13=1248"}
+{"text": "数字620是一个自然数。"}
+{"text": "The clever monkey rests in the park."}
+{"text": "187的平方是34969。"}
+{"text": "50 plus 23 equals 73."}
+{"text": "周末，医生在图书馆仔细地观察。"}
+{"text": "3+27=30"}
+{"text": "The young cat walks in the park."}
+{"text": "下午，姐姐在树下专心地画画。"}
+{"text": "中午，小红在图书馆仔细地观察。"}
+{"text": "The curious bird rests in the garden."}
+{"text": "The brave dog plays in the yard."}
+{"text": "The happy bird plays on the farm."}
+{"text": "The happy rabbit sleeps on the farm."}
+{"text": "39 plus 7 equals 46."}
+{"text": "傍晚，老师在公园里仔细地观察。"}
+{"text": "假期里，弟弟在操场上快乐地唱歌。"}
+{"text": "9×86=774"}
+{"text": "The happy cat sits on the farm."}
+{"text": "周末，姐姐在操场上快乐地唱歌。"}
+{"text": "78 plus 33 equals 111."}
+{"text": "The black horse rests near the river."}
+{"text": "The happy bear eats under the tree."}
+{"text": "The happy horse walks near the river."}
+{"text": "The young horse sits in the yard."}
+{"text": "数字962是一个自然数。"}
+{"text": "50×78=3900"}
+{"text": "21+52=73"}
+{"text": "The black bird eats in the yard."}
+{"text": "The happy dog sits in the park."}
+{"text": "数字557是一个自然数。"}
+{"text": "The happy bird eats under the tree."}
+{"text": "8 times 8 is 64."}
+{"text": "335的平方是112225。"}
+{"text": "晚上，小红在图书馆开心地跑步。"}
+{"text": "The clever dog eats under the tree."}
+{"text": "中午，弟弟在操场上慢慢地散步。"}
+{"text": "The small rabbit rests in the yard."}
+{"text": "晚上，医生在河边开心地跑步。"}
+{"text": "假期里，猫咪在树下努力地学习。"}
+{"text": "The young rabbit eats near the river."}
+{"text": "晚上，机器人在厨房里开心地跑步。"}
+{"text": "The brave bear eats on the hill."}
+{"text": "35+20=55"}
+{"text": "上午，小红在教室里开心地跑步。"}
+{"text": "26+89=115"}
+{"text": "数字885是一个自然数。"}
+{"text": "3加97等于100。"}
+{"text": "The young bird plays under the tree."}
+{"text": "43乘以45等于1935。"}
+{"text": "The curious rabbit sits under the tree."}
+{"text": "36×52=1872"}
+{"text": "19 plus 67 equals 86."}
+{"text": "数字379是一个自然数。"}
+{"text": "14 plus 78 equals 92."}
+{"text": "上午，猫咪在操场上专心地画画。"}
+{"text": "40+49=89"}
+{"text": "32加35等于67。"}
+{"text": "The black horse sleeps under the tree."}
+{"text": "94×56=5264"}
+{"text": "The red bear plays on the farm."}
+{"text": "周末，爷爷在教室里静静地思考。"}
+{"text": "数字495是一个自然数。"}
+{"text": "10乘以23等于230。"}
+{"text": "The red bear runs on the hill."}
+{"text": "The clever fox plays under the tree."}
+{"text": "周末，老师在图书馆静静地思考。"}
+{"text": "The brave bear sits in the yard."}
+{"text": "下午，老师在河边慢慢地散步。"}
+{"text": "下午，机器人在操场上努力地学习。"}
+{"text": "The curious bird walks in the yard."}
+{"text": "The clever horse jumps in the park."}
+{"text": "The brave horse rests in the garden."}
+{"text": "The young fox rests on the hill."}
+{"text": "数字36是一个自然数。"}
+{"text": "The curious rabbit walks in the garden."}
+{"text": "晚上，爷爷在树下仔细地观察。"}
+{"text": "62×64=3968"}
+{"text": "13乘以38等于494。"}
+{"text": "晚上，医生在树下安静地读书。"}
+{"text": "The small monkey sits in the garden."}
+{"text": "傍晚，机器人在花园里专心地画画。"}
+{"text": "周末，弟弟在图书馆慢慢地散步。"}
+{"text": "周末，奶奶在花园里安静地读书。"}
+{"text": "The curious monkey rests in the garden."}
+{"text": "上午，医生在树下专心地画画。"}
+{"text": "周末，老师在公园里专心地画画。"}
+{"text": "The clever horse eats in the forest."}
+{"text": "18×22=396"}
+{"text": "4 times 2 is 8."}
+{"text": "0乘以66等于0。"}
+{"text": "上午，小明在厨房里慢慢地散步。"}
+{"text": "The red monkey runs in the forest."}
+{"text": "晚上，姐姐在厨房里努力地学习。"}
+{"text": "The happy fox eats near the river."}
+{"text": "数字403是一个自然数。"}
+{"text": "周末，猫咪在操场上开心地跑步。"}
+{"text": "466的平方是217156。"}
+{"text": "清晨，爷爷在河边开心地跑步。"}
+{"text": "数字803是一个自然数。"}
+{"text": "周末，奶奶在厨房里专心地画画。"}
+{"text": "The brave monkey jumps on the farm."}
+{"text": "数字329是一个自然数。"}
+{"text": "数字537是一个自然数。"}
+{"text": "傍晚，小狗在图书馆静静地思考。"}
+{"text": "数字700是一个自然数。"}
+{"text": "The curious cat jumps near the river."}
+{"text": "81乘以66等于5346。"}
+{"text": "The happy horse walks under the tree."}
+{"text": "The curious bear runs under the tree."}
+{"text": "傍晚，猫咪在图书馆快乐地唱歌。"}
+{"text": "假期里，弟弟在河边认真地写字。"}
+{"text": "傍晚，姐姐在树下慢慢地散步。"}
+{"text": "数字201是一个自然数。"}
+{"text": "周末，小明在树下仔细地观察。"}
+{"text": "周末，姐姐在厨房里慢慢地散步。"}
+{"text": "5 times 1 is 5."}
+{"text": "The small rabbit sleeps on the farm."}
+{"text": "The small dog sleeps near the river."}
+{"text": "The clever dog walks near the river."}
+{"text": "18+92=110"}
+{"text": "The small horse rests in the yard."}
+{"text": "The curious bird plays on the farm."}
+{"text": "傍晚，奶奶在花园里仔细地观察。"}
+{"text": "数字282是一个自然数。"}
+{"text": "数字484是一个自然数。"}
+{"text": "The black bear rests in the park."}
+{"text": "The small horse walks in the yard."}
+{"text": "下午，老师在教室里专心地画画。"}
+{"text": "周末，小狗在河边开心地跑步。"}
+{"text": "The curious bear walks in the yard."}
+{"text": "The black horse eats in the forest."}
+{"text": "The black bear runs under the tree."}
+{"text": "数字954是一个自然数。"}
+{"text": "17+12=29"}
+{"text": "假期里，小狗在操场上认真地写字。"}
+{"text": "40乘以22等于880。"}
+{"text": "The black bear walks on the hill."}
+{"text": "The curious dog rests in the yard."}
+{"text": "The curious rabbit runs on the farm."}
+{"text": "43 plus 65 equals 108."}
+{"text": "上午，机器人在公园里安静地读书。"}
+{"text": "上午，姐姐在厨房里开心地跑步。"}
+{"text": "The curious bird jumps in the forest."}
+{"text": "1 times 1 is 1."}
+{"text": "90 plus 34 equals 124."}
+{"text": "17加52等于69。"}
+{"text": "上午，老师在公园里安静地读书。"}
+{"text": "484的平方是234256。"}
+{"text": "傍晚，小红在河边认真地写字。"}
+{"text": "82 plus 93 equals 175."}
+{"text": "The happy dog sits on the farm."}
+{"text": "上午，爷爷在树下开心地跑步。"}
+{"text": "The small monkey sits in the yard."}
+{"text": "数字477是一个自然数。"}
+{"text": "傍晚，姐姐在操场上静静地思考。"}
+{"text": "假期里，奶奶在教室里快乐地唱歌。"}
+{"text": "41+19=60"}
+{"text": "The brave dog rests in the yard."}
+{"text": "中午，弟弟在公园里安静地读书。"}
+{"text": "下午，姐姐在厨房里静静地思考。"}
+{"text": "285的平方是81225。"}
+{"text": "数字873是一个自然数。"}
+{"text": "12加67等于79。"}
+{"text": "The brave bear sits in the garden."}
+{"text": "晚上，爷爷在图书馆认真地写字。"}
+{"text": "The young fox plays under the tree."}
+{"text": "The young bird runs near the river."}
+{"text": "The red fox plays under the tree."}
+{"text": "22乘以85等于1870。"}
+{"text": "10加23等于33。"}
+{"text": "The clever horse plays on the hill."}
+{"text": "44 plus 49 equals 93."}
+{"text": "56 plus 12 equals 68."}
+{"text": "The clever horse sleeps in the garden."}
+{"text": "The small rabbit sits in the forest."}
+{"text": "The young monkey walks on the hill."}
+{"text": "The young cat runs in the forest."}
+{"text": "The happy cat eats under the tree."}
+{"text": "清晨，老师在图书馆认真地写字。"}
+{"text": "The clever dog walks in the yard."}
+{"text": "中午，老师在教室里仔细地观察。"}
+{"text": "傍晚，小红在河边快乐地唱歌。"}
+{"text": "晚上，弟弟在树下静静地思考。"}
+{"text": "下午，奶奶在教室里静静地思考。"}
+{"text": "The young fox walks in the park."}
+{"text": "晚上，机器人在河边安静地读书。"}
+{"text": "晚上，爷爷在公园里认真地写字。"}
+{"text": "4+12=16"}
+{"text": "3加15等于18。"}
+{"text": "4乘以67等于268。"}
+{"text": "假期里，姐姐在河边慢慢地散步。"}
+{"text": "63乘以51等于3213。"}
+{"text": "12×67=804"}
+{"text": "The black monkey jumps in the yard."}
+{"text": "数字889是一个自然数。"}
+{"text": "26×46=1196"}
+{"text": "上午，姐姐在河边仔细地观察。"}
+{"text": "假期里，小红在厨房里安静地读书。"}
+{"text": "中午，猫咪在花园里努力地学习。"}
+{"text": "The happy cat runs under the tree."}
+{"text": "周末，弟弟在河边仔细地观察。"}
+{"text": "上午，医生在图书馆安静地读书。"}
+{"text": "The black bird eats in the park."}
+{"text": "数字226是一个自然数。"}
+{"text": "假期里，小明在公园里快乐地唱歌。"}
+{"text": "The brave bear plays in the garden."}
+{"text": "傍晚，姐姐在厨房里快乐地唱歌。"}
+{"text": "晚上，医生在操场上努力地学习。"}
+{"text": "53 plus 88 equals 141."}
+{"text": "The black rabbit sleeps in the park."}
+{"text": "485的平方是235225。"}
+{"text": "清晨，爷爷在操场上认真地写字。"}
+{"text": "5×72=360"}
+{"text": "7 times 6 is 42."}
+{"text": "49加14等于63。"}
+{"text": "65加55等于120。"}
+{"text": "假期里，姐姐在树下慢慢地散步。"}
+{"text": "369的平方是136161。"}
+{"text": "The clever fox plays in the garden."}
+{"text": "The brave bird sleeps in the park."}
+{"text": "The brave fox walks near the river."}
+{"text": "The clever bear eats under the tree."}
+{"text": "上午，奶奶在河边努力地学习。"}
+{"text": "95加34等于129。"}
+{"text": "傍晚，小明在教室里认真地写字。"}
+{"text": "下午，姐姐在图书馆努力地学习。"}
+{"text": "The brave rabbit rests in the garden."}
+{"text": "50×56=2800"}
+{"text": "69乘以85等于5865。"}
+{"text": "57乘以92等于5244。"}
+{"text": "424的平方是179776。"}
+{"text": "周末，爷爷在河边慢慢地散步。"}
+{"text": "201的平方是40401。"}
+{"text": "The small dog walks in the garden."}
+{"text": "26 plus 33 equals 59."}
+{"text": "78 plus 59 equals 137."}
+{"text": "The curious monkey walks on the hill."}
+{"text": "假期里，老师在花园里开心地跑步。"}
+{"text": "61的平方是3721。"}
+{"text": "假期里，老师在公园里安静地读书。"}
+{"text": "下午，小明在图书馆安静地读书。"}
+{"text": "16乘以1等于16。"}
+{"text": "60 plus 34 equals 94."}
+{"text": "The young fox sits in the garden."}
+{"text": "The black monkey jumps under the tree."}
+{"text": "91×23=2093"}
+{"text": "清晨，小狗在操场上开心地跑步。"}
+{"text": "17加43等于60。"}
+{"text": "上午，小狗在图书馆开心地跑步。"}
+{"text": "The happy cat sits in the park."}
+{"text": "The curious cat jumps on the hill."}
+{"text": "晚上，猫咪在厨房里静静地思考。"}
+{"text": "63乘以12等于756。"}
+{"text": "假期里，爷爷在教室里快乐地唱歌。"}
+{"text": "The curious dog jumps in the park."}
+{"text": "The small fox walks in the yard."}
+{"text": "The happy rabbit walks on the hill."}
+{"text": "The happy monkey sits near the river."}
+{"text": "63+0=63"}
+{"text": "The black rabbit eats in the yard."}
+{"text": "31乘以68等于2108。"}
+{"text": "The young bear runs in the garden."}
+{"text": "清晨，医生在厨房里仔细地观察。"}
+{"text": "数字214是一个自然数。"}
+{"text": "53乘以26等于1378。"}
+{"text": "78×46=3588"}
+{"text": "The curious cat jumps in the forest."}
+{"text": "98+36=134"}
+{"text": "14 plus 99 equals 113."}
+{"text": "243的平方是59049。"}
+{"text": "The happy monkey eats in the park."}
+{"text": "The small bird sleeps in the yard."}
+{"text": "The brave rabbit sits in the garden."}
+{"text": "数字941是一个自然数。"}
+{"text": "The young dog eats near the river."}
+{"text": "清晨，医生在厨房里静静地思考。"}
+{"text": "31乘以64等于1984。"}
+{"text": "70加81等于151。"}
+{"text": "The young horse rests on the farm."}
+{"text": "The black bear plays in the forest."}
+{"text": "39×6=234"}
+{"text": "The clever horse rests on the farm."}
+{"text": "傍晚，老师在公园里快乐地唱歌。"}
+{"text": "The clever fox eats on the farm."}
+{"text": "148的平方是21904。"}
+{"text": "98 plus 1 equals 99."}
+{"text": "The red rabbit sleeps under the tree."}
+{"text": "The black horse rests in the garden."}
+{"text": "The curious fox rests in the garden."}
+{"text": "43 plus 25 equals 68."}
+{"text": "149的平方是22201。"}
+{"text": "周末，弟弟在河边静静地思考。"}
+{"text": "18×92=1656"}
+{"text": "清晨，奶奶在图书馆仔细地观察。"}
+{"text": "上午，小明在教室里专心地画画。"}
+{"text": "31 plus 67 equals 98."}
+{"text": "The clever monkey runs in the park."}
+{"text": "周末，弟弟在操场上仔细地观察。"}
+{"text": "数字898是一个自然数。"}
+{"text": "The young monkey sleeps near the river."}
+{"text": "中午，小狗在图书馆快乐地唱歌。"}
+{"text": "上午，小明在河边快乐地唱歌。"}
+{"text": "The red cat walks in the park."}
+{"text": "The clever cat runs under the tree."}
+{"text": "The red cat plays in the yard."}
+{"text": "8加59等于67。"}
+{"text": "The small horse runs on the hill."}
+{"text": "444的平方是197136。"}
+{"text": "The clever rabbit eats on the hill."}
+{"text": "The happy rabbit jumps in the park."}
+{"text": "56+71=127"}
+{"text": "92+55=147"}
+{"text": "6 times 3 is 18."}
+{"text": "67的平方是4489。"}
+{"text": "下午，小红在操场上安静地读书。"}
+{"text": "6的平方是36。"}
+{"text": "The happy monkey plays in the forest."}
+{"text": "The happy cat plays in the forest."}
+{"text": "中午，机器人在河边快乐地唱歌。"}
+{"text": "The curious cat eats in the park."}
+{"text": "75加2等于77。"}
+{"text": "The curious monkey sleeps in the park."}
+{"text": "数字459是一个自然数。"}
+{"text": "32×80=2560"}
+{"text": "38 plus 60 equals 98."}
+{"text": "下午，机器人在公园里认真地写字。"}
+{"text": "数字116是一个自然数。"}
+{"text": "周末，弟弟在树下仔细地观察。"}
+{"text": "75加4等于79。"}
+{"text": "数字947是一个自然数。"}
+{"text": "54乘以3等于162。"}
+{"text": "数字401是一个自然数。"}
+{"text": "The brave fox jumps in the yard."}
+{"text": "64 plus 90 equals 154."}
+{"text": "28+37=65"}
+{"text": "The black monkey plays in the forest."}
+{"text": "傍晚，小明在河边专心地画画。"}
+{"text": "The young bird runs under the tree."}
+{"text": "97×73=7081"}
+{"text": "1+41=42"}
+{"text": "81加66等于147。"}
+{"text": "中午，小狗在公园里慢慢地散步。"}
+{"text": "晚上，爷爷在花园里开心地跑步。"}
+{"text": "272的平方是73984。"}
+{"text": "15 plus 69 equals 84."}
+{"text": "上午，老师在河边静静地思考。"}
+{"text": "清晨，爷爷在厨房里专心地画画。"}
+{"text": "The black horse eats under the tree."}
+{"text": "晚上，弟弟在操场上认真地写字。"}
+{"text": "58乘以93等于5394。"}
+{"text": "65的平方是4225。"}
+{"text": "97 plus 66 equals 163."}
+{"text": "21乘以50等于1050。"}
+{"text": "晚上，小明在河边仔细地观察。"}
+{"text": "77 plus 86 equals 163."}
+{"text": "中午，弟弟在操场上认真地写字。"}
+{"text": "上午，小明在公园里努力地学习。"}
+{"text": "53+26=79"}
+{"text": "上午，小明在公园里仔细地观察。"}
+{"text": "82 plus 53 equals 135."}
+{"text": "The clever fox rests in the park."}
+{"text": "上午，老师在花园里仔细地观察。"}
+{"text": "41加30等于71。"}
+{"text": "74乘以46等于3404。"}
+{"text": "上午，爷爷在操场上仔细地观察。"}
+{"text": "The clever bear jumps in the forest."}
+{"text": "146的平方是21316。"}
+{"text": "数字187是一个自然数。"}
+{"text": "The clever dog sleeps on the hill."}
+{"text": "晚上，老师在图书馆努力地学习。"}
+{"text": "晚上，医生在公园里开心地跑步。"}
+{"text": "220的平方是48400。"}
+{"text": "The red bird jumps in the yard."}
+{"text": "The curious horse runs in the garden."}
+{"text": "假期里，弟弟在图书馆静静地思考。"}
+{"text": "周末，爷爷在操场上仔细地观察。"}
+{"text": "The happy rabbit sleeps in the yard."}
+{"text": "数字111是一个自然数。"}
+{"text": "上午，姐姐在河边开心地跑步。"}
+{"text": "晚上，姐姐在树下开心地跑步。"}
+{"text": "The curious fox rests in the forest."}
+{"text": "The clever horse jumps near the river."}
+{"text": "3 times 4 is 12."}
+{"text": "372的平方是138384。"}
+{"text": "24+47=71"}
+{"text": "傍晚，小红在图书馆开心地跑步。"}
+{"text": "61加41等于102。"}
+{"text": "下午，小红在公园里慢慢地散步。"}
+{"text": "32乘以35等于1120。"}
+{"text": "The happy horse rests in the yard."}
+{"text": "晚上，小红在公园里仔细地观察。"}
+{"text": "假期里，弟弟在图书馆专心地画画。"}
+{"text": "清晨，猫咪在树下开心地跑步。"}
+{"text": "The young dog sleeps in the park."}
+{"text": "下午，猫咪在操场上努力地学习。"}
+{"text": "下午，弟弟在厨房里静静地思考。"}
+{"text": "中午，爷爷在河边慢慢地散步。"}
+{"text": "The red fox sits in the yard."}
+{"text": "43 plus 47 equals 90."}
+{"text": "中午，小狗在厨房里努力地学习。"}
+{"text": "The brave rabbit plays near the river."}
+{"text": "15的平方是225。"}
+{"text": "5乘以62等于310。"}
+{"text": "The clever dog runs near the river."}
+{"text": "The young cat eats on the hill."}
+{"text": "清晨，老师在教室里静静地思考。"}
+{"text": "中午，姐姐在公园里专心地画画。"}
+{"text": "下午，猫咪在河边专心地画画。"}
+{"text": "晚上，老师在厨房里开心地跑步。"}
+{"text": "The red rabbit runs near the river."}
+{"text": "17乘以93等于1581。"}
+{"text": "数字973是一个自然数。"}
+{"text": "82乘以37等于3034。"}
+{"text": "The small rabbit plays under the tree."}
+{"text": "48+85=133"}
+{"text": "中午，奶奶在树下专心地画画。"}
+{"text": "26乘以34等于884。"}
+{"text": "430的平方是184900。"}
+{"text": "中午，爷爷在公园里努力地学习。"}
+{"text": "傍晚，弟弟在教室里开心地跑步。"}
+{"text": "The black bird sits in the forest."}
+{"text": "数字570是一个自然数。"}
+{"text": "254的平方是64516。"}
+{"text": "中午，小红在公园里慢慢地散步。"}
+{"text": "28乘以12等于336。"}
+{"text": "The black dog rests in the yard."}
+{"text": "上午，小狗在树下开心地跑步。"}
+{"text": "The clever bird sits on the hill."}
+{"text": "26+66=92"}
+{"text": "傍晚，猫咪在图书馆仔细地观察。"}
+{"text": "78×43=3354"}
+{"text": "36 plus 40 equals 76."}
+{"text": "29+73=102"}
+{"text": "The brave dog walks on the farm."}
+{"text": "晚上，老师在图书馆安静地读书。"}
+{"text": "上午，老师在花园里快乐地唱歌。"}
+{"text": "数字797是一个自然数。"}
+{"text": "傍晚，医生在厨房里静静地思考。"}
+{"text": "The red bear sleeps in the park."}
+{"text": "The curious monkey sits in the forest."}
+{"text": "72+15=87"}
+{"text": "数字252是一个自然数。"}
+{"text": "下午，机器人在树下慢慢地散步。"}
+{"text": "上午，姐姐在厨房里专心地画画。"}
+{"text": "数字558是一个自然数。"}
+{"text": "数字971是一个自然数。"}
+{"text": "中午，老师在教室里慢慢地散步。"}
+{"text": "下午，老师在公园里认真地写字。"}
+{"text": "75+78=153"}
+{"text": "37 plus 13 equals 50."}
+{"text": "假期里，小狗在厨房里静静地思考。"}
+{"text": "73×57=4161"}
+{"text": "数字494是一个自然数。"}
+{"text": "清晨，医生在花园里静静地思考。"}
+{"text": "0 plus 35 equals 35."}
+{"text": "50乘以58等于2900。"}
+{"text": "数字417是一个自然数。"}
+{"text": "55 plus 34 equals 89."}
+{"text": "The red monkey rests in the yard."}
+{"text": "清晨，姐姐在河边慢慢地散步。"}
+{"text": "7×6=42"}
+{"text": "6 times 5 is 30."}
+{"text": "48+26=74"}
+{"text": "17加49等于66。"}
+{"text": "晚上，小明在公园里认真地写字。"}
+{"text": "The young bear walks under the tree."}
+{"text": "77 plus 52 equals 129."}
+{"text": "15×10=150"}
+{"text": "98的平方是9604。"}
+{"text": "56+63=119"}
+{"text": "假期里，弟弟在树下安静地读书。"}
+{"text": "38 plus 70 equals 108."}
+{"text": "清晨，医生在厨房里安静地读书。"}
+{"text": "81+33=114"}
+{"text": "清晨，小狗在厨房里静静地思考。"}
+{"text": "73 plus 27 equals 100."}
+{"text": "162的平方是26244。"}
+{"text": "晚上，机器人在图书馆静静地思考。"}
+{"text": "清晨，老师在教室里安静地读书。"}
+{"text": "The happy dog sits in the yard."}
+{"text": "62+50=112"}
+{"text": "数字69是一个自然数。"}
+{"text": "The black bear eats under the tree."}
+{"text": "The young fox sleeps in the yard."}
+{"text": "The young monkey jumps under the tree."}
+{"text": "88+87=175"}
+{"text": "96加13等于109。"}
+{"text": "43 plus 37 equals 80."}
+{"text": "数字820是一个自然数。"}
+{"text": "The brave horse plays under the tree."}
+{"text": "晚上，小红在厨房里安静地读书。"}
+{"text": "3 times 1 is 3."}
+{"text": "数字199是一个自然数。"}
+{"text": "The clever rabbit plays in the forest."}
+{"text": "晚上，机器人在教室里静静地思考。"}
+{"text": "29加83等于112。"}
+{"text": "晚上，猫咪在花园里开心地跑步。"}
+{"text": "68加92等于160。"}
+{"text": "30加13等于43。"}
+{"text": "下午，小明在教室里静静地思考。"}
+{"text": "The brave horse sits in the yard."}
+{"text": "0乘以68等于0。"}
+{"text": "95 plus 87 equals 182."}
+{"text": "The small rabbit jumps in the yard."}
+{"text": "假期里，小红在树下认真地写字。"}
+{"text": "数字224是一个自然数。"}
+{"text": "12×27=324"}
+{"text": "4 times 5 is 20."}
+{"text": "60+90=150"}
+{"text": "傍晚，老师在花园里开心地跑步。"}
+{"text": "9 times 9 is 81."}
+{"text": "The young bird sits in the garden."}
+{"text": "21+77=98"}
+{"text": "57 plus 85 equals 142."}
+{"text": "The clever cat jumps on the farm."}
+{"text": "58加73等于131。"}
+{"text": "52加64等于116。"}
+{"text": "The black rabbit eats near the river."}
+{"text": "57×27=1539"}
+{"text": "中午，老师在操场上开心地跑步。"}
+{"text": "数字132是一个自然数。"}
+{"text": "49×0=0"}
+{"text": "The black monkey sits under the tree."}
+{"text": "82加14等于96。"}
+{"text": "The small bear eats in the garden."}
+{"text": "The brave dog jumps on the hill."}
+{"text": "31+21=52"}
+{"text": "上午，小狗在图书馆慢慢地散步。"}
+{"text": "7 times 1 is 7."}
+{"text": "周末，小红在教室里安静地读书。"}
+{"text": "The small rabbit jumps on the farm."}
+{"text": "The happy rabbit sleeps in the forest."}
+{"text": "假期里，小明在公园里慢慢地散步。"}
+{"text": "下午，机器人在公园里静静地思考。"}
+{"text": "The black monkey plays in the park."}
+{"text": "71+61=132"}
+{"text": "The black monkey plays near the river."}
+{"text": "The red fox plays in the forest."}
+{"text": "15 plus 45 equals 60."}
+{"text": "17+93=110"}
+{"text": "The curious cat eats in the garden."}
+{"text": "The red monkey runs under the tree."}
+{"text": "423的平方是178929。"}
+{"text": "80乘以3等于240。"}
+{"text": "29加58等于87。"}
+{"text": "97的平方是9409。"}
+{"text": "91乘以32等于2912。"}
+{"text": "13×20=260"}
+{"text": "26乘以10等于260。"}
+{"text": "The happy cat sleeps in the park."}
+{"text": "43+45=88"}
+{"text": "中午，机器人在教室里安静地读书。"}
+{"text": "57加66等于123。"}
+{"text": "42+62=104"}
+{"text": "78×64=4992"}
+{"text": "The young horse runs in the park."}
+{"text": "中午，姐姐在操场上安静地读书。"}
+{"text": "The small rabbit rests on the hill."}
+{"text": "83的平方是6889。"}
+{"text": "The young bear sits near the river."}
+{"text": "10加19等于29。"}
+{"text": "The clever cat walks under the tree."}
+{"text": "上午，机器人在厨房里认真地写字。"}
+{"text": "假期里，老师在花园里安静地读书。"}
+{"text": "8+23=31"}
+{"text": "周末，奶奶在花园里认真地写字。"}
+{"text": "上午，姐姐在图书馆专心地画画。"}
+{"text": "清晨，奶奶在教室里仔细地观察。"}
+{"text": "The small monkey walks in the forest."}
+{"text": "84的平方是7056。"}
+{"text": "58加87等于145。"}
+{"text": "403的平方是162409。"}
+{"text": "晚上，爷爷在厨房里仔细地观察。"}
+{"text": "The brave dog jumps in the garden."}
+{"text": "The young horse walks in the yard."}
+{"text": "The clever rabbit sits in the park."}
+{"text": "The happy bird sleeps on the hill."}
+{"text": "周末，猫咪在树下快乐地唱歌。"}
+{"text": "中午，机器人在厨房里静静地思考。"}
+{"text": "上午，老师在操场上努力地学习。"}
+{"text": "39乘以68等于2652。"}
+{"text": "周末，猫咪在操场上认真地写字。"}
+{"text": "The happy horse eats in the yard."}
+{"text": "The brave horse eats on the farm."}
+{"text": "周末，爷爷在图书馆安静地读书。"}
+{"text": "The small bird jumps near the river."}
+{"text": "上午，奶奶在河边慢慢地散步。"}
+{"text": "58 plus 68 equals 126."}
+{"text": "The happy rabbit plays in the garden."}
+{"text": "晚上，小明在教室里快乐地唱歌。"}
+{"text": "The curious bird rests near the river."}
+{"text": "The young rabbit jumps under the tree."}
+{"text": "The clever fox rests near the river."}
+{"text": "晚上，猫咪在花园里专心地画画。"}
+{"text": "数字877是一个自然数。"}
+{"text": "周末，机器人在花园里快乐地唱歌。"}
+{"text": "The curious fox plays in the park."}
+{"text": "The young rabbit rests near the river."}
+{"text": "76+27=103"}
+{"text": "The clever bird sleeps under the tree."}
+{"text": "上午，医生在图书馆专心地画画。"}
+{"text": "17×43=731"}
+{"text": "数字531是一个自然数。"}
+{"text": "56 plus 58 equals 114."}
+{"text": "下午，姐姐在操场上努力地学习。"}
+{"text": "The red horse sleeps in the forest."}
+{"text": "数字511是一个自然数。"}
+{"text": "The young horse jumps in the yard."}
+{"text": "The happy bird runs in the forest."}
+{"text": "上午，小明在图书馆开心地跑步。"}
+{"text": "中午，老师在教室里认真地写字。"}
+{"text": "361的平方是130321。"}
+{"text": "数字3是一个自然数。"}
+{"text": "25×97=2425"}
+{"text": "周末，机器人在树下安静地读书。"}
+{"text": "89的平方是7921。"}
+{"text": "The young bird rests in the garden."}
+{"text": "The black bear rests in the garden."}
+{"text": "36加52等于88。"}
+{"text": "62乘以91等于5642。"}
+{"text": "The brave monkey plays on the farm."}
+{"text": "26加46等于72。"}
+{"text": "晚上，小明在厨房里静静地思考。"}
+{"text": "47乘以78等于3666。"}
+{"text": "数字669是一个自然数。"}
+{"text": "86乘以37等于3182。"}
+{"text": "The small bird sleeps in the park."}
+{"text": "43+52=95"}
+{"text": "360的平方是129600。"}
+{"text": "数字186是一个自然数。"}
+{"text": "46 plus 86 equals 132."}
+{"text": "The young monkey sits near the river."}
+{"text": "下午，医生在图书馆仔细地观察。"}
+{"text": "The happy cat jumps on the farm."}
+{"text": "The brave horse sleeps in the forest."}
+{"text": "6+37=43"}
+{"text": "1 times 7 is 7."}
+{"text": "67×89=5963"}
+{"text": "晚上，小明在操场上专心地画画。"}
+{"text": "31乘以19等于589。"}
+{"text": "周末，小明在厨房里努力地学习。"}
+{"text": "The young fox plays on the hill."}
+{"text": "55+82=137"}
+{"text": "周末，姐姐在树下慢慢地散步。"}
+{"text": "26乘以66等于1716。"}
+{"text": "中午，小明在花园里安静地读书。"}
+{"text": "123的平方是15129。"}
+{"text": "The clever rabbit runs near the river."}
+{"text": "The small horse plays on the farm."}
+{"text": "The small horse sits on the farm."}
+{"text": "The brave cat runs near the river."}
+{"text": "82乘以91等于7462。"}
+{"text": "37加61等于98。"}
+{"text": "The curious bear eats in the forest."}
+{"text": "上午，猫咪在厨房里快乐地唱歌。"}
+{"text": "傍晚，机器人在图书馆努力地学习。"}
+{"text": "周末，猫咪在公园里专心地画画。"}
+{"text": "39+42=81"}
+{"text": "The black fox jumps under the tree."}
+{"text": "数字64是一个自然数。"}
+{"text": "The clever bear sits on the hill."}
+{"text": "54 plus 75 equals 129."}
+{"text": "The happy fox eats on the hill."}
+{"text": "The clever dog jumps in the forest."}
+{"text": "The red monkey plays on the farm."}
+{"text": "周末，奶奶在操场上开心地跑步。"}
+{"text": "The small dog sits on the farm."}
+{"text": "清晨，弟弟在教室里安静地读书。"}
+{"text": "晚上，小狗在河边专心地画画。"}
+{"text": "The clever bear jumps on the farm."}
+{"text": "下午，爷爷在教室里慢慢地散步。"}
+{"text": "The black cat sleeps on the farm."}
+{"text": "159的平方是25281。"}
+{"text": "The red monkey jumps on the hill."}
+{"text": "数字535是一个自然数。"}
+{"text": "19×15=285"}
+{"text": "傍晚，弟弟在花园里安静地读书。"}
+{"text": "The small horse plays in the garden."}
+{"text": "下午，小红在花园里慢慢地散步。"}
+{"text": "The red monkey rests in the forest."}
+{"text": "假期里，小红在树下努力地学习。"}
+{"text": "下午，弟弟在花园里开心地跑步。"}
+{"text": "上午，机器人在树下开心地跑步。"}
+{"text": "28乘以37等于1036。"}
+{"text": "数字93是一个自然数。"}
+{"text": "56乘以79等于4424。"}
+{"text": "The brave monkey runs in the park."}
+{"text": "The clever bear plays in the yard."}
+{"text": "83×1=83"}
+{"text": "The happy monkey plays in the garden."}
+{"text": "14乘以55等于770。"}
+{"text": "假期里，小狗在河边慢慢地散步。"}
+{"text": "70×81=5670"}
+{"text": "傍晚，小明在教室里专心地画画。"}
+{"text": "下午，小红在操场上专心地画画。"}
+{"text": "81×33=2673"}
+{"text": "中午，爷爷在河边开心地跑步。"}
+{"text": "傍晚，姐姐在教室里仔细地观察。"}
+{"text": "The clever cat sits under the tree."}
+{"text": "下午，小明在公园里静静地思考。"}
+{"text": "11的平方是121。"}
+{"text": "76加5等于81。"}
+{"text": "The clever dog sits in the park."}
+{"text": "29乘以73等于2117。"}
+{"text": "The happy bird walks in the yard."}
+{"text": "晚上，小明在厨房里开心地跑步。"}
+{"text": "11加97等于108。"}
+{"text": "8 times 9 is 72."}
+{"text": "31加32等于63。"}
+{"text": "75 plus 38 equals 113."}
+{"text": "5 times 5 is 25."}
+{"text": "The curious horse runs on the farm."}
+{"text": "The red horse plays near the river."}
+{"text": "The young rabbit walks on the hill."}
+{"text": "傍晚，小明在操场上慢慢地散步。"}
+{"text": "23×44=1012"}
+{"text": "1×41=41"}
+{"text": "14的平方是196。"}
+{"text": "假期里，老师在教室里努力地学习。"}
+{"text": "数字281是一个自然数。"}
+{"text": "傍晚，奶奶在教室里努力地学习。"}
+{"text": "The curious cat walks in the yard."}
+{"text": "31加64等于95。"}
+{"text": "The curious bear runs on the hill."}
+{"text": "上午，奶奶在树下专心地画画。"}
+{"text": "47×15=705"}
+{"text": "The happy cat eats on the hill."}
+{"text": "The clever rabbit runs in the yard."}
+{"text": "81×71=5751"}
+{"text": "上午，小狗在操场上认真地写字。"}
+{"text": "The happy bird eats near the river."}
+{"text": "晚上，奶奶在厨房里慢慢地散步。"}
+{"text": "The brave monkey plays under the tree."}
+{"text": "51加85等于136。"}
+{"text": "The black fox eats in the park."}
+{"text": "中午，姐姐在河边安静地读书。"}
+{"text": "清晨，姐姐在图书馆慢慢地散步。"}
+{"text": "5+62=67"}
+{"text": "The happy bird jumps on the hill."}
+{"text": "清晨，奶奶在厨房里静静地思考。"}
+{"text": "假期里，机器人在图书馆慢慢地散步。"}
+{"text": "The curious rabbit eats in the forest."}
+{"text": "下午，弟弟在公园里专心地画画。"}
+{"text": "62加91等于153。"}
+{"text": "14×5=70"}
+{"text": "The clever rabbit plays near the river."}
+{"text": "The clever bear runs on the farm."}
+{"text": "The clever monkey sleeps on the farm."}
+{"text": "The clever fox rests in the yard."}
+{"text": "33×48=1584"}
+{"text": "The young horse walks on the hill."}
+{"text": "The curious dog eats in the park."}
+{"text": "26 plus 41 equals 67."}
+{"text": "The curious bear runs in the park."}
+{"text": "92×65=5980"}
+{"text": "上午，奶奶在树下安静地读书。"}
+{"text": "53 plus 87 equals 140."}
+{"text": "假期里，老师在树下努力地学习。"}
+{"text": "46乘以76等于3496。"}
+{"text": "晚上，老师在图书馆开心地跑步。"}
+{"text": "The curious cat runs in the garden."}
+{"text": "数字253是一个自然数。"}
+{"text": "94+66=160"}
+{"text": "8 times 1 is 8."}
+{"text": "The clever bird runs near the river."}
+{"text": "22的平方是484。"}
+{"text": "下午，姐姐在操场上专心地画画。"}
+{"text": "晚上，小狗在操场上开心地跑步。"}
+{"text": "5 times 9 is 45."}
+{"text": "中午，姐姐在教室里安静地读书。"}
+{"text": "上午，猫咪在厨房里静静地思考。"}
+{"text": "上午，小明在操场上仔细地观察。"}
+{"text": "The red rabbit sleeps in the park."}
+{"text": "18乘以63等于1134。"}
+{"text": "45乘以29等于1305。"}
+{"text": "37 plus 56 equals 93."}
+{"text": "假期里，奶奶在树下快乐地唱歌。"}
+{"text": "数字858是一个自然数。"}
+{"text": "中午，弟弟在操场上快乐地唱歌。"}
+{"text": "晚上，猫咪在操场上努力地学习。"}
+{"text": "64+26=90"}
+{"text": "The young bird eats on the farm."}
+{"text": "下午，小明在树下快乐地唱歌。"}
+{"text": "63+12=75"}
+{"text": "2 times 5 is 10."}
+{"text": "86乘以71等于6106。"}
+{"text": "459的平方是210681。"}
+{"text": "15+86=101"}
+{"text": "The clever dog plays in the forest."}
+{"text": "傍晚，医生在厨房里慢慢地散步。"}
+{"text": "傍晚，医生在河边快乐地唱歌。"}
+{"text": "The small bird sleeps under the tree."}
+{"text": "数字43是一个自然数。"}
+{"text": "The red rabbit sleeps in the garden."}
+{"text": "中午，小明在操场上专心地画画。"}
+{"text": "数字516是一个自然数。"}
+{"text": "The happy horse runs in the yard."}
+{"text": "清晨，弟弟在厨房里快乐地唱歌。"}
+{"text": "4 times 8 is 32."}
+{"text": "数字445是一个自然数。"}
+{"text": "假期里，小红在厨房里静静地思考。"}
+{"text": "The black dog sits in the forest."}
+{"text": "The young cat jumps on the farm."}
+{"text": "2 times 3 is 6."}
+{"text": "48乘以26等于1248。"}
+{"text": "The brave cat rests in the forest."}
+{"text": "数字217是一个自然数。"}
+{"text": "The happy dog eats near the river."}
+{"text": "The happy bird rests in the forest."}
+{"text": "The red bear sits in the garden."}
+{"text": "数字928是一个自然数。"}
+{"text": "晚上，奶奶在河边慢慢地散步。"}
+{"text": "清晨，姐姐在教室里努力地学习。"}
+{"text": "The brave dog rests under the tree."}
+{"text": "36加5等于41。"}
+{"text": "The brave monkey sleeps on the hill."}
+{"text": "494的平方是244036。"}
+{"text": "The small bird jumps in the garden."}
+{"text": "晚上，小狗在花园里慢慢地散步。"}
+{"text": "下午，奶奶在花园里仔细地观察。"}
+{"text": "84×62=5208"}
+{"text": "The small bird sits in the forest."}
+{"text": "数字920是一个自然数。"}
+{"text": "数字182是一个自然数。"}
+{"text": "51乘以29等于1479。"}
+{"text": "49+83=132"}
+{"text": "傍晚，猫咪在图书馆认真地写字。"}
+{"text": "The curious dog jumps in the forest."}
+{"text": "33加20等于53。"}
+{"text": "The red horse eats in the forest."}
+{"text": "数字66是一个自然数。"}
+{"text": "The red monkey sleeps on the hill."}
+{"text": "清晨，医生在厨房里开心地跑步。"}
+{"text": "清晨，医生在操场上仔细地观察。"}
+{"text": "69乘以73等于5037。"}
+{"text": "The red horse runs near the river."}
+{"text": "87的平方是7569。"}
+{"text": "数字724是一个自然数。"}
+{"text": "41×43=1763"}
+{"text": "The brave bear sleeps in the forest."}
+{"text": "The black bird jumps near the river."}
+{"text": "The brave monkey sleeps on the farm."}
+{"text": "The black fox jumps in the park."}
+{"text": "52+37=89"}
+{"text": "数字763是一个自然数。"}
+{"text": "数字338是一个自然数。"}
+{"text": "The black monkey rests on the hill."}
+{"text": "17乘以38等于646。"}
+{"text": "The young bear sleeps on the hill."}
+{"text": "假期里，小狗在操场上专心地画画。"}
+{"text": "96×76=7296"}
+{"text": "The happy monkey sleeps in the yard."}
+{"text": "54乘以56等于3024。"}
+{"text": "48 plus 47 equals 95."}
+{"text": "周末，小狗在花园里仔细地观察。"}
+{"text": "假期里，猫咪在教室里仔细地观察。"}
+{"text": "上午，弟弟在花园里专心地画画。"}
+{"text": "78加46等于124。"}
+{"text": "傍晚，奶奶在教室里专心地画画。"}
+{"text": "79×56=4424"}
+{"text": "清晨，姐姐在公园里仔细地观察。"}
+{"text": "73乘以67等于4891。"}
+{"text": "23+49=72"}
+{"text": "5乘以81等于405。"}
+{"text": "85加61等于146。"}
+{"text": "傍晚，弟弟在公园里开心地跑步。"}
+{"text": "8乘以59等于472。"}
+{"text": "数字150是一个自然数。"}
+{"text": "70加97等于167。"}
+{"text": "87×54=4698"}
+{"text": "下午，弟弟在教室里安静地读书。"}
+{"text": "The small bear jumps in the park."}
+{"text": "65×68=4420"}
+{"text": "数字416是一个自然数。"}
+{"text": "The clever rabbit eats under the tree."}
+{"text": "假期里，小红在操场上仔细地观察。"}
+{"text": "84 plus 25 equals 109."}
+{"text": "The young bird jumps on the hill."}
+{"text": "清晨，小明在河边慢慢地散步。"}
+{"text": "94×66=6204"}
+{"text": "The clever cat eats in the forest."}
+{"text": "91+94=185"}
+{"text": "The young bird rests on the farm."}
+{"text": "中午，爷爷在花园里慢慢地散步。"}
+{"text": "周末，小明在操场上静静地思考。"}
+{"text": "42×36=1512"}
+{"text": "21加65等于86。"}
+{"text": "中午，小狗在厨房里认真地写字。"}
+{"text": "6 times 1 is 6."}
+{"text": "数字474是一个自然数。"}
+{"text": "54+56=110"}
+{"text": "The brave fox eats in the garden."}
+{"text": "325的平方是105625。"}
+{"text": "晚上，爷爷在河边认真地写字。"}
+{"text": "数字758是一个自然数。"}
+{"text": "The young dog jumps on the farm."}
+{"text": "The red bird rests in the garden."}
+{"text": "数字517是一个自然数。"}
+{"text": "21+74=95"}
+{"text": "清晨，小明在花园里开心地跑步。"}
+{"text": "84+73=157"}
+{"text": "The young horse rests on the hill."}
+{"text": "78乘以69等于5382。"}
+{"text": "清晨，小明在公园里快乐地唱歌。"}
+{"text": "中午，老师在公园里专心地画画。"}
+{"text": "上午，猫咪在河边快乐地唱歌。"}
+{"text": "50 plus 59 equals 109."}
+{"text": "The black bird sits in the park."}
+{"text": "下午，弟弟在教室里快乐地唱歌。"}
+{"text": "The curious cat jumps in the yard."}
+{"text": "The red rabbit walks in the garden."}
+{"text": "清晨，弟弟在河边认真地写字。"}
+{"text": "数字274是一个自然数。"}
+{"text": "The young bird jumps near the river."}
+{"text": "The young rabbit plays on the farm."}
+{"text": "晚上，老师在树下仔细地观察。"}
+{"text": "58+56=114"}
+{"text": "The red rabbit jumps in the park."}
+{"text": "The happy dog walks in the forest."}
+{"text": "假期里，奶奶在树下慢慢地散步。"}
+{"text": "下午，弟弟在教室里认真地写字。"}
+{"text": "86乘以36等于3096。"}
+{"text": "3 times 3 is 9."}
+{"text": "16 plus 0 equals 16."}
+{"text": "55 plus 16 equals 71."}
+{"text": "391的平方是152881。"}
+{"text": "62乘以50等于3100。"}
+{"text": "周末，爷爷在厨房里快乐地唱歌。"}
+{"text": "上午，小红在厨房里仔细地观察。"}
+{"text": "傍晚，爷爷在树下专心地画画。"}
+{"text": "假期里，奶奶在公园里开心地跑步。"}
+{"text": "下午，小狗在树下开心地跑步。"}
+{"text": "中午，小狗在花园里专心地画画。"}
+{"text": "311的平方是96721。"}
+{"text": "清晨，姐姐在河边开心地跑步。"}
+{"text": "The brave horse runs near the river."}
+{"text": "The curious dog sits in the yard."}
+{"text": "数字857是一个自然数。"}
+{"text": "周末，小狗在花园里开心地跑步。"}
+{"text": "The happy cat runs on the hill."}
+{"text": "The clever fox jumps in the yard."}
+{"text": "86加71等于157。"}
+{"text": "The brave bear runs in the garden."}
+{"text": "晚上，姐姐在花园里静静地思考。"}
+{"text": "中午，机器人在树下开心地跑步。"}
+{"text": "上午，奶奶在花园里认真地写字。"}
+{"text": "The black fox jumps in the forest."}
+{"text": "The happy bird jumps on the farm."}
+{"text": "56+24=80"}
+{"text": "假期里，医生在花园里慢慢地散步。"}
+{"text": "晚上，爷爷在树下慢慢地散步。"}
+{"text": "The young bird sits on the farm."}
+{"text": "42加36等于78。"}
+{"text": "The young horse plays under the tree."}
+{"text": "88加22等于110。"}
+{"text": "The clever bear jumps in the garden."}
+{"text": "周末，小狗在厨房里认真地写字。"}
+{"text": "The brave dog sleeps in the garden."}
+{"text": "The brave bird jumps in the park."}
+{"text": "周末，医生在树下专心地画画。"}
+{"text": "上午，机器人在教室里开心地跑步。"}
+{"text": "67加7等于74。"}
+{"text": "The brave rabbit walks in the forest."}
+{"text": "The happy rabbit rests near the river."}
+{"text": "周末，小明在图书馆仔细地观察。"}
+{"text": "The curious fox jumps in the yard."}
+{"text": "The clever bird sits in the yard."}
+{"text": "The curious monkey rests near the river."}
+{"text": "44乘以59等于2596。"}
+{"text": "The small monkey walks in the yard."}
+{"text": "48乘以85等于4080。"}
+{"text": "假期里，猫咪在树下专心地画画。"}
+{"text": "85×0=0"}
+{"text": "43的平方是1849。"}
+{"text": "晚上，猫咪在操场上静静地思考。"}
+{"text": "55×74=4070"}
+{"text": "58×25=1450"}
+{"text": "假期里，小明在教室里静静地思考。"}
+{"text": "周末，爷爷在公园里认真地写字。"}
+{"text": "The young bird rests under the tree."}
+{"text": "The small rabbit eats under the tree."}
+{"text": "下午，小明在厨房里专心地画画。"}
+{"text": "假期里，机器人在操场上认真地写字。"}
+{"text": "傍晚，小明在花园里开心地跑步。"}
+{"text": "The young cat walks in the garden."}
+{"text": "93 plus 66 equals 159."}
+{"text": "数字603是一个自然数。"}
+{"text": "28加98等于126。"}
+{"text": "50+78=128"}
+{"text": "The happy cat plays on the hill."}
+{"text": "The happy dog walks in the garden."}
+{"text": "81乘以90等于7290。"}
+{"text": "The clever dog sits in the garden."}
+{"text": "The curious bird plays under the tree."}
+{"text": "The red bird sleeps in the yard."}
+{"text": "数字606是一个自然数。"}
+{"text": "数字648是一个自然数。"}
+{"text": "The black cat runs in the yard."}
+{"text": "The small cat sits in the yard."}
+{"text": "假期里，老师在树下专心地画画。"}
+{"text": "The red horse rests in the garden."}
+{"text": "0加66等于66。"}
+{"text": "The small fox runs on the hill."}
+{"text": "下午，老师在树下专心地画画。"}
+{"text": "73 plus 83 equals 156."}
+{"text": "44×32=1408"}
+{"text": "数字697是一个自然数。"}
+{"text": "The happy horse eats on the hill."}
+{"text": "The clever bear sits under the tree."}
+{"text": "晚上，机器人在树下安静地读书。"}
+{"text": "傍晚，弟弟在厨房里慢慢地散步。"}
+{"text": "The clever fox sits in the yard."}
+{"text": "The brave dog jumps on the farm."}
+{"text": "98加49等于147。"}
+{"text": "The young bear sleeps under the tree."}
+{"text": "70 plus 48 equals 118."}
+{"text": "The small bird rests in the garden."}
+{"text": "The clever dog runs on the farm."}
+{"text": "清晨，医生在操场上努力地学习。"}
+{"text": "26×65=1690"}
+{"text": "数字721是一个自然数。"}
+{"text": "88+93=181"}
+{"text": "晚上，猫咪在树下专心地画画。"}
+{"text": "63加51等于114。"}
+{"text": "The brave bird walks in the forest."}
+{"text": "清晨，奶奶在树下专心地画画。"}
+{"text": "153的平方是23409。"}
+{"text": "36 plus 37 equals 73."}
+{"text": "The black bird walks in the garden."}
+{"text": "周末，小狗在教室里认真地写字。"}
+{"text": "The curious monkey sleeps in the forest."}
+{"text": "傍晚，老师在花园里快乐地唱歌。"}
+{"text": "The small dog runs near the river."}
+{"text": "478的平方是228484。"}
+{"text": "傍晚，医生在树下快乐地唱歌。"}
+{"text": "数字159是一个自然数。"}
+{"text": "20加23等于43。"}
+{"text": "16+21=37"}
+{"text": "数字145是一个自然数。"}
+{"text": "中午，奶奶在操场上仔细地观察。"}
+{"text": "晚上，小明在树下专心地画画。"}
+{"text": "80加29等于109。"}
+{"text": "118的平方是13924。"}
+{"text": "142的平方是20164。"}
+{"text": "假期里，小狗在树下慢慢地散步。"}
+{"text": "The small fox sleeps in the yard."}
+{"text": "16×21=336"}
+{"text": "The happy dog runs on the farm."}
+{"text": "The red fox jumps on the farm."}
+{"text": "The black rabbit plays in the forest."}
+{"text": "周末，爷爷在操场上安静地读书。"}
+{"text": "中午，老师在树下认真地写字。"}
+{"text": "The happy dog runs in the yard."}
+{"text": "假期里，小明在公园里专心地画画。"}
+{"text": "上午，猫咪在操场上开心地跑步。"}
+{"text": "The clever dog rests in the yard."}
+{"text": "The curious bear walks near the river."}
+{"text": "The red dog sits on the hill."}
+{"text": "下午，老师在花园里努力地学习。"}
+{"text": "下午，医生在教室里仔细地观察。"}
+{"text": "数字759是一个自然数。"}
+{"text": "数字604是一个自然数。"}
+{"text": "下午，姐姐在树下努力地学习。"}
+{"text": "80乘以29等于2320。"}
+{"text": "上午，弟弟在河边快乐地唱歌。"}
+{"text": "The young bird walks on the farm."}
+{"text": "The red bear eats on the hill."}
+{"text": "35+51=86"}
+{"text": "The brave fox rests under the tree."}
+{"text": "The small fox rests under the tree."}
+{"text": "16加28等于44。"}
+{"text": "The small fox eats under the tree."}
+{"text": "44的平方是1936。"}
+{"text": "假期里，姐姐在公园里认真地写字。"}
+{"text": "下午，奶奶在教室里快乐地唱歌。"}
+{"text": "The happy fox sleeps on the hill."}
+{"text": "The red monkey sits in the yard."}
+{"text": "The happy rabbit walks on the farm."}
+{"text": "The small rabbit plays on the hill."}
+{"text": "数字385是一个自然数。"}
+{"text": "68乘以51等于3468。"}
+{"text": "The clever bear sits in the forest."}
+{"text": "The black bird eats in the garden."}
+{"text": "71×61=4331"}
+{"text": "82×14=1148"}
+{"text": "The clever bird runs on the farm."}
+{"text": "22+22=44"}
+{"text": "98×37=3626"}
+{"text": "The brave monkey sleeps in the garden."}
+{"text": "20乘以23等于460。"}
+{"text": "The young fox sleeps in the park."}
+{"text": "The curious fox sits near the river."}
+{"text": "下午，奶奶在树下慢慢地散步。"}
+{"text": "183的平方是33489。"}
+{"text": "The clever monkey sleeps in the yard."}
+{"text": "清晨，猫咪在花园里认真地写字。"}
+{"text": "傍晚，小狗在河边仔细地观察。"}
+{"text": "233的平方是54289。"}
+{"text": "99+36=135"}
+{"text": "上午，老师在河边认真地写字。"}
+{"text": "数字37是一个自然数。"}
+{"text": "80乘以85等于6800。"}
+{"text": "The black fox sleeps on the hill."}
+{"text": "上午，小明在教室里快乐地唱歌。"}
+{"text": "6+94=100"}
+{"text": "晚上，小狗在教室里快乐地唱歌。"}
+{"text": "傍晚，姐姐在河边努力地学习。"}
+{"text": "数字500是一个自然数。"}
+{"text": "443的平方是196249。"}
+{"text": "The curious monkey walks under the tree."}
+{"text": "The curious rabbit rests in the forest."}
+{"text": "76 plus 72 equals 148."}
+{"text": "96×74=7104"}
+{"text": "数字104是一个自然数。"}
+{"text": "70乘以33等于2310。"}
+{"text": "The red horse walks on the farm."}
+{"text": "The curious horse jumps on the hill."}
+{"text": "The brave bear jumps on the farm."}
+{"text": "上午，老师在公园里仔细地观察。"}
+{"text": "数字412是一个自然数。"}
+{"text": "The black fox runs near the river."}
+{"text": "33加13等于46。"}
+{"text": "99乘以36等于3564。"}
+{"text": "19 plus 22 equals 41."}
+{"text": "中午，奶奶在河边安静地读书。"}
+{"text": "99 plus 11 equals 110."}
+{"text": "周末，小狗在公园里专心地画画。"}
+{"text": "数字923是一个自然数。"}
+{"text": "388的平方是150544。"}
+{"text": "傍晚，老师在操场上专心地画画。"}
+{"text": "The small fox sleeps near the river."}
+{"text": "数字202是一个自然数。"}
+{"text": "The clever dog plays on the farm."}
+{"text": "The small horse rests near the river."}
+{"text": "下午，奶奶在河边仔细地观察。"}
+{"text": "数字543是一个自然数。"}
+{"text": "The young bird plays on the farm."}
+{"text": "The black bear plays on the farm."}
+{"text": "The red fox jumps near the river."}
+{"text": "The young bird sleeps on the hill."}
+{"text": "The curious cat plays in the yard."}
+{"text": "69加29等于98。"}
+{"text": "The red bear rests on the hill."}
+{"text": "晚上，小狗在厨房里努力地学习。"}
+{"text": "83加79等于162。"}
+{"text": "The brave fox plays near the river."}
+{"text": "晚上，小红在教室里仔细地观察。"}
+{"text": "上午，姐姐在公园里开心地跑步。"}
+{"text": "The black dog runs in the forest."}
+{"text": "上午，奶奶在操场上快乐地唱歌。"}
+{"text": "假期里，老师在树下快乐地唱歌。"}
+{"text": "5 times 6 is 30."}
+{"text": "周末，小红在河边努力地学习。"}
+{"text": "周末，奶奶在教室里仔细地观察。"}
+{"text": "清晨，奶奶在公园里快乐地唱歌。"}
+{"text": "93+75=168"}
+{"text": "84乘以73等于6132。"}
+{"text": "清晨，小红在花园里安静地读书。"}
+{"text": "75乘以4等于300。"}
+{"text": "5加81等于86。"}
+{"text": "52 plus 78 equals 130."}
+{"text": "The black horse sits in the yard."}
+{"text": "晚上，小明在河边专心地画画。"}
+{"text": "94×94=8836"}
+{"text": "傍晚，小红在公园里安静地读书。"}
+{"text": "The young bear sleeps in the garden."}
+{"text": "The clever bird sits near the river."}
+{"text": "22乘以51等于1122。"}
+{"text": "中午，爷爷在图书馆认真地写字。"}
+{"text": "The happy cat sleeps on the hill."}
+{"text": "清晨，小狗在河边仔细地观察。"}
+{"text": "The small cat plays on the farm."}
+{"text": "90+23=113"}
+{"text": "33+87=120"}
+{"text": "1×46=46"}
+{"text": "中午，小红在操场上安静地读书。"}
+{"text": "86+37=123"}
+{"text": "周末，机器人在花园里认真地写字。"}
+{"text": "26×70=1820"}
+{"text": "56加54等于110。"}
+{"text": "93×52=4836"}
+{"text": "The black monkey rests in the yard."}
+{"text": "下午，小狗在公园里专心地画画。"}
+{"text": "傍晚，机器人在厨房里仔细地观察。"}
+{"text": "49加60等于109。"}
+{"text": "上午，姐姐在花园里开心地跑步。"}
+{"text": "数字839是一个自然数。"}
+{"text": "The red dog runs on the hill."}
+{"text": "The black bird runs near the river."}
+{"text": "55乘以48等于2640。"}
+{"text": "The small dog sleeps on the hill."}
+{"text": "假期里，小红在操场上开心地跑步。"}
+{"text": "数字480是一个自然数。"}
+{"text": "The happy fox sits in the park."}
+{"text": "清晨，姐姐在图书馆仔细地观察。"}
+{"text": "傍晚，猫咪在花园里认真地写字。"}
+{"text": "周末，弟弟在树下专心地画画。"}
+{"text": "36×12=432"}
+{"text": "假期里，医生在花园里安静地读书。"}
+{"text": "数字67是一个自然数。"}
+{"text": "56加79等于135。"}
+{"text": "99 plus 30 equals 129."}
+{"text": "你好。我是CometSpark"}
