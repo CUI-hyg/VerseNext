@@ -16,7 +16,7 @@ model:
   kda_chunk_size: 64
 data:
   batch_size: 1
-  seq_len: 16
+  seq_len: 256
   seed: 42
   drop_last: true
 optim:
@@ -26,34 +26,36 @@ optim:
   beta1: 0.9
   beta2: 0.95
   grad_clip: 1.0
-  warmup_steps: 1
-  max_steps: 3
+  warmup_steps: 200
+  max_steps: 500
   min_lr_ratio: 0.1
 model_name: cometspark
-steps: 3
-log_every: 1
-eval_every: 0
+steps: 500
+log_every: 10
+eval_every: 100
 eval_batches: 20
-ckpt_dir: /tmp/cs_smoke/resume06b/ckpts
-ckpt_every: 1
+ckpt_dir: /mnt/workspace/VerseNext/CometSpark/checkpoints
+ckpt_every: 100
 device: auto
 dtype: auto
 compile: false
-grad_accum_steps: 1
+grad_accum_steps: 16
 seed: 48
-num_threads: 8
+num_threads: 0
 resources:
   enabled: true
   cpu_fraction: 0.5
   mem_fraction: 0.5
   gpu_mem_fraction: 0.5
+  npu_mem_fraction: 0.5
+  npu_core_fraction: 0.5
 lora: null
-loss_plot: false
-save_best_only: false
+loss_plot: true
+save_best_only: true
 save_last: true
-early_stop_patience: 0
+early_stop_patience: 5
 stage: pretrain
 cleanup_intermediate: true
 final_keep_optimizer: true
 plot_every_eval: true
-loss_chunk_size: 8
+loss_chunk_size: 128
