@@ -11,6 +11,10 @@
  *   CANN 7.x/8.x 的 API 名称与参数可能有差异。首次在昇腾上编译时请按报错调整，
  *   参考 CANN 官方 "FlashAttention 算子样例"。
  *
+ * 接入前必读：docs/kernels.md 的「踩过的坑」——本文件尚未按那几条改造
+ * （缺 REGISTER_TILING_DEFAULT、用 TILING_KEY_IS 做 dtype 分派），
+ * 且未纳入 build.sh 的 OPS 列表。
+ *
  * 资源锁 50%：block_dim 由 host 按 AI 核数 × 0.5 下发。
  */
 
@@ -33,7 +37,7 @@ class FlashAttnKernel {
 
   __aicore__ inline void Init(GM_ADDR q, GM_ADDR k, GM_ADDR v, GM_ADDR out,
                               GM_ADDR tiling, GM_ADDR tiling_matmul) {
-    const FlashAttnTiling* t = reinterpret_cast<const FlashAttnTiling*>(tiling);
+    const __gm__ FlashAttnTiling* t = ReadTiling<FlashAttnTiling>(tiling);
     b_ = t->batch;
     h_ = t->heads;
     s_ = t->seq_len;
@@ -67,7 +71,7 @@ class FlashAttnKernel {
     // 以 (bh, q_tile) 为工作单元，按核切分
     const int32_t total_units = bh_total * q_tiles;
     const int32_t unit_begin = core * q_tiles_per_core_;
-    const int32_t unit_end = Min(unit_begin + q_tiles_per_core_, total_units);
+    const int32_t unit_end = MinI(unit_begin + q_tiles_per_core_, total_units);
 
     for (int32_t unit = unit_begin; unit < unit_end; ++unit) {
       const int32_t bh = unit / q_tiles;
@@ -149,8 +153,8 @@ class FlashAttnKernel {
     for (int32_t i = 0; i < rows; ++i) {
       const int32_t off = i * cols;
       ReduceMax(tmp[i], scores[off], tmp, cols);
-      const float m_new = Max(tmp.GetValue(i), m_i.GetValue(i));
-      const float alpha = expf(m_i.GetValue(i) - m_new);
+      const float m_new = MaxS(tmp.GetValue(i), m_i.GetValue(i));
+      const float alpha = ExpS(m_i.GetValue(i) - m_new);
       Exp(scores[off], scores[off], cols);
       ReduceSum(tmp[i], scores[off], tmp, cols);
       l_i.SetValue(i, l_i.GetValue(i) * alpha + tmp.GetValue(i));

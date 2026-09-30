@@ -1,6 +1,6 @@
 # HANDOFF — VerseNext_Exp
 
-工作区交接文档。最后更新：2026-09-26。
+工作区交接文档。最后更新：2026-10-01。
 
 ## 1. 这是什么
 
@@ -40,10 +40,11 @@
   - ROCm 由 hipify 复用同一份 `.cu`；反向用参考实现重放保证梯度正确。
   - 注册到 `torch.ops.verse_nn.*_fwd`（`bindings.cpp`）。
 - **CANN NPU 适配**（`kernels/npu_ops.py` + `csrc/ascend/`）
-  - 优先 CANN 原生融合算子（`npu_rms_norm` / `npu_swiglu` / `npu_rotary_mul` /
-    `npu_fusion_attention` / `npu_fused_infer_attention_score`）。
+  - 优先 CANN 原生融合算子（`npu_add_rms_norm` / `npu_swiglu` / `npu_rotary_mul` /
+    `npu_fusion_attention`）。
   - 其次自研 AscendC 算子（op_host tiling + op_kernel + ACLNN 适配层
-    `bindings_npu.cpp`，`PrivateUse1` dispatch key）。
+    `bindings_npu.cpp`，`PrivateUse1` dispatch key）：`verse_add_rms_norm`、
+    `verse_swiglu` 已在 Ascend 910_9362 上编译、加载、数值对拍通过。
 - **三级回退派发**（`kernels/_dispatch.py`）：自研扩展 → torch 内建 → 参考实现，
   任一级失败静默降级，绝不因算子问题中断训练。`KernelPolicy` 提供全局开关做 A/B。
 - **文档**：`VerseNext/docs/kernels.md`（算子与设备分层、构建、正确性契约、已知限制）。
@@ -59,34 +60,66 @@
 - `tests/test_kernel_build.py` 新增静态一致性校验，防止 Python 引用名与 C++ 注册名
   再次漂移。
 
+### 本次在真实 NPU 上完成的工作（2026-10-01）
+
+环境：Ascend 910_9362（20 Cube / 40 Vector 核）、CANN 9.1.0、torch 2.10.0+cpu、
+torch_npu 2.10.0.post4。
+
+- **`npu_ops.py` 修正**：CANN 原生算子位于 `torch_npu.npu_*`（模块级），
+  不是 `torch.npu.npu_*`（后者不存在，导致**全部静默回退**）。同时修正了
+  `npu_add_rms_norm` 返回 `(y, rstd, res)`、`npu_rotary_mul` 需要 `(1,1,S,D)`
+  系数、`npu_fusion_attention` 需显式因果掩码 + `sparse_mode=0` 等契约。
+- **自研 AscendC 算子跑通**：`verse_add_rms_norm`、`verse_swiglu` 编译、安装、
+  加载并在硬件上数值对拍通过（fp32 ~1e-6 / fp16 ~4e-3）。
+- **`csrc/ascend/build.sh` 重写**：自动探测芯片 → msopgen 生成工程 → 编译安装
+  算子包 → 编 torch 适配层，一条命令跑通。适配层改为直接调 CANN 的 ACL C API
+  （`aclCreateTensor` + `aclnnXxxGetWorkspaceSize/Run`），绕开 `EXEC_NPU_CMD`
+  依赖的 torch_npu 未导出符号。
+- **NPU 环境下的测试修复**：RNG state / LoRA 参数 / 输入 batch 未随设备迁移
+  导致的 6 个失败（`trainer.py`），以及跨 checkpoint 恢复在加速器上的
+  非确定性（`test_resume.py` 放宽为 1e-4，CPU 仍要求逐位相等）。
+- **新增 `tests/test_npu_ops.py`**：24 个用例，直接对拍 CANN 原生算子与自研
+  AscendC 算子，并把参考实现打桩以证明**没有静默回退**。
+
+三个坑（详见 `docs/kernels.md`「踩过的坑」）：自定义算子名不能与 CANN 内建重名；
+kernel 入口必须 `REGISTER_TILING_DEFAULT`；单入口二进制下 `SetTilingKey(0)`。
+
 ### 验证方式
 
 ```bash
 cd VerseNext
 export PYTHONPATH=$(ls -d src/*/ | tr '\n' ':')   # 包未 pip 安装，必须设 PYTHONPATH
-python -m pytest tests/ -q                         # 150 passed, 1 skipped（skip 为无 NPU）
+python -m pytest tests/ -q                         # 175 passed（CPU 机器上 NPU 用例自动 skip）
 ```
 
 ## 3. 未完成 / 待办
 
-1. **CUDA / ROCm / CANN 三条路径均未编译验证**。本机是 `torch 2.3.1+cpu`，无
-   nvcc / hipcc / CANN 工具链，只能做静态一致性检查与「优雅降级」测试。
-   需在对应硬件上实际编译跑通；`bindings_npu.cpp` 的 ACLNN 头文件签名可能要按
-   CANN 版本微调（见 `csrc/ascend/build.sh`）。
-2. **无性能基准**。任务要求 NPU 性能与 GPU 同级，目前没有任何实测数据。
-   `flash_attn.cu` 自述为未用 tensor core 的 SIMT 实现，训练吞吐仍有优化空间。
-3. **CometSpark 端到端回归**未在 GPU/NPU 上跑过，需确认融合算子接入后的真实吞吐。
+1. **CUDA / ROCm 两条路径仍未编译验证**（本机无 nvcc / hipcc）。
+   **CANN NPU 路径已在 Ascend 910_9362 上跑通**：CANN 原生算子与自研
+   `verse_add_rms_norm` / `verse_swiglu` 均已数值验证。
+2. **NPU 侧还有 3 个 AscendC kernel 未接入**：`flash_attn` / `chunked_ce` /
+   `kda_chunk` 的 `op_kernel/*_ascendc.cpp` 仍在仓库里，但未编译验证、未打包，
+   当前由 CANN 原生算子 / 参考实现覆盖。接入前需先按 `docs/kernels.md`
+   「踩过的坑」改造（`REGISTER_TILING_DEFAULT`、`DTYPE_*` 分派、算子改名），
+   再纳入 `build.sh` 的 `OPS` 列表。
+3. **无性能基准**。任务要求 NPU 性能与 GPU 同级，目前只验证了正确性，没有实测
+   吞吐/时延数据。`flash_attn.cu` 自述为未用 tensor core 的 SIMT 实现，
+   训练吞吐仍有优化空间。
+4. **CometSpark 端到端回归**未在 GPU/NPU 上跑过，需确认融合算子接入后的真实吞吐。
 
 ## 4. 环境与注意事项
 
-- **本机无 GPU / NPU**：`torch 2.3.1+cpu`，无 CUDA / ROCm / CANN。
+- **本次工作环境**：Ascend 910_9362 NPU（`ASCEND_VISIBLE_DEVICES=10`）、
+  CANN 9.1.0、`torch 2.10.0+cpu` + `torch_npu 2.10.0.post4`。无 CUDA / ROCm。
 - **凭据安全**：`.codebuddy/models.json`（工作区根与 `VerseNext/` 下各一份）含
   **明文 API key**，已在 `.gitignore` 中排除，切勿提交。建议轮换该 key。
 - **模型权重不入库**：`CometSpark/checkpoints/` 下两个 `.pt` 各约 2.4GB
   （共 4.5GB），超出 GitHub 单文件 100MB 限制，已在 `.gitignore` 排除。
   需要权重请另行分发（对象存储 / Release / Git LFS）。
-- **网络**：本环境 `github.com` 不可达（git 协议超时），仅 `api.github.com` 可达；
-  且未配置 GitHub 凭据。推送与建 PR 需在有凭据/网络的机器上完成，或提供 PAT 走 API。
+- **远端**：`origin` 配的是 `https://v6.gh-proxy.org/https://github.com/CUI-hyg/VerseNext.git`
+  （GitHub 加速代理）。若代理不可达，需换回直连或提供 PAT。
+- **CANN 环境变量**：跑 `build.sh` / NPU 测试前务必
+  `source ${ASCEND_HOME_PATH}/set_env.sh`（本机 `ASCEND_HOME_PATH=/home/developer/Ascend/cann-9.1.0`）。
 
 ## 5. 常用命令
 

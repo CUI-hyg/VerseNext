@@ -5,11 +5,24 @@ AscendC 算子，最后回退参考实现」的顺序尝试：
 
 1. **CANN 原生融合算子**（经 ``torch_npu`` 暴露）——这是昇腾上性能最好的路径，
    由 CANN 图编译器做算子融合与 Cube/Vector 流水：
-   ``npu_rms_norm`` / ``npu_swiglu`` / ``npu_rotary_mul`` /
-   ``npu_fusion_attention``（训练）/ ``npu_fused_infer_attention_score``（推理）。
+
+   ===========================  ==========================================
+   本模块算子                   昇腾原生算子
+   ===========================  ==========================================
+   ``add_rms_norm``             ``torch_npu.npu_add_rms_norm``（残差加与
+                                RMSNorm 一步融合，返回 y/rstd/residual_out）
+   ``swiglu``                   ``torch_npu.npu_swiglu``（沿最后一维切分）
+   ``apply_rope``               ``torch_npu.npu_rotary_mul``（half 模式）
+   ``flash_attention``          ``torch_npu.npu_fusion_attention``（训练，
+                                显式因果掩码 + sparse_mode=0）
+   ===========================  ==========================================
+
+   注意：这些算子在 ``torch_npu`` **模块级**命名空间（``torch_npu.npu_xxx``），
+   而不是 ``torch.npu.npu_xxx``——后者不存在，早期实现曾因此静默全量回退。
+
 2. **自研 AscendC 算子**（``torch.ops.verse_nn.*_fwd``，dispatch key
-   ``PrivateUse1``，见 ``csrc/ascend``）——
-   覆盖 CANN 未直接暴露的算子（分块 CE、KDA chunkwise）。
+   ``PrivateUse1``，见 ``csrc/ascend``）——覆盖 CANN 未直接暴露的算子
+   （分块 CE、KDA chunkwise）。
 3. **参考实现**——派发层兜底。
 
 所有候选调用都包在 try/except 里：CANN 各版本 API 签名差异较大，
@@ -54,10 +67,11 @@ def available() -> bool:
     return npu_available()
 
 
-def _npu():
-    import torch_npu  # noqa: F401
+def _torch_npu():
+    """返回 ``torch_npu`` 模块（原生融合算子都在这个模块级命名空间下）。"""
+    import torch_npu
 
-    return torch.npu
+    return torch_npu
 
 
 def _custom_ns():
@@ -132,21 +146,25 @@ def add_rms_norm(
     weight: torch.Tensor,
     eps: float = 1e-6,
 ) -> tuple[torch.Tensor, torch.Tensor] | None:
-    """残差加 + RMSNorm。优先 CANN ``npu_rms_norm``，其次自研 AscendC。"""
+    """残差加 + RMSNorm。优先 CANN ``npu_add_rms_norm``，其次自研 AscendC。
+
+    ``npu_add_rms_norm`` 一次完成 ``res = x + residual`` 与 ``y = rms_norm(res)``，
+    返回 ``(y, rstd, res)``；本模块只取 ``(y, res)`` 以匹配参考实现的契约。
+    """
     if not npu_available():
         return None
 
     def _cann(a, b, w):
-        res = a + b
-        out = _npu().npu_rms_norm(res, w, eps)
-        y = out[0] if isinstance(out, (tuple, list)) else out
-        return y, res
+        out = _torch_npu().npu_add_rms_norm(a, b, w, float(eps))
+        if not isinstance(out, (tuple, list)) or len(out) < 3:
+            return None  # 该 CANN 版本未返回 residual_out，交回退
+        return out[0], out[-1]
 
     def _ascendc(a, b, w):
         ns = _custom_ns()
         if ns is None or not hasattr(ns, "add_rms_norm_fwd"):
             return None
-        return ns.add_rms_norm_fwd(a, b, w, eps)
+        return ns.add_rms_norm_fwd(a, b, w, float(eps))
 
     return _try(
         [("cann", _cann), ("ascendc", _ascendc)],
@@ -156,12 +174,12 @@ def add_rms_norm(
 
 
 def swiglu(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor | None:
-    """SwiGLU 激活。CANN ``npu_swiglu`` 需要 [gate, up] 拼接输入。"""
+    """SwiGLU 激活。CANN ``npu_swiglu`` 需要 ``[gate, up]`` 沿最后一维拼接。"""
     if not npu_available():
         return None
 
     def _cann(g, u):
-        return _npu().npu_swiglu(torch.cat([g, u], dim=-1), dim=-1)
+        return _torch_npu().npu_swiglu(torch.cat([g, u], dim=-1), dim=-1)
 
     def _ascendc(g, u):
         ns = _custom_ns()
@@ -172,16 +190,35 @@ def swiglu(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor | None:
     return _try([("cann", _cann), ("ascendc", _ascendc)], _ref.swiglu, gate, up)
 
 
+def _rope_coeff(c: torch.Tensor, dtype: torch.dtype, device, head_dim: int) -> torch.Tensor:
+    """把 cos/sin 规整成 ``npu_rotary_mul`` 需要的 ``(1, 1, S, D)`` 形状。
+
+    仓库的 ``RotaryEmbedding`` 返回 ``(S, D)``（且两半相同）；参考实现也兼容
+    ``(S, D/2)`` 的紧凑形式。``npu_rotary_mul`` 的 half 模式要求系数与输入同宽，
+    因此紧凑形式需沿最后一维复制一份。
+    """
+    c = c.to(dtype=dtype, device=device)
+    half = head_dim // 2
+    if c.shape[-1] == half and half != head_dim:
+        c = torch.cat([c, c], dim=-1)
+    while c.dim() < 4:
+        c = c.unsqueeze(0)
+    return c.contiguous()
+
+
 def apply_rope(
     q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor] | None:
-    """RoPE。优先 CANN ``npu_rotary_mul``（各版本签名差异大，失败即换路）。"""
+    """RoPE。优先 CANN ``npu_rotary_mul``（half 模式），其次自研 AscendC。"""
     if not npu_available():
         return None
 
     def _cann(a, b, c, s):
-        npu = _npu()
-        return npu.npu_rotary_mul(a, c, s), npu.npu_rotary_mul(b, c, s)
+        tn = _torch_npu()
+        head_dim = a.shape[-1]
+        cc = _rope_coeff(c, a.dtype, a.device, head_dim)
+        ss = _rope_coeff(s, a.dtype, a.device, head_dim)
+        return tn.npu_rotary_mul(a, cc, ss, "half"), tn.npu_rotary_mul(b, cc, ss, "half")
 
     def _ascendc(a, b, c, s):
         ns = _custom_ns()
@@ -201,29 +238,39 @@ def flash_attention(
     scale: float | None = None,
     dropout_p: float = 0.0,
 ) -> torch.Tensor | None:
-    """融合注意力。训练用 ``npu_fusion_attention``，推理用 ``npu_fused_infer_attention_score``。"""
+    """融合注意力。训练/预填走 CANN ``npu_fusion_attention``。
+
+    约定（与 ``attention._attention`` 一致）：``is_causal=True`` 只用于
+    ``seq_len == kv_len`` 的等长因果场景。带偏移的因果掩码（解码续写）在调用方
+    就走 SDPA，因此这里遇到 ``seq_len != kv_len`` 的因果请求直接放弃，交由回退。
+
+    CANN 的 ``sparse_mode=2/3`` 在本版本上与显式掩码配合会报错，故统一用
+    ``sparse_mode=0`` + 显式上三角 bool 掩码（``True`` 表示屏蔽），数值与
+    ``F.scaled_dot_product_attention(is_causal=True)`` 对拍一致。
+    """
     if not npu_available():
         return None
     s = float(scale) if scale is not None else float(q.shape[-1]) ** -0.5
     head_num = q.shape[1]
-    sparse_mode = 2 if is_causal else 0
+    seq_len = q.shape[2]
+    kv_len = k.shape[2]
+    if is_causal and seq_len != kv_len:
+        return None
 
-    def _cann_train(a, b, c):
-        out = _npu().npu_fusion_attention(
+    def _cann(a, b, c):
+        tn = _torch_npu()
+        mask = None
+        if is_causal:
+            mask = torch.triu(
+                torch.ones(seq_len, kv_len, dtype=torch.bool, device=a.device), diagonal=1
+            )
+        out = tn.npu_fusion_attention(
             a, b, c, head_num,
             input_layout="BNSD",
+            atten_mask=mask,
             scale=s,
-            keep_prob=1.0 - dropout_p,
-            sparse_mode=sparse_mode,
-        )
-        return out[0] if isinstance(out, (tuple, list)) else out
-
-    def _cann_infer(a, b, c):
-        out = _npu().npu_fused_infer_attention_score(
-            a, b, c, num_heads=head_num,
-            input_layout="BNSD",
-            scale=s,
-            sparse_mode=sparse_mode,
+            keep_prob=1.0 - float(dropout_p),
+            sparse_mode=0,
         )
         return out[0] if isinstance(out, (tuple, list)) else out
 
@@ -234,7 +281,7 @@ def flash_attention(
         return ns.flash_attn_fwd(a, b, c, is_causal, s)
 
     return _try(
-        [("cann_train", _cann_train), ("cann_infer", _cann_infer), ("ascendc", _ascendc)],
+        [("cann", _cann), ("ascendc", _ascendc)],
         lambda a, b, c: _ref.flash_attention(a, b, c, is_causal=is_causal, scale=s),
         q, k, v,
     )

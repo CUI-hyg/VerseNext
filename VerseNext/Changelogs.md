@@ -28,9 +28,9 @@
     ROCm 由 hipify 从同一份 `.cu` 生成，无需维护两套源码；反向统一用参考实现
     在 `enable_grad` 下重放，保证梯度数学严格正确。
   - **CANN NPU 适配**（`kernels/npu_ops.py` + `csrc/ascend/`）：优先 CANN 原生
-    融合算子（`npu_rms_norm` / `npu_swiglu` / `npu_rotary_mul` /
-    `npu_fusion_attention` / `npu_fused_infer_attention_score`），其次自研
-    AscendC 算子（op_host tiling + op_kernel + ACLNN 适配层，`PrivateUse1`）。
+    融合算子（`npu_add_rms_norm` / `npu_swiglu` / `npu_rotary_mul` /
+    `npu_fusion_attention`），其次自研 AscendC 算子（op_host tiling + op_kernel +
+    ACLNN 适配层，`PrivateUse1`）。已在 Ascend 910_9362 上验证（见 Fixed）。
   - **三级回退派发**（`kernels/_dispatch.py`）：自研扩展 → torch 内建融合 →
     参考实现；任一级失败静默降级（记 debug 日志），**绝不因算子问题中断训练**。
     `KernelPolicy` / `set_policy` 提供全局开关用于 A/B 基准。
@@ -91,6 +91,24 @@
 
 ### Fixed
 
+- **昇腾 NPU 路径在真实硬件上跑通**（Ascend 910_9362 / CANN 9.1.0 /
+  torch_npu 2.10）：`kernels/npu_ops.py` 此前用的是不存在的 `torch.npu.npu_*`，
+  原生融合算子全部静默回退到参考实现（训练照跑、零加速）。已改为 `torch_npu`
+  模块级命名空间，并修正各算子契约（`npu_add_rms_norm` 返回 `(y, rstd, res)`、
+  `npu_rotary_mul` 需 `(1,1,S,D)` 系数、`npu_fusion_attention` 用显式因果掩码 +
+  `sparse_mode=0`）。
+- **自研 AscendC 算子编译并验证**：`verse_add_rms_norm` / `verse_swiglu` 的
+  op_host tiling、op_kernel 与 ACLNN 适配层全部跑通。三处关键修复：自定义算子名
+  加 `Verse` 前缀避开 CANN 内建算子（`AddRmsNorm` / `SwiGlu`）；kernel 入口补
+  `REGISTER_TILING_DEFAULT`（否则框架按骨架的 4 字节占位结构分配 tiling data，
+  `GetTilingData<T>()` 返回 nullptr，报 561002）；单入口二进制下 `SetTilingKey(0)`
+  （否则报 361001）。dtype 分派改用构建期注入的 `DTYPE_*` 宏。
+- **`ascend/build.sh` 重写**：自动探测芯片 → msopgen → 编译安装算子包 → 编
+  torch 适配层一条命令跑通；适配层改为直接调 CANN ACL C API，绕开 `EXEC_NPU_CMD`
+  依赖的 torch_npu 未导出符号。尾块改用 `DataCopyPad`，非 32B 对齐的 shape 不再越界。
+- **NPU 环境下的 6 个测试失败**：RNG state / LoRA 参数 / 输入 batch 未随设备
+  迁移（`trainer.py`）；跨 checkpoint 恢复在加速器上的非确定性
+  （`test_resume.py` 在加速器上放宽为 1e-4，CPU 仍要求逐位相等）。
 - **算子扩展可用性探测的算子名不一致**：`kernels/_ext.py` 的 `_REQUIRED_OPS`
   用的是 `fused_add_rms_norm`/`fused_swiglu`/`flash_attn`，而 C++ 实际注册的是
   `add_rms_norm_fwd`/`swiglu_fwd`/`flash_attn_fwd`；`npu_ops.py` 的 AscendC 分支

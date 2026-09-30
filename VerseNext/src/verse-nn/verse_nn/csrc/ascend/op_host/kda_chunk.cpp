@@ -22,7 +22,9 @@ constexpr int32_t kMaxHeadDim = 128;
 
 static ge::graphStatus TilingFunc(gert::TilingContext* context) {
   const gert::StorageShape* q_shape = context->GetInputShape(0);
-  OPS_CHECK_NULL_WITH_CONTEXT(context, q_shape);
+  if (q_shape == nullptr) {
+    return ge::GRAPH_FAILED;
+  }
   const auto& qs = q_shape->GetStorageShape();
   const int32_t batch = static_cast<int32_t>(qs.GetDim(0));
   const int32_t heads = static_cast<int32_t>(qs.GetDim(1));
@@ -45,7 +47,9 @@ static ge::graphStatus TilingFunc(gert::TilingContext* context) {
   const int32_t bh_per_core = (bh_total + block_dim - 1) / block_dim;
 
   KdaChunkTiling* tiling = context->GetTilingData<KdaChunkTiling>();
-  OPS_CHECK_NULL_WITH_CONTEXT(context, tiling);
+  if (tiling == nullptr) {
+    return ge::GRAPH_FAILED;
+  }
   tiling->batch = batch;
   tiling->heads = heads;
   tiling->seq_len = seq_len;
@@ -65,25 +69,25 @@ class KdaChunk : public OpDef {
  public:
   explicit KdaChunk(const char* name) : OpDef(name) {
     this->Input("q").ParamType(REQUIRED)
-        .DataType({ge::DT_FLOAT16, ge::DT_BF16})
-        .Format({ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND});
+        .DataType({ge::DT_FLOAT16, ge::DT_FLOAT})
+        .Format({ge::FORMAT_ND, ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND, ge::FORMAT_ND});
     this->Input("k").ParamType(REQUIRED)
-        .DataType({ge::DT_FLOAT16, ge::DT_BF16})
-        .Format({ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND});
+        .DataType({ge::DT_FLOAT16, ge::DT_FLOAT})
+        .Format({ge::FORMAT_ND, ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND, ge::FORMAT_ND});
     this->Input("v").ParamType(REQUIRED)
-        .DataType({ge::DT_FLOAT16, ge::DT_BF16})
-        .Format({ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND});
+        .DataType({ge::DT_FLOAT16, ge::DT_FLOAT})
+        .Format({ge::FORMAT_ND, ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND, ge::FORMAT_ND});
     this->Input("gate").ParamType(REQUIRED)
-        .DataType({ge::DT_FLOAT16, ge::DT_BF16})
-        .Format({ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND});
+        .DataType({ge::DT_FLOAT16, ge::DT_FLOAT})
+        .Format({ge::FORMAT_ND, ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND, ge::FORMAT_ND});
     this->Input("beta").ParamType(REQUIRED)
-        .DataType({ge::DT_FLOAT16, ge::DT_BF16})
-        .Format({ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND});
+        .DataType({ge::DT_FLOAT16, ge::DT_FLOAT})
+        .Format({ge::FORMAT_ND, ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND, ge::FORMAT_ND});
     this->Output("out").ParamType(REQUIRED)
-        .DataType({ge::DT_FLOAT16, ge::DT_BF16})
-        .Format({ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND});
-    this->Output("state").ParamType(REQUIRED).DataType({ge::DT_FLOAT})
-        .Format({ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND});
+        .DataType({ge::DT_FLOAT16, ge::DT_FLOAT})
+        .Format({ge::FORMAT_ND, ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND, ge::FORMAT_ND});
+    this->Output("state").ParamType(REQUIRED).DataType({ge::DT_FLOAT, ge::DT_FLOAT})
+        .Format({ge::FORMAT_ND, ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND, ge::FORMAT_ND});
     this->Attr("chunk_size").AttrType(OPTIONAL).Int(64);
     this->AICore().AddConfig("ascend910b");
   }

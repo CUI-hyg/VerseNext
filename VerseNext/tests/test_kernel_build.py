@@ -108,8 +108,14 @@ def test_csrc_layout_exists():
         "ascend/ascend_common.h",
         "ascend/build.sh",
         "ascend/bindings_npu.cpp",
-        "ascend/op_kernel/add_rms_norm_ascendc.cpp",
-        "ascend/op_kernel/swiglu_ascendc.cpp",
+        # host 侧（算子定义 + tiling）。自定义算子名一律带 Verse 前缀，
+        # 避免与 CANN 内建算子（AddRmsNorm / SwiGlu）重名。
+        "ascend/op_host/verse_add_rms_norm.cpp",
+        "ascend/op_host/verse_add_rms_norm_tiling.h",
+        "ascend/op_host/verse_swiglu.cpp",
+        "ascend/op_host/verse_swiglu_tiling.h",
+        "ascend/op_kernel/verse_add_rms_norm_ascendc.cpp",
+        "ascend/op_kernel/verse_swiglu_ascendc.cpp",
         "ascend/op_kernel/flash_attn_ascendc.cpp",
         "ascend/op_kernel/chunked_ce_ascendc.cpp",
         "ascend/op_kernel/kda_chunk_ascendc.cpp",

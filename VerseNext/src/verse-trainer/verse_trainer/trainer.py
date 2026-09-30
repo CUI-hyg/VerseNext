@@ -136,6 +136,9 @@ class Trainer:
                 lora_cfg = LoRAConfig.from_dict(lora_cfg)
             apply_lora(self.model, lora_cfg)
             mark_only_lora_trainable(self.model)
+            # apply_lora 在模型搬到设备之后才注入 LoRA 旁路，新参数默认在 CPU；
+            # 必须再搬一次，否则 NPU/CUDA 上前向的旁路 matmul 会设备不匹配。
+            self.model = self.model.to(self.device)
             logger.info(
                 "LoRA 已应用：可训练参数 %.2fM / 总参数 %.2fM",
                 sum(p.numel() for p in self.model.parameters() if p.requires_grad) / 1e6,
@@ -213,6 +216,20 @@ class Trainer:
         return detect_backend(self.device).autocast(
             self.dtype, enabled=self.autocast_enabled
         )
+
+    def _move_batch(self, inputs, targets):
+        """把 batch 搬到训练设备。
+
+        数据集（如 :class:`SFTDataset`）的 ``next_batch`` 只产出 CPU 张量，
+        而模型在 ``self.device`` 上；CPU-only 环境下两者恰好一致所以从未暴露，
+        在 NPU/CUDA 上则会在 embedding 处设备不匹配。``Tensor.to`` 同设备时是
+        无拷贝的 no-op，因此无条件调用即可。
+        """
+        if isinstance(inputs, torch.Tensor) and inputs.device != self.device:
+            inputs = inputs.to(self.device, non_blocking=True)
+        if isinstance(targets, torch.Tensor) and targets.device != self.device:
+            targets = targets.to(self.device, non_blocking=True)
+        return inputs, targets
 
     def _as_batch_source(self, source):
         """token 列表/数组 -> TokenBatchIterator；数据集对象原样返回。"""
@@ -294,12 +311,21 @@ class Trainer:
         if "python" in rng:
             random.setstate(rng["python"])
         if "torch" in rng:
-            torch.set_rng_state(rng["torch"])
+            # checkpoint 用 map_location=self.device 反序列化，RNG 状态张量也会被搬到
+            # 加速器上；但 torch.set_rng_state 只接受 CPU 的 uint8 张量，必须先搬回。
+            state = rng["torch"]
+            if isinstance(state, torch.Tensor):
+                state = state.detach().cpu()
+            torch.set_rng_state(state)
         if "numpy" in rng:
             np.random.set_state(rng["numpy"])
         if "cuda" in rng and self.device.type == "cuda":
             torch.cuda.set_rng_state_all(rng["cuda"])
-        self._pending_data_rng = rng.get("data")
+        data_rng = rng.get("data")
+        if isinstance(data_rng, torch.Tensor):
+            # 同 torch RNG：生成器状态必须是 CPU 张量，map_location 会把它搬到设备上
+            data_rng = data_rng.detach().cpu()
+        self._pending_data_rng = data_rng
         logger.info(
             "已恢复训练状态：step=%d, best_loss=%s, bad_evals=%d, tokens_seen=%d",
             self.global_step, self._best_loss, self._bad_evals, self._tokens_seen,
@@ -349,7 +375,7 @@ class Trainer:
 
             loss_accum = 0.0
             for micro in range(cfg.grad_accum_steps):
-                inputs, targets = train_iter.next_batch()
+                inputs, targets = self._move_batch(*train_iter.next_batch())
                 with self._autocast():
                     # 训练不需要 logits：跳过返回 + 分块 CE，降低 logits 峰值
                     _, loss = self.model(
@@ -516,7 +542,8 @@ class Trainer:
     def evaluate(self, eval_iter: TokenBatchIterator) -> float:
         self.model.eval()
         losses = []
-        for inputs, targets in eval_iter.batches(self.config.eval_batches):
+        for batch in eval_iter.batches(self.config.eval_batches):
+            inputs, targets = self._move_batch(*batch)
             with self._autocast():
                 _, loss = self.model(
                     inputs, targets,

@@ -10,12 +10,14 @@
  *   - 资源锁 50%：显存由 torch.npu.set_per_process_memory_fraction 限制，
  *     AI 核比例通过 block_dim 与可见设备数控制（见 devices/backend.py）。
  *
- * 编译：本目录需用 CANN 的 msopgen/自定义算子工程编译（见 build.sh），
+ * 编译：本目录用 CANN 的 msopgen/自定义算子工程编译（见 build.sh），
  *       产出 ACLNN 自定义算子包，再由 bindings_npu.cpp 经 aclnn 接口调用。
  *
- * ⚠ 本目录代码在无 CANN 工具链的机器上**未经编译验证**，属"待硬件验证"交付，
- *   详见 docs/kernels.md。API 用法遵循 AscendC 官方惯例，但具体版本
- *   （CANN 7.x/8.x）签名可能有差异，首次编译时需按报错微调。
+ * 验证状态（Ascend 910_9362 / CANN 9.1.0）：本头文件与
+ * ``op_kernel/verse_add_rms_norm_ascendc.cpp``、``op_kernel/verse_swiglu_ascendc.cpp``
+ * 已编译、加载并在硬件上数值对拍通过；``flash_attn`` / ``chunked_ce`` /
+ * ``kda_chunk`` 三个 kernel **尚未编译验证**，接入前请先读 docs/kernels.md
+ * 的「踩过的坑」。
  */
 
 #ifndef VERSE_ASCEND_COMMON_H
@@ -51,6 +53,31 @@ __aicore__ inline int32_t CeilDiv(int32_t a, int32_t b) {
 }
 
 // ---------------------------------------------------------------------------
+// 标量工具
+//   设备侧（AscendC kernel）不提供 Min/Max 的标量版本，且没有 sqrtf/expf/logf
+//   这类 C 数学库符号；这里统一提供，避免各 kernel 各写一份。
+// ---------------------------------------------------------------------------
+__aicore__ inline int32_t MinI(int32_t a, int32_t b) { return a < b ? a : b; }
+__aicore__ inline int32_t MaxI(int32_t a, int32_t b) { return a > b ? a : b; }
+__aicore__ inline float MinS(float a, float b) { return a < b ? a : b; }
+__aicore__ inline float MaxS(float a, float b) { return a > b ? a : b; }
+// 设备侧没有 exp/log 的标量符号（连 sqrtf 也没有，只有 sqrt），需要指数/对数
+// 的 kernel 请用 Vector 指令（AscendC::Exp / Log）在 LocalTensor 上算，
+// 不要在这里补 C 数学库符号。
+__aicore__ inline float SqrtS(float x) { return sqrt(x); }
+
+// ---------------------------------------------------------------------------
+// Tiling 读取
+//   host 用 ``context->GetTilingData<T>()`` 写出的结构体，会作为 kernel 的
+//   ``tiling`` GM 指针传入；GM_ADDR 是 ``__gm__ uint8_t*``，直接 reinterpret
+//   到非 __gm__ 指针会被编译器拒绝，必须保留 __gm__ 限定。
+// ---------------------------------------------------------------------------
+template <typename T>
+__aicore__ inline const __gm__ T* ReadTiling(GM_ADDR tiling) {
+  return reinterpret_cast<const __gm__ T*>(tiling);
+}
+
+// ---------------------------------------------------------------------------
 // 按 dtype 选择 UB 中的 Tile 元素数
 //    fp32 -> 4B, fp16/bf16 -> 2B；保证 tile 不超过 UB 预算
 // ---------------------------------------------------------------------------
@@ -62,32 +89,61 @@ __aicore__ inline int32_t TileElemsForDtype() {
 }
 
 // ---------------------------------------------------------------------------
-// 逐元素一元/二元算子（Vector 单元）
+// GM <-> UB 搬运
+//   普通 DataCopy 要求长度按 32B 对齐，尾块（d 不是对齐粒度整数倍时）会
+//   越界读写。DataCopyPad 支持任意字节长度，因此这里统一用它做搬运：
+//   - 搬入时按需右侧补零，保证 UB 里没有脏数据参与计算；
+//   - 搬出时只写回 count 个元素，绝不越界。
 // ---------------------------------------------------------------------------
 template <typename T>
-__aicore__ inline void SiluMul(const LocalTensor<T>& dst,
-                               const LocalTensor<T>& gate,
-                               const LocalTensor<T>& up,
-                               int32_t count) {
-  // silu(g) * u = g * sigmoid(g) * u
-  LocalTensor<T> sig = dst;                        // 复用 dst 暂存 sigmoid
-  Sigmoid(sig, gate, count);
-  Mul(sig, sig, gate, count);
-  Mul(dst, sig, up, count);
+__aicore__ inline void CopyInPad(const LocalTensor<T>& dst,
+                                 const GlobalTensor<T>& src, int32_t count) {
+  DataCopyExtParams params(1, static_cast<uint32_t>(count) * sizeof(T), 0, 0, 0);
+  DataCopyPadExtParams<T> pad(false, 0, 0, static_cast<T>(0));
+  DataCopyPad(dst, src, params, pad);
+}
+
+template <typename T>
+__aicore__ inline void CopyOutPad(const GlobalTensor<T>& dst,
+                                  const LocalTensor<T>& src, int32_t count) {
+  DataCopyExtParams params(1, static_cast<uint32_t>(count) * sizeof(T), 0, 0, 0);
+  DataCopyPad(dst, src, params);
 }
 
 // ---------------------------------------------------------------------------
-// RMSNorm 的核内归约：对每个 (row, tile) 求平方和
-//   AscendC 的 ReduceSum 支持按 last-dim 归约
+// Vector -> Scalar 同步
+//   ReduceSum 等 Vector 指令把结果写进 UB 后，标量单元（GetValue）读取前
+//   必须显式同步，否则读到的是未完成的中间值。官方样例均显式 Set/Wait。
 // ---------------------------------------------------------------------------
-template <typename T>
-__aicore__ inline void SumOfSquares(const LocalTensor<float>& dst,
-                                    const LocalTensor<T>& src,
+__aicore__ inline void SyncVectorToScalar() {
+  event_t event_id = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::V_S));
+  SetFlag<HardEvent::V_S>(event_id);
+  WaitFlag<HardEvent::V_S>(event_id);
+}
+
+__aicore__ inline void SyncScalarToVector() {
+  event_t event_id = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::S_V));
+  SetFlag<HardEvent::S_V>(event_id);
+  WaitFlag<HardEvent::S_V>(event_id);
+}
+
+// ---------------------------------------------------------------------------
+// 把 LocalTensor 转成 fp32 再求平方，结果写入 sq。
+//   fp32 输入直接乘；fp16 输入先用 Cast 升精度（work 作中转），
+//   这样归约全程 fp32，避免 fp16 平方和溢出/精度损失。
+//   用重载而不是 Cast(src, dst 同类型)——同类型 Cast 在部分版本会断言失败。
+// ---------------------------------------------------------------------------
+__aicore__ inline void SquareToFp32(const LocalTensor<float>& sq,
                                     const LocalTensor<float>& work,
-                                    int32_t count) {
+                                    const LocalTensor<float>& src, int32_t count) {
+  Mul(sq, src, src, count);
+}
+
+__aicore__ inline void SquareToFp32(const LocalTensor<float>& sq,
+                                    const LocalTensor<float>& work,
+                                    const LocalTensor<half>& src, int32_t count) {
   Cast(work, src, RoundMode::CAST_NONE, count);
-  Mul(work, work, work, count);
-  ReduceSum(dst, work, work, count);
+  Mul(sq, work, work, count);
 }
 
 }  // namespace ascend

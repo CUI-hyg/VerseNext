@@ -27,8 +27,12 @@ constexpr int32_t kBc = 64;
 static ge::graphStatus TilingFunc(gert::TilingContext* context) {
   const gert::StorageShape* q_shape = context->GetInputShape(0);
   const gert::StorageShape* k_shape = context->GetInputShape(1);
-  OPS_CHECK_NULL_WITH_CONTEXT(context, q_shape);
-  OPS_CHECK_NULL_WITH_CONTEXT(context, k_shape);
+  if (q_shape == nullptr) {
+    return ge::GRAPH_FAILED;
+  }
+  if (k_shape == nullptr) {
+    return ge::GRAPH_FAILED;
+  }
 
   const auto& qs = q_shape->GetStorageShape();
   const auto& ks = k_shape->GetStorageShape();
@@ -54,7 +58,9 @@ static ge::graphStatus TilingFunc(gert::TilingContext* context) {
   const int32_t q_tiles_per_core = (total_units + block_dim - 1) / block_dim;
 
   FlashAttnTiling* tiling = context->GetTilingData<FlashAttnTiling>();
-  OPS_CHECK_NULL_WITH_CONTEXT(context, tiling);
+  if (tiling == nullptr) {
+    return ge::GRAPH_FAILED;
+  }
   tiling->batch = batch;
   tiling->heads = heads;
   tiling->seq_len = seq_len;
@@ -111,17 +117,17 @@ class FlashAttn : public OpDef {
  public:
   explicit FlashAttn(const char* name) : OpDef(name) {
     this->Input("q").ParamType(REQUIRED)
-        .DataType({ge::DT_FLOAT16, ge::DT_BF16})
-        .Format({ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND});
+        .DataType({ge::DT_FLOAT16, ge::DT_FLOAT})
+        .Format({ge::FORMAT_ND, ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND, ge::FORMAT_ND});
     this->Input("k").ParamType(REQUIRED)
-        .DataType({ge::DT_FLOAT16, ge::DT_BF16})
-        .Format({ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND});
+        .DataType({ge::DT_FLOAT16, ge::DT_FLOAT})
+        .Format({ge::FORMAT_ND, ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND, ge::FORMAT_ND});
     this->Input("v").ParamType(REQUIRED)
-        .DataType({ge::DT_FLOAT16, ge::DT_BF16})
-        .Format({ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND});
+        .DataType({ge::DT_FLOAT16, ge::DT_FLOAT})
+        .Format({ge::FORMAT_ND, ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND, ge::FORMAT_ND});
     this->Output("out").ParamType(REQUIRED)
-        .DataType({ge::DT_FLOAT16, ge::DT_BF16})
-        .Format({ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND});
+        .DataType({ge::DT_FLOAT16, ge::DT_FLOAT})
+        .Format({ge::FORMAT_ND, ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND, ge::FORMAT_ND});
     this->Attr("causal").AttrType(OPTIONAL).Bool(true);
     this->AICore().AddConfig("ascend910b");
   }

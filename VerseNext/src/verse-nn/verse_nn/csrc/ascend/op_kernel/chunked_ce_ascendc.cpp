@@ -10,6 +10,10 @@
  *
  * 收益：显存从 O(B·S·V) 降到 O(B·S)，与 CUDA 版一致。
  * ⚠ 未编译验证（同 flash_attn，依赖 CANN Matmul tiling）。
+ *
+ * 接入前必读：docs/kernels.md 的「踩过的坑」——本文件尚未按那几条改造
+ * （缺 REGISTER_TILING_DEFAULT、用 TILING_KEY_IS 做 dtype 分派），
+ * 且未纳入 build.sh 的 OPS 列表。
  */
 
 #include "../ascend_common.h"
@@ -27,7 +31,7 @@ class ChunkedCeKernel {
 
   __aicore__ inline void Init(GM_ADDR hidden, GM_ADDR weight, GM_ADDR targets,
                               GM_ADDR loss_out, GM_ADDR tiling, GM_ADDR tiling_matmul) {
-    const ChunkedCeTiling* t = reinterpret_cast<const ChunkedCeTiling*>(tiling);
+    const __gm__ ChunkedCeTiling* t = ReadTiling<ChunkedCeTiling>(tiling);
     rows_ = t->rows;
     vocab_ = t->vocab;
     d_ = t->hidden_dim;
@@ -50,7 +54,7 @@ class ChunkedCeKernel {
   __aicore__ inline void Process() {
     const int32_t core = GetBlockIdx();
     const int32_t r_begin = core * rows_per_core_;
-    const int32_t r_end = Min(r_begin + rows_per_core_, rows_);
+    const int32_t r_end = MinI(r_begin + rows_per_core_, rows_);
     for (int32_t row = r_begin; row < r_end; ++row) {
       ProcessRow(row);
     }
@@ -73,7 +77,7 @@ class ChunkedCeKernel {
 
     for (int32_t t = 0; t < n_tiles; ++t) {
       const int32_t v0 = t * v_tile_;
-      const int32_t cnt = Min(v_tile_, vocab_ - v0);
+      const int32_t cnt = MinI(v_tile_, vocab_ - v0);
 
       // logits_tile = hidden_row(1×D) @ W_tile^T(D×cnt)  -> (1 × cnt)
       mm_.SetTensorA(hGm_[h_base], false);
@@ -89,9 +93,9 @@ class ChunkedCeKernel {
       LocalTensor<float> tmax = rowtmp[1];
       ReduceMax(tmax, logits, rowtmp[63], cnt);
       const float tile_max = tmax.GetValue(0);
-      const float m_new = Max(tile_max, m_i.GetValue(0));
+      const float m_new = MaxS(tile_max, m_i.GetValue(0));
       const float alpha = (m_i.GetValue(0) <= -3.0e37f) ? 0.0f
-                                                        : expf(m_i.GetValue(0) - m_new);
+                                                        : ExpS(m_i.GetValue(0) - m_new);
       Exp(logits, logits, cnt);
       LocalTensor<float> tsum = rowtmp[2];
       ReduceSum(tsum, logits, rowtmp[63], cnt);
@@ -101,7 +105,7 @@ class ChunkedCeKernel {
 
     float loss = 0.0f;
     if (tgt != ignore_index_ && l_i.GetValue(0) > 0.0f) {
-      loss = m_i.GetValue(0) + logf(l_i.GetValue(0)) - tgt_logit;
+      loss = m_i.GetValue(0) + LogS(l_i.GetValue(0)) - tgt_logit;
     }
     lGm_.SetValue(row, loss);
   }

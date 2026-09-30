@@ -25,8 +25,12 @@ constexpr int32_t kAlign = 32;
 static ge::graphStatus TilingFunc(gert::TilingContext* context) {
   const gert::StorageShape* h_shape = context->GetInputShape(0);
   const gert::StorageShape* w_shape = context->GetInputShape(1);
-  OPS_CHECK_NULL_WITH_CONTEXT(context, h_shape);
-  OPS_CHECK_NULL_WITH_CONTEXT(context, w_shape);
+  if (h_shape == nullptr) {
+    return ge::GRAPH_FAILED;
+  }
+  if (w_shape == nullptr) {
+    return ge::GRAPH_FAILED;
+  }
 
   const auto& hs = h_shape->GetStorageShape();
   const auto& ws = w_shape->GetStorageShape();
@@ -53,7 +57,9 @@ static ge::graphStatus TilingFunc(gert::TilingContext* context) {
   const int32_t rows_per_core = static_cast<int32_t>((rows + block_dim - 1) / block_dim);
 
   ChunkedCeTiling* tiling = context->GetTilingData<ChunkedCeTiling>();
-  OPS_CHECK_NULL_WITH_CONTEXT(context, tiling);
+  if (tiling == nullptr) {
+    return ge::GRAPH_FAILED;
+  }
   tiling->rows = static_cast<int32_t>(rows);
   tiling->vocab = vocab;
   tiling->hidden_dim = d;
@@ -89,15 +95,15 @@ class ChunkedCe : public OpDef {
  public:
   explicit ChunkedCe(const char* name) : OpDef(name) {
     this->Input("hidden").ParamType(REQUIRED)
-        .DataType({ge::DT_FLOAT16, ge::DT_BF16})
-        .Format({ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND});
+        .DataType({ge::DT_FLOAT16, ge::DT_FLOAT})
+        .Format({ge::FORMAT_ND, ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND, ge::FORMAT_ND});
     this->Input("weight").ParamType(REQUIRED)
-        .DataType({ge::DT_FLOAT16, ge::DT_BF16})
-        .Format({ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND});
-    this->Input("targets").ParamType(REQUIRED).DataType({ge::DT_INT32})
-        .Format({ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND});
-    this->Output("loss").ParamType(REQUIRED).DataType({ge::DT_FLOAT})
-        .Format({ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND});
+        .DataType({ge::DT_FLOAT16, ge::DT_FLOAT})
+        .Format({ge::FORMAT_ND, ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND, ge::FORMAT_ND});
+    this->Input("targets").ParamType(REQUIRED).DataType({ge::DT_INT32, ge::DT_INT32})
+        .Format({ge::FORMAT_ND, ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND, ge::FORMAT_ND});
+    this->Output("loss").ParamType(REQUIRED).DataType({ge::DT_FLOAT, ge::DT_FLOAT})
+        .Format({ge::FORMAT_ND, ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND, ge::FORMAT_ND});
     this->Attr("chunk_size").AttrType(OPTIONAL).Int(0);
     this->Attr("ignore_index").AttrType(OPTIONAL).Int(-100);
     this->AICore().AddConfig("ascend910b");

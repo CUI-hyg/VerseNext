@@ -95,8 +95,26 @@ def test_resume_restores_full_training_state(tmp_path):
     assert abs(full.scheduler.step(2) - resumed.scheduler.step(2)) < 1e-15
 
 
+def _accelerator_active() -> bool:
+    """当前是否有非 CPU 加速器在跑（NPU/CUDA）。"""
+    if torch.cuda.is_available():
+        return True
+    try:
+        import torch_npu  # noqa: F401
+
+        return bool(torch.npu.is_available())
+    except Exception:
+        return False
+
+
 def test_resume_is_bitwise_continuous(tmp_path):
-    """续训后的每一步 loss 与不间断训练完全一致（不丢失、不折损）。"""
+    """续训后的每一步 loss 与不间断训练一致（不丢失、不折损）。
+
+    CPU 上要求逐位相同。NPU/CUDA 上浮点归约顺序由硬件决定，**两次完全相同的
+    独立训练 run 都无法逐位复现**（已实测：同一进程内同种子跑两遍，step-1 loss
+    就有 ~1e-7 差异），因此这里放宽为紧容差比较；它仍能抓住「状态丢失/错位」
+    这类真实回归（那会造成远大于 1e-4 的偏差）。
+    """
     tokens = _tokens()
     full = Trainer(_cfg(6))
     full.train(tokens, None)
@@ -112,7 +130,12 @@ def test_resume_is_bitwise_continuous(tmp_path):
     resumed.train(tokens, None)
 
     assert resumed.global_step == 6
-    assert resumed._train_hist == full._train_hist
+    assert len(resumed._train_hist) == len(full._train_hist)
+    if _accelerator_active():
+        for (s1, l1), (s2, l2) in zip(resumed._train_hist, full._train_hist):
+            assert s1 == s2 and abs(l1 - l2) < 1e-4, (s1, l1, s2, l2)
+    else:
+        assert resumed._train_hist == full._train_hist
     assert resumed._tokens_seen == full._tokens_seen
 
 

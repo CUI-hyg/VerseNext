@@ -10,6 +10,10 @@
  *     「转置后按行点积」实现（Transpose + Mul + ReduceSum）。
  *
  * ⚠ 未编译验证。D<=64 时 S 占 16KB UB，可行；更大 head_dim 需分块驻留。
+ *
+ * 接入前必读：docs/kernels.md 的「踩过的坑」——本文件尚未按那几条改造
+ * （缺 REGISTER_TILING_DEFAULT、用 TILING_KEY_IS 做 dtype 分派），
+ * 且未纳入 build.sh 的 OPS 列表。
  */
 
 #include "../ascend_common.h"
@@ -25,7 +29,7 @@ class KdaChunkKernel {
   __aicore__ inline void Init(GM_ADDR q, GM_ADDR k, GM_ADDR v, GM_ADDR gate,
                               GM_ADDR beta, GM_ADDR out, GM_ADDR state,
                               GM_ADDR tiling) {
-    const KdaChunkTiling* t = reinterpret_cast<const KdaChunkTiling*>(tiling);
+    const __gm__ KdaChunkTiling* t = ReadTiling<KdaChunkTiling>(tiling);
     b_ = t->batch;
     h_ = t->heads;
     s_ = t->seq_len;
@@ -51,7 +55,7 @@ class KdaChunkKernel {
     const int32_t core = GetBlockIdx();
     const int32_t bh_total = b_ * h_;
     const int32_t begin = core * bh_per_core_;
-    const int32_t end = Min(begin + bh_per_core_, bh_total);
+    const int32_t end = MinI(begin + bh_per_core_, bh_total);
     for (int32_t bh = begin; bh < end; ++bh) {
       ProcessHead(bh);
     }
