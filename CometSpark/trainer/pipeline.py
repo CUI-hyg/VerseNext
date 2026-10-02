@@ -14,10 +14,17 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import yaml
 
 from verse_core import EventBus, get_logger
 from verse_nn.transformer import build_model, count_parameters
 from verse_tokenizer.bpe import BPETokenizer
+from verse_trainer.data import DataConfig
+from verse_trainer.plan import (
+    TrainStage,
+    check_chain_resume,
+    load_chain_plan,
+)
 from verse_trainer.trainer import Trainer, TrainerConfig
 
 from model import CometSparkConfig, MODEL_NAME
@@ -390,19 +397,216 @@ def train(
     return summary
 
 
+# ------------------------------------------------------- train_plan（阶段链）
+
+def _stage_path(root: Path, value: str | None) -> str | None:
+    """阶段里的数据路径：相对路径按项目根解析（与 run.py 的 --data 一致）。"""
+    if not value:
+        return None
+    path = Path(value)
+    return str(path if path.is_absolute() else root / path)
+
+
+def _save_chain_resolved(cfg: TrainerConfig, plan_path, plan, summary, path: Path) -> None:
+    """固化阶段链的完整配置与逐阶段结果（便于复现与追溯）。
+
+    不能直接用 ``cfg.save()``：它只写 TrainerConfig，丢失「链」这一层信息
+    （每阶段的步数/数据/覆盖项/步号区间）。
+    """
+    data = cfg.to_dict()
+    data["chain"] = {
+        "plan": str(plan_path),
+        "horizon_steps": cfg.optim.max_steps,
+        "total_steps": plan.total_steps(),
+        "stages": [
+            {
+                "name": spec.name,
+                "steps": spec.steps,
+                "data": spec.data,
+                "val": spec.val,
+                "seq_len": spec.seq_len if spec.seq_len is not None else cfg.data.seq_len,
+                "batch_size": (spec.batch_size if spec.batch_size is not None
+                               else cfg.data.batch_size),
+                "lr": spec.lr if spec.lr is not None else cfg.optim.lr,
+                "start_step": result["start_step"],
+                "end_step": result["end_step"],
+                "skipped": result["skipped"],
+                "tokens": result.get("tokens", 0),
+                "final_loss": result["final_loss"],
+                "checkpoint": result["checkpoint"],
+            }
+            for spec, result in zip(plan.stages, summary.get("stages", []))
+        ],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
+                    encoding="utf-8")
+
+
+def train_plan(
+    plan_path: str | Path,
+    config_path: str | Path,
+    root: Path,
+    event_bus: EventBus | None = None,
+    threads_override: int | None = None,
+    device_override: str | None = None,
+    resume_from: str | Path | None = None,
+    allow_data_change: bool = False,
+    horizon_steps: int | None = None,
+) -> dict:
+    """接续训练：按训练计划（阶段链）训练 CometSpark 模型，返回聚合摘要。
+
+    与 :func:`train` 的关键差别是**模型只构建一次**：每个阶段换数据集与（可选的）
+    超参，但权重/优化器动量/LR 调度全程常驻，阶段之间没有任何序列化往返。
+
+    Args:
+        plan_path: 训练计划 yaml（见 ``config/chain_example.yaml``）。
+        config_path: 主配置（模型架构、优化器、默认 data 形状等）。
+        root: 项目根目录。
+        resume_from: 续训的 checkpoint。若它来自阶段链，会校验链结构一致并跳过
+            已完成的阶段；若来自单段训练，则以该断点作为链的起点。
+        allow_data_change: 链数据指纹变化时是否放行。
+        horizon_steps: 覆盖 cosine 衰减地平线（默认取计划里的 ``horizon_steps``，
+            再退化为各阶段步数之和）。
+
+    产物：
+    - 每阶段 ``checkpoints/{MODEL_NAME}_chain{i:02d}_{name}.pt``
+      （刻意不以 ``_final.pt`` 结尾，避免被 ``run.py`` 的自动发现当成可推理模型）；
+    - 链尾 ``checkpoints/{MODEL_NAME}_chain_final.pt``；
+    - ``config/{MODEL_NAME}_chain_resolved.yaml``（含逐阶段记录）。
+    """
+    plan = load_chain_plan(plan_path)
+
+    cfg = TrainerConfig.load(config_path)
+    cfg.model_name = "cometspark"
+    cfg.ckpt_dir = str((root / cfg.ckpt_dir).resolve())
+    if threads_override is not None and threads_override > 0:
+        cfg.num_threads = threads_override
+    if device_override:
+        cfg.device = device_override
+
+    tok = load_tokenizer()
+
+    # 逐阶段解析数据；同一 (路径, 文本参数, 加载选项) 复用，避免重复分词/加载
+    cache: dict[tuple, tuple] = {}
+    stages: list[TrainStage] = []
+    for spec in plan.stages:
+        train_path, eval_path = _resolve_data_paths(
+            root, _stage_path(root, spec.data), _stage_path(root, spec.val)
+        )
+        text_kwargs = spec.text_kwargs()
+        key = (str(train_path), str(eval_path), spec.token_dtype, spec.mmap_tokens,
+               json.dumps(text_kwargs, sort_keys=True))
+        if key not in cache:
+            cache[key] = prepare_tokens(
+                tok, train_path, eval_path, text_kwargs=text_kwargs,
+                token_dtype=spec.token_dtype, mmap_tokens=spec.mmap_tokens,
+            )
+        train_tokens, eval_tokens = cache[key]
+
+        seq_len = spec.seq_len if spec.seq_len is not None else cfg.data.seq_len
+        if eval_tokens is not None and len(eval_tokens) < seq_len + 1:
+            logger.warning("阶段 [%s] 验证集 tokens(%d) 不足 seq_len+1(%d)，跳过评估",
+                           spec.name, len(eval_tokens), seq_len + 1)
+            eval_tokens = None
+
+        stages.append(TrainStage(
+            name=spec.name,
+            steps=spec.steps,
+            train_source=train_tokens,
+            eval_source=eval_tokens,
+            data_config=DataConfig(
+                batch_size=spec.batch_size if spec.batch_size is not None
+                else cfg.data.batch_size,
+                seq_len=seq_len,
+                seed=cfg.data.seed,
+                drop_last=cfg.data.drop_last,
+            ),
+            lr=spec.lr,
+            grad_accum_steps=spec.grad_accum_steps,
+            eval_every=spec.eval_every,
+            ckpt_every=spec.ckpt_every,
+            loss_chunk_size=spec.loss_chunk_size,
+        ))
+
+    # 续训：先校验链一致性拿到 plan_base，再据此定地平线
+    payload = None
+    plan_base = 0
+    if resume_from is not None:
+        payload = _load_payload(resume_from)
+        cfg.model = CometSparkConfig.from_dict(payload["model_config"])
+        plan_base = check_chain_resume(
+            payload.get("chain_plan"), stages,
+            checkpoint_step=int(payload.get("global_step", 0)),
+            allow_data_change=allow_data_change,
+        )
+
+    if horizon_steps and horizon_steps > 0:
+        horizon = int(horizon_steps)
+    elif plan.horizon_steps:
+        horizon = int(plan.horizon_steps)
+    else:
+        horizon = plan_base + plan.total_steps()
+    # 地平线必须在 load_checkpoint 之前设好，否则会触发「地平线不一致」告警
+    cfg.optim.max_steps = horizon
+
+    cfg.validate()
+    cfg.stage = "chain"
+    trainer = Trainer(cfg, event_bus=event_bus)
+    if payload is not None:
+        trainer.load_checkpoint(resume_from)
+
+    params = trainer.model.num_parameters() / 1e6
+    logger.info("%s 阶段链训练：%.2fM 参数，%d 个阶段，step %d -> %d，地平线 %d",
+                MODEL_NAME, params, len(stages), trainer.global_step,
+                plan_base + plan.total_steps(), horizon)
+
+    summary = trainer.train_stages(stages, plan_base=plan_base, horizon_steps=horizon)
+
+    chain_ckpt = Path(cfg.ckpt_dir) / f"{MODEL_NAME}_chain_final.pt"
+    trainer.finalize("chain", path=chain_ckpt)
+    resolved_path = root / "config" / f"{MODEL_NAME}_chain_resolved.yaml"
+    _save_chain_resolved(cfg, plan_path, plan, summary, resolved_path)
+
+    summary["model"] = MODEL_NAME
+    summary["model_params_m"] = round(params, 2)
+    summary["checkpoint"] = str(chain_ckpt)
+    summary["resolved_config"] = str(resolved_path)
+    summary["plan"] = str(plan_path)
+    logger.info("阶段链训练完成: %s", json.dumps(
+        {k: v for k, v in summary.items() if k != "stages"}, ensure_ascii=False))
+    return summary
+
+
 # --------------------------------------------------------------- generate
 
-def load_for_inference(ckpt_path: str | Path, device: str = "cpu"):
+def load_for_inference(ckpt_path: str | Path, device: str = "auto",
+                       num_threads: int = 0, resources=None):
     """从 checkpoint 恢复模型与分词器，返回 (model, tokenizer, config)。
 
     加载后校验参数量与 checkpoint 元数据一致，避免架构不匹配导致的
     「参数量减半/权重对不上」被静默接受。
 
+    ``device="auto"``（默认）按设备优先级自动选（NPU > CUDA > CPU），并按
+    :class:`~verse_trainer.resources.ResourceConfig` 加资源锁；此前默认 ``cpu``，
+    在有加速器的机器上也会退化成 CPU 推理。
+
+    Args:
+        num_threads: 覆盖 CPU 线程数（0 = 按 ``resources.cpu_fraction`` 取比例）。
+        resources: :class:`~verse_trainer.resources.ResourceConfig`；None 用默认。
+
     注意：final checkpoint 默认保留优化器状态（数 GB），加载完权重后会
     立即释放 ``model_state``/``optimizer_state`` 等大张量，避免推理进程
     额外驻留一份优化器状态。
     """
-    payload = torch.load(ckpt_path, map_location=device, weights_only=False)
+    from verse_nn.devices import detect_backend
+    from verse_trainer.resources import ResourceConfig, apply_resource_limits
+
+    backend = detect_backend(device)
+    # 资源锁只在这里加一次：generate / ChatSession 都经由本函数加载模型
+    apply_resource_limits(num_threads, resources or ResourceConfig(), backend.device_type)
+    # 显式给 map_location 一个具体设备串：torch.load 不认识 "auto"
+    payload = torch.load(ckpt_path, map_location=backend.device_type, weights_only=False)
     if "model_state" not in payload:
         raise ValueError(
             f"{ckpt_path} 不含 model_state（可能是 LoRA 适配器）。"
@@ -410,7 +614,7 @@ def load_for_inference(ckpt_path: str | Path, device: str = "cpu"):
         )
     model_cfg = CometSparkConfig.from_dict(payload["model_config"])
     expected = payload.get("param_count")
-    model = build_model("cometspark", model_cfg).to(torch.device(device))
+    model = build_model("cometspark", model_cfg).to(torch.device(backend.device_type))
     model.load_state_dict(payload["model_state"])
     # 权重已拷入模型，尽快释放 payload 中的大张量（尤其优化器状态）
     payload.pop("model_state", None)
@@ -423,60 +627,36 @@ def load_for_inference(ckpt_path: str | Path, device: str = "cpu"):
     return model, tok, model_cfg
 
 
-@torch.no_grad()
 def generate(prompt: str, ckpt_path: str | Path, max_new_tokens: int = 24,
              temperature: float = 0.7, top_k: int = 40, top_p: float = 0.9,
              repetition_penalty: float = 1.1, no_repeat_ngram: int = 3,
-             greedy: bool = False, chat: bool = False) -> str:
-    """从 checkpoint 加载模型并续写 prompt。
+             greedy: bool = False, chat: bool = False,
+             device: str = "auto", dtype: str = "auto") -> str:
+    """单次生成：``chat=False`` 自由续写，``chat=True`` 走 ChatML 对话。
+
+    内部复用 :class:`~trainer.chat.ChatSession`（模型加载、设备选择、autocast、
+    模板渲染、停止符处理都在那里统一实现），单轮调用只是建一个临时会话。
 
     Args:
         chat: True 时用 ChatML 模板包裹 prompt（SFT 后的模型按对话格式
             训练，推理需保持一致格式才能触发回答行为）。
         top_p / repetition_penalty / no_repeat_ngram: 抑制复读与乱码的
             采样控制；``greedy=True`` 时忽略 temperature/top_k/top_p。
+        device/dtype: 推理设备与混合精度；``auto`` 按设备能力自动选。
 
-    停止符同时包含 ``<|endoftext|>`` 与 ``<|im_end|>``，避免对话模型
-    在回答结束后继续输出模板标记（表现为乱码）。
+    Returns:
+        ``chat=False`` 返回完整解码文本（含 prompt）；``chat=True`` 返回助手
+        回答（已裁掉模板与 ``<|im_end|>``）。
     """
-    model, tok, model_cfg = load_for_inference(ckpt_path)
-    eos_id = load_endoftext_id(tok)
-    stop_ids = {tid for tid in (
-        tok.special_tokens.get(ENDOFTEXT),
-        tok.special_tokens.get("<|im_end|>"),
-    ) if tid is not None}
-    if chat:
-        from verse_tokenizer import ChatTemplate
+    from .chat import ChatSession
 
-        template = ChatTemplate.from_pretrained(getattr(tok, "_tokenizer_dir", "."))
-        im_end = tok.special_tokens.get("<|im_end|>")
-        if im_end is not None:
-            eos_id = im_end  # ChatML 回答以 <|im_end|> 结束
-        render_kwargs = {}
-        # tokenizer 无 <|bos|> 特殊 token 时传空串，避免 BPE 兜底产生越界 id
-        if "<|bos|>" not in tok.special_tokens:
-            render_kwargs["bos_token"] = ""
-        prompt = template.render(
-            [{"role": "user", "content": prompt}],
-            add_generation_prompt=True, **render_kwargs,
-        )
-    ids = tok.encode(prompt)
-    if not ids:
-        raise ValueError("prompt 分词结果为空")
-    input_ids = torch.tensor([ids], dtype=torch.long, device=model.device)
-    out = model.generate(
-        input_ids,
-        max_new_tokens=max_new_tokens,
-        temperature=temperature,
-        top_k=top_k,
-        top_p=top_p,
-        repetition_penalty=repetition_penalty,
-        no_repeat_ngram=no_repeat_ngram,
-        greedy=greedy,
-        eos_token_id=eos_id,
-        stop_token_ids=stop_ids,
+    session = ChatSession(
+        str(ckpt_path), device=device, dtype=dtype,
+        max_new_tokens=max_new_tokens, temperature=temperature, top_k=top_k,
+        top_p=top_p, repetition_penalty=repetition_penalty,
+        no_repeat_ngram=no_repeat_ngram, greedy=greedy,
     )
-    return tok.decode(out[0].tolist(), skip_special_tokens=True)
+    return session.ask(prompt) if chat else session.complete(prompt)
 
 
 # -------------------------------------------------- finetune / sft（后训练）

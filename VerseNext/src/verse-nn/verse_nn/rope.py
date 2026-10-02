@@ -24,6 +24,10 @@ class RotaryEmbedding(torch.nn.Module):
         self.max_seq_len = max_seq_len
         inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
         self.register_buffer("inv_freq", inv_freq, persistent=False)
+        # (offset, end, dtype, device, 缓冲区指纹) -> (cos, sin) 的 dtype/切片缓存。
+        # cos/sin 表构建后不可变，同一切片在不同层、不同 forward 里完全一致，缓存
+        # 可省掉每层一次 fp32->bf16 的 cast 与分配（24 层 × 每次 forward 共 48 次）。
+        self._cast_cache: dict[tuple, tuple[torch.Tensor, torch.Tensor]] = {}
         self._build_cache(max_seq_len)
 
     def _build_cache(self, seq_len: int) -> None:
@@ -33,6 +37,7 @@ class RotaryEmbedding(torch.nn.Module):
         self.register_buffer("cos_cached", emb.cos(), persistent=False)
         self.register_buffer("sin_cached", emb.sin(), persistent=False)
         self.max_seq_len = seq_len
+        self._cast_cache.clear()  # 表已重建，旧缓存作废
 
     def forward(
         self, x: torch.Tensor, seq_len: int, offset: int = 0
@@ -46,8 +51,21 @@ class RotaryEmbedding(torch.nn.Module):
         end = offset + seq_len
         if end > self.max_seq_len:
             self._build_cache(end)
-        cos = self.cos_cached[offset:end].to(dtype=x.dtype)
-        sin = self.sin_cached[offset:end].to(dtype=x.dtype)
+        cos_c, sin_c = self.cos_cached, self.sin_cached
+        # 缓冲区指纹（device+dtype+data_ptr）确保模块被 ``.to(...)`` 搬走后
+        # 不会命中旧缓存；``_build_cache`` 会主动清空。
+        key = (
+            offset, end, x.dtype,
+            str(cos_c.device), cos_c.dtype, cos_c.data_ptr(), sin_c.data_ptr(),
+        )
+        hit = self._cast_cache.get(key)
+        if hit is not None:
+            return hit
+        cos = cos_c[offset:end].to(dtype=x.dtype)
+        sin = sin_c[offset:end].to(dtype=x.dtype)
+        if len(self._cast_cache) >= 16:
+            self._cast_cache.clear()
+        self._cast_cache[key] = (cos, sin)
         return cos, sin
 
 

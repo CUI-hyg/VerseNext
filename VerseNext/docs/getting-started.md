@@ -65,4 +65,18 @@ token id 序列传入 `Trainer.train(tokens, eval_tokens)`，或仿照
 ## 后训练 / 微调 / 分词器
 
 见 [post-training.md](post-training.md)：BPE 分词器训练、chat_template.jinja、
-LoRA SFT 微调、对话生成与 CPU 推理优化。
+LoRA SFT 微调、**接续训练（训练阶段链）**、对话生成与交互式多轮对话（REPL）、
+CPU 推理优化。
+
+## CometSpark CLI
+
+`CometSpark/run.py` 是端到端 CLI（配置 / checkpoint 自动发现）：
+
+```bash
+python run.py train                      # 预训练
+python run.py train --plan config/chain_example.yaml   # 接续训练（多阶段换数据集）
+python run.py train --resume             # 断点续训（逐位一致）
+python run.py sft --data data/sft_demo.json --lora-rank 8
+python run.py generate --prompt "机器学习" --chat --device npu --dtype bf16
+python run.py chat                       # 交互式多轮对话 REPL
+```

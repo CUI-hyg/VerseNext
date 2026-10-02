@@ -1,6 +1,6 @@
 # HANDOFF — VerseNext_Exp
 
-工作区交接文档。最后更新：2026-10-01。
+工作区交接文档。最后更新：2026-10-02。
 
 ## 1. 这是什么
 
@@ -19,15 +19,16 @@
 1. **CPU**：并行计算、混合精度推理、推理专项优化。
 2. **GPU**：针对 CUDA & ROCm 编写自研训练&推理底层算子，面向 VerseNext + CometSpark
    做专项优化，瞄准高吞吐。
-3. **华为 CANN NPU**：适配，资源锁 50%，性能目标与 GPU 同级。
+3. **华为 CANN NPU**：适配，资源锁（CPU/CUDA 50%，**NPU 70%**），性能目标与 GPU 同级。
 
 ### 已完成
 
 - **设备抽象层**（`VerseNext/src/verse-nn/verse_nn/devices/`）
   - `caps.py`：`DeviceCaps` 能力描述（bf16/tf32/flash、warp 宽度、共享内存、架构串）。
   - `backend.py`：`Backend` 注册表（CPU / CUDA / ROCm / CANN NPU / XPU / MPS），
-    统一 `lock_resources` **50% 资源锁**（CPU 线程 / CUDA·ROCm 显存 + TF32 /
-    NPU 显存 + AI Core 占比目标）；后端不可用自动回退 CPU。
+    统一 `lock_resources` **资源锁**（CPU 线程 / CUDA·ROCm 显存 + TF32 /
+    NPU 显存 + AI Core 占比目标；NPU 默认 **70%**，其余 50%）；
+    后端不可用自动回退 CPU。
 - **CPU 专项**（`kernels/cpu_ops.py`）
   - 融合残差加+RMSNorm、SwiGLU、分块 CE（跨 chunk 复用 logits 缓冲）。
   - `parallel_map` 线程池：KDA 按 batch×head 切片并行。
@@ -84,12 +85,75 @@ torch_npu 2.10.0.post4。
 三个坑（详见 `docs/kernels.md`「踩过的坑」）：自定义算子名不能与 CANN 内建重名；
 kernel 入口必须 `REGISTER_TILING_DEFAULT`；单入口二进制下 `SetTilingKey(0)`。
 
+### 本轮任务（2026-10-02）
+
+四项需求，全部完成并验证：
+
+**1. 训练 ETA（自动估算时间）失效** — 已修
+
+- 根因：`run.py` 把 trainer 广播的**绝对** `global_step` 当 rich 进度条的
+  `completed`，而 `total` 是本次 run 的步数。续训/阶段链下 `completed` 远超
+  `total`，rich 由增量推出的 `speed` 变负、`time_remaining` 夹到 `0:00:00`。
+- 修复：trainer 新增 **`train/start`** 事件（`start_step`/`total_steps`/`stage`），
+  `run.py` 换算成相对步号。测试 `tests/test_train_events.py`。
+
+**2. 接续训练（训练阶段链）** — 已实现并接入 `run.py`
+
+- 新增 `verse_trainer/plan.py`（`ChainPlan`/`StageSpec`/`TrainStage` +
+  `load_chain_plan`/`chain_fingerprint`/`check_chain_resume`）与
+  `Trainer.train_stages()`：模型/优化器/调度器只建一次并常驻，阶段间不重载、
+  不重开 warmup，共用一条 warmup-cosine 曲线；**每阶段可换数据集**并可覆盖
+  `lr`/`seq_len`/`batch_size`/`grad_accum_steps`/`eval_every`/`ckpt_every`/
+  `loss_chunk_size`。
+- CLI：`python run.py train --plan config/chain_example.yaml`；`--resume` 跳过
+  已完成阶段；阶段链指纹写入 checkpoint，换数据需 `--allow-data-change`。
+- 产物：`{model}_chain{i:02d}_{name}.pt` / `{model}_chain_final.pt` /
+  `{model}_chain_resolved.yaml`。
+- 测试：`test_train_plan.py`（17 例，含 LR 连续性、阶段续训逐位一致、迭代器
+  不泄漏）、`test_cometspark_chain.py`（端到端产物 / 跳过 / 换数据守卫）。
+- 已在 NPU 上跑通 2 阶段链（`alpha → beta`，各 3 步，产物齐全）。
+
+**3. NPU 调用与处理优化，限额提到 70%** — 已完成
+
+- **修掉 3 个真实 bug**（详见 `Changelogs.md` / `docs/kernels.md`）：
+  - SOC 名 `Ascend910_9362` 匹配不到旧表 → bf16/UB/AI Core 全部探测失败，
+    导致 NPU 上 fp16 训练**没有 loss scaling**。改为优先
+    `torch.npu.is_bf16_supported()` + `get_device_properties().cube_core_num`。
+  - `chunked_ce_fwd` 只有 schema 没有 NPU 实现 → 被 `VariableFallbackKernel`
+    搬回 CPU 后抛异常再回退。新增 `_has_npu_kernel()` 守卫，
+    实测单步 **18.09ms → 1.73ms**。
+  - `getattr(torch, "fp16")` 抛 `AttributeError`（`--dtype fp16` 直接崩）。
+- **热路径优化**：因果掩码缓存（31.6µs → 0.6µs）、RoPE 系数缓存、SwiGLU 候选
+  顺序反转（74.5µs vs CANN 182.1µs）、`lru_cache`、NPU 锁页内存。
+- **限额 50% → 70%**（`npu_mem_fraction`/`npu_core_fraction`），实测
+  `线程 20/40, mem 70%, AI cores 14/20`。
+
+**4. `run.py` 交互式对话 + 性能优化** — 已完成
+
+- 新增 `CometSpark/trainer/chat.py::ChatSession`（模型常驻、多轮历史、
+  `inference_mode` + 设备 autocast、ChatML 模板与停止符处理）。
+- `python run.py chat` REPL：`/help` `/reset` `/history` `/exit`，
+  `--device`/`--dtype`/`--system`/`--max-history-turns`。
+- 推理默认设备 `cpu` → **`auto`**（此前 NPU 机器上 `generate` 也在跑 CPU），
+  并按 `ResourceConfig` 加资源锁。
+- 已在 NPU 上跑通真实 0.6B checkpoint 多轮对话（device=npu dtype=bf16）。
+- 测试：`tests/test_chat_session.py`（纯逻辑 + 极小 checkpoint 端到端 +
+  `run.py` REPL 脚本化输入）。
+
 ### 验证方式
 
 ```bash
 cd VerseNext
 export PYTHONPATH=$(ls -d src/*/ | tr '\n' ':')   # 包未 pip 安装，必须设 PYTHONPATH
-python -m pytest tests/ -q                         # 175 passed（CPU 机器上 NPU 用例自动 skip）
+python -m pytest tests/ -q                         # 222 passed（CPU 机器上 NPU 用例自动 skip）
+```
+
+CometSpark 端到端（NPU）：
+
+```bash
+cd CometSpark
+python run.py train --plan config/chain_example.yaml        # 接续训练（阶段链）
+python run.py chat --device npu --dtype bf16                # 交互式多轮对话
 ```
 
 ## 3. 未完成 / 待办
@@ -102,10 +166,12 @@ python -m pytest tests/ -q                         # 175 passed（CPU 机器上 
    当前由 CANN 原生算子 / 参考实现覆盖。接入前需先按 `docs/kernels.md`
    「踩过的坑」改造（`REGISTER_TILING_DEFAULT`、`DTYPE_*` 分派、算子改名），
    再纳入 `build.sh` 的 `OPS` 列表。
-3. **无性能基准**。任务要求 NPU 性能与 GPU 同级，目前只验证了正确性，没有实测
-   吞吐/时延数据。`flash_attn.cu` 自述为未用 tensor core 的 SIMT 实现，
-   训练吞吐仍有优化空间。
-4. **CometSpark 端到端回归**未在 GPU/NPU 上跑过，需确认融合算子接入后的真实吞吐。
+3. **无系统性性能基准**。已补上算子级微基准（见 `docs/kernels.md` 的 NPU 热路径
+   表）与端到端跑通，但仍缺「NPU vs GPU 同级」的吞吐对比。
+   `flash_attn.cu` 自述为未用 tensor core 的 SIMT 实现，训练吞吐仍有优化空间。
+4. **CometSpark 已在 NPU 上端到端跑通**（阶段链训练 + 多轮对话），GPU 侧未回归。
+5. **对话不跨轮复用 KV 缓存**：`VerseTransformer.generate` 不接受外部缓存，
+   REPL 每轮重新 prefill 全部历史。长对话（>几十轮）可考虑暴露 cache 接口。
 
 ## 4. 环境与注意事项
 

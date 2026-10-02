@@ -18,7 +18,7 @@ verse_nn.kernels._dispatch          三级回退派发 + KernelPolicy 开关
         ▼
 verse_nn.kernels.reference          纯 PyTorch 基准 / 最终兜底
         ▲
-verse_nn.devices                    能力探测（DeviceCaps）+ 后端注册 + 50% 资源锁
+verse_nn.devices                    能力探测（DeviceCaps）+ 后端注册 + 资源锁
 ```
 
 公开 API 全部是设备无关的：
@@ -159,20 +159,44 @@ python -m verse_nn.kernels.build --backend npu
 compute unit），跑完 msopgen → 编译 → 安装算子包 → 编译 torch 适配层，
 产物落在 `verse_nn/kernels/_build/npu/verse_nn_kernels.so`。
 
-## 资源锁（默认 50%）
+## 资源锁（CPU/CUDA 默认 50%，NPU 默认 70%）
 
 `verse_nn.devices.Backend.lock_resources` 每个后端一套实现，由
 `verse_trainer.resources.apply_resource_limits` 统一调用：
 
-| 后端 | 50% 锁的对象 |
+| 后端 | 锁的对象（比例来自 `ResourceConfig`） |
 |---|---|
-| CPU | 线程数 = affinity 可用核 × `cpu_fraction`；flush denormal |
-| CUDA / ROCm | `set_per_process_memory_fraction`；TF32 + cudnn.benchmark |
-| CANN NPU | `torch.npu.set_per_process_memory_fraction` + 记录 AI Core 占比目标 |
+| CPU | 线程数 = affinity 可用核 × `cpu_fraction`（默认 0.5）；flush denormal |
+| CUDA / ROCm | `set_per_process_memory_fraction`（`gpu_mem_fraction`，默认 0.5）；TF32 + cudnn.benchmark |
+| CANN NPU | `set_per_process_memory_fraction`（`npu_mem_fraction`，默认 **0.7**）+ AI Core 占比目标（`npu_core_fraction`，默认 **0.7**） |
 
-NPU 的 AI Core 占比（`ai_core_fraction` / `ai_cores_target`）单卡内按核切分需
-平台侧 `npu-smi` 配额，本层记录并告警，进程侧通过 `ASCEND_RT_VISIBLE_DEVICES`
-限制可见设备。内存另有 `MemoryGuard` 软上限告警。
+昇腾单卡独占时显存充足（910_9362 ≈66GB），70% 才能喂饱 Cube/Vector 流水所需的
+batch/seq_len，故 NPU 的默认值高于 CPU/CUDA 的 50%。
+
+AI Core 数优先从 `torch.npu.get_device_properties(0).cube_core_num` 读真实值
+（本机 20），回退 `vector_core_num` / `multi_processor_count`，再回退 SOC 串匹配
+表；`ai_core_fraction` / `ai_cores_target` 单卡内按核切分需平台侧 `npu-smi`
+配额，本层记录并告警，进程侧通过 `ASCEND_RT_VISIBLE_DEVICES` 限制可见设备。
+内存另有 `MemoryGuard` 软上限告警。
+
+### NPU 热路径优化
+
+| 优化 | 说明 | 实测（910_9362） |
+|---|---|---|
+| 因果掩码缓存 | `npu_fusion_attention` 需显式 `(S,S)` bool 掩码，按 `(S,kv,device)` 缓存 | 31.6µs → 0.6µs（S=2048） |
+| RoPE 系数缓存 | cos/sin 切片 + dtype cast 按缓冲区指纹缓存；`_rope_coeff` 按张量身份缓存 | 省掉每层一次 cast/分配 |
+| SwiGLU 候选顺序 | 自研 AscendC 优先于 CANN（后者要先 `torch.cat`） | 74.5µs vs 182.1µs |
+| `chunked_ce_fwd` 守卫 | 只有 schema、无 NPU 实现时直接跳过（见下） | 18.09ms → 1.73ms |
+| `lru_cache` | `npu_available` / `_torch_npu` / `_custom_ns`（每层调 4~6 次） | 0.12µs |
+| 锁页内存 | NPU 训练数据 `pin_memory()` + `non_blocking` H2D | 拷贝与计算重叠 |
+
+**只有 schema 不算实现**：`csrc/ascend/bindings_npu.cpp` 用 `TORCH_LIBRARY`
+统一 `m.def` 了 6 个 schema，但只 `m.impl` 了 `add_rms_norm_fwd` / `swiglu_fwd`。
+其余算子在 NPU 张量上会被 torch_npu 的 `VariableFallbackKernel` 接住搬回 CPU，
+而它们又没有 CPU kernel → 抛 `NotImplementedError`。`npu_ops` 用
+`_has_npu_kernel()`（`torch._C._dispatch_has_kernel_for_dispatch_key`）逐个确认
+是否真的挂了 `PrivateUse1` 实现，没有就直接返回 None 让派发层用设备上的参考
+实现——否则每个训练 step 都会白付一次失败的派发 + 异常构造。
 
 ## 正确性契约与测试
 
@@ -180,9 +204,11 @@ NPU 的 AI Core 占比（`ai_core_fraction` / `ai_cores_target`）单卡内按�
 
 - `tests/test_kernels.py`：参考实现 vs 仓库原实现、CPU 优化实现 vs 参考、
   梯度回传、策略开关与降级。
-- `tests/test_devices.py`：能力探测、后端注册、50% 资源锁。
+- `tests/test_devices.py`：能力探测（含 `Ascend910_9362` 这类 SOC 串的
+  bf16/UB/AI Core 识别）、后端注册、资源锁默认值（NPU 0.7）。
 - `tests/test_npu_ops.py`：昇腾设备算子对拍（CANN 原生 + 自研 AscendC），
-  并验证派发**没有**静默回退到参考实现。无 NPU 时整个模块 skip。
+  验证派发**没有**静默回退到参考实现，并覆盖掩码/系数缓存、SwiGLU 候选顺序、
+  未实现算子被跳过。无 NPU 时整个模块 skip。
 - `tests/test_quant.py`：int8 数值正确性、层替换范围、回退行为。
 - `tests/test_kernel_build.py`：构建探测 + **Python 引用名与 C++ 注册名的
   静态一致性校验**（防止 `.so` 编译成功却因名字不匹配被判为不可用）。

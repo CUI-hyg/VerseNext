@@ -8,6 +8,39 @@
 
 ### Added
 
+- **训练阶段链 / 接续训练**（`verse-trainer/plan.py` + `CometSpark`）
+  - `ChainPlan`/`StageSpec`/`TrainStage` + `load_chain_plan`/`stage_bounds`/
+    `chain_fingerprint`/`check_chain_resume`：把一个模型的训练拆成有序多阶段，
+    **每阶段可换数据集**，并可覆盖 `lr`/`seq_len`/`batch_size`/
+    `grad_accum_steps`/`eval_every`/`ckpt_every`/`loss_chunk_size`。
+  - `Trainer.train_stages(stages, horizon_steps=...)`：模型 / 优化器动量 /
+    LR 调度器只构建一次并全程常驻，阶段之间**不重载权重、不重开 warmup**，
+    共用一条 warmup-cosine 曲线（地平线 = 各阶段步数之和）；每阶段边界用
+    **新建的 `DataConfig`** 构造迭代器（`TokenBatchIterator` 持有传入对象，
+    复用会被后续阶段追溯性改写）。新增事件 `train/start` / `train/stage_start`
+    / `train/stage_end`。产物：每阶段 `{model}_chain{i:02d}_{name}.pt`、
+    链尾 `{model}_chain_final.pt`、固化配置 `{model}_chain_resolved.yaml`。
+  - 续训：`--resume` 跳过已完成阶段、从中断阶段接着跑（LR/调度器/动量连续，
+    实测与不间断训练逐位一致）；阶段链指纹（含各阶段数据内容）写入 checkpoint，
+    换数据需显式 `--allow-data-change`。
+  - CLI：`python run.py train --plan config/chain_example.yaml`（示例计划见
+    `CometSpark/config/chain_example.yaml`）。
+  - 测试：`test_train_plan.py`（框架层 17 例：LR 连续性、阶段续训逐位一致、
+    迭代器不泄漏、跳过已完成阶段、早停结束整条链）、
+    `test_cometspark_chain.py`（管线层：产物 / 续训跳过 / 换数据守卫）。
+- **交互式多轮对话（REPL）**（`CometSpark/trainer/chat.py` + `run.py chat`）
+  - `ChatSession`：模型**只加载一次**并常驻，维护多轮历史（`max_history_turns`
+    按整轮裁剪）、`torch.inference_mode` + 设备 autocast、ChatML 模板渲染与
+    停止符裁剪（`<|im_end|>`/`<|endoftext|>`）；纯逻辑（历史裁剪 / 消息拼装 /
+    回答裁剪 / dtype 解析）抽成模块级函数便于单测。
+  - `run.py chat` REPL：`/help`、`/reset`、`/history`、`/exit`，Ctrl-C / Ctrl-D
+    也可退出；`--device`/`--dtype`/`--system`/`--max-history-turns` + 采样参数。
+  - 推理默认设备由 `cpu` 改为 **`auto`**（`load_for_inference` / `generate`）：
+    按设备优先级自动选 NPU > CUDA > CPU 并按 `ResourceConfig` 加资源锁；此前
+    昇腾机器上 `generate` 也在跑 CPU。`generate` 新增 `--device`/`--dtype`，
+    内部复用 `ChatSession`。
+  - 测试：`test_chat_session.py`（纯逻辑 + 极小 checkpoint 端到端多轮 +
+    `run.py` REPL 脚本化输入）。
 - **底层算子与设备专项优化**（`verse-nn` / `verse-trainer`）
   - **设备抽象层**（`verse-nn/devices/`）：`DeviceCaps` 能力描述（bf16/tf32/
     flash 支持、warp 宽度、共享内存、架构串）+ `Backend` 注册表
@@ -82,6 +115,24 @@
 
 ### Changed
 
+- **NPU 默认资源限额 50% → 70%**（`ResourceConfig.npu_mem_fraction` /
+  `npu_core_fraction`）：昇腾单卡独占时显存充足（本机 910_9362 ≈66GB），给到
+  70% 才能喂饱 Cube/Vector 流水所需的 batch/seq_len。CPU/CUDA 仍为 50%。
+  示例配置 `cometspark_exp_0.3.yaml` 同步显式写出。
+- **NPU 热路径算子优化**（`kernels/npu_ops.py` / `verse_nn/rope.py` /
+  `verse_trainer/data.py`）
+  - `npu_available()` / `_torch_npu()` / `_custom_ns()` 加 `lru_cache`：每个
+    transformer 层要调 4~6 次，省掉重复的 `is_available()` 与 import 查找。
+  - **因果掩码缓存**：`npu_fusion_attention` 需要显式 `(S,S)` bool 掩码，
+    按 `(seq_len, kv_len, device)` 缓存后单次 31.6µs → 0.6µs（S=2048）。
+  - **RoPE 系数缓存**：`RotaryEmbedding` 的 cos/sin 切片与 dtype cast
+    （fp32 → autocast 的 bf16）按缓冲区指纹缓存，省掉每层一次 cast/分配；
+    `_rope_coeff` 再按张量身份缓存 `(1,1,S,D)` 变换结果。
+  - **SwiGLU 候选顺序反转**：自研 AscendC 优先于 CANN `npu_swiglu`——后者只吃
+    拼接张量，调用方必须先 `torch.cat`。实测 910_9362 上 verse 74.5µs vs
+    CANN(含 cat) 182.1µs（cat 本身 110.6µs）。
+  - **`chunked_ce_fwd` 不再派发到 NPU**（见 Fixed）：单步 18.09ms → 1.73ms。
+  - NPU 训练数据用 `pin_memory()` + `non_blocking` H2D（此前只对 CUDA 开启）。
 - `VerseTransformer.forward` 新增 `return_logits` / `loss_chunk_size`：训练时
   可分块计算 lm_head + CE，避免物化 `(B,S,vocab)` logits 峰值（数值等价）。
 - 分词器性能（`verse-tokenizer/bpe.py`）：模块级正则 + 词级 BPE LRU 缓存 +
@@ -91,6 +142,41 @@
 
 ### Fixed
 
+- **训练自动估算时间（ETA）组件失效**（`run.py` + `verse-trainer`）
+  - 根因：`run.py` 把 trainer 广播的**绝对** `global_step` 当作 rich 进度条的
+    `completed`，而 `total` 是本次 run 的步数。断点续训/阶段链下
+    `completed`（如 1100）远超 `total`（如 100），rich 由
+    `ProgressSample` 增量推出的 `speed` 变成负数、`time_remaining` 被夹到
+    `0:00:00`，进度条直接卡在 100%。
+  - 修复：trainer 训练开始时广播新的 **`train/start`** 事件
+    （`start_step`/`total_steps`/`stage`），`run.py` 据此把进度条换算成
+    **本次 run 的相对步号**（`completed = step - offset`，`total = total - offset`）。
+    实测续训从 30% → 60% → 90% → 100% 正常推进。测试见 `test_train_events.py`。
+- **昇腾 NPU 能力探测全部失效**（`devices/backend.py`）：`torch.npu` 报告的
+  SOC 名是 `Ascend910_9362`（910B 的 93 系列），既不含 `910b` 也不含 `910c`，
+  旧匹配表全部落空——`supports_bf16=False`、`smem_per_block(UB)=0`、
+  `ai_cores_total=0`。后果是 `default_autocast_dtype()` 返回 fp16 而
+  GradScaler 只对 cuda 开启，**NPU 上 fp16 训练全程没有 loss scaling**。
+  现在 bf16 优先走 `torch.npu.is_bf16_supported()`、AI Core 数优先读
+  `get_device_properties().cube_core_num`（本机 20），SOC 串匹配补
+  `910_93`/`910_9`/`910d` 仅作回退。实测修复后 bf16=True、UB=192KB、
+  ai_cores=20（70% → 14 核）、autocast dtype=bf16。
+- **fp16 的 `GradScaler` 只对 CUDA 开启**（`trainer.py`）：昇腾（及 XPU）上
+  显式选 fp16 时会静默丢失 loss scaling 导致梯度下溢。改为 cuda/npu/xpu
+  一律按 `dtype == float16` 开启。
+- **只有 schema、没有 NPU 实现的自研算子被静默派发到 CPU**
+  （`kernels/npu_ops.py`）：`csrc/ascend/bindings_npu.cpp` 用 `TORCH_LIBRARY`
+  统一 `m.def` 了 6 个 schema，但只 `m.impl` 了 `add_rms_norm_fwd`/`swiglu_fwd`。
+  其余算子（`chunked_ce_fwd`/`kda_chunk_fwd`/`rope_fwd`/`flash_attn_fwd`）在 NPU
+  张量上会被 torch_npu 的 `VariableFallbackKernel` 接住搬回 CPU，且实际无 CPU
+  kernel → 抛 `NotImplementedError` → 被 `_try` 吞掉再回退参考实现。训练每步都
+  白付一次失败的派发 + 异常构造。新增 `_has_npu_kernel()`
+  （`torch._C._dispatch_has_kernel_for_dispatch_key`）与 `_custom_op()`，
+  未挂 PrivateUse1 实现的算子直接返回 None。实测 `chunked_cross_entropy`
+  单步 **18.09ms → 1.73ms**（约 10×）。
+- **`getattr(torch, "fp16")` 抛 `AttributeError`**（`inference.py` /
+  `trainer/chat.py`）：torch 只有 `float16`/`bfloat16`，没有 `fp16`/`bf16`
+  别名，`dtype="fp16"` 会直接崩。改为显式 dtype 映射表。
 - **昇腾 NPU 路径在真实硬件上跑通**（Ascend 910_9362 / CANN 9.1.0 /
   torch_npu 2.10）：`kernels/npu_ops.py` 此前用的是不存在的 `torch.npu.npu_*`，
   原生融合算子全部静默回退到参考实现（训练照跑、零加速）。已改为 `torch_npu`

@@ -7,14 +7,25 @@
     python run.py configs                       # 列出发现的配置与 checkpoint
     python run.py train [--config ...] [--steps N] [--threads N] [--data ...]  # 预训练
     python run.py train --resume [CKPT] [--steps N] [--allow-data-change]     # 断点续训
+    python run.py train --plan config/chain_example.yaml                      # 接续训练（阶段链）
     python run.py finetune --ckpt ... [--lr ...] [--lora-rank ...]             # 微调（文本流）
     python run.py sft --data chats.json [--lora-rank ...]                     # 指令微调（对话）
     python run.py generate --prompt "..." [--ckpt ...] [--chat]               # 续写/对话
+    python run.py chat [--ckpt ...]                                           # 交互式多轮对话
 
 config 与 checkpoint 均可自动发现：
 - config: ``config/cometspark_exp_<version>.yaml`` 中取版本最高者（当前 0.3 = Dense 0.6B）
 - checkpoint: 优先后训练产物（sft > finetune > pretrain，merged 优先于 final），
   否则取最大 step 的 ``step_N.pt``
+
+接续训练（``--plan``）：把一个模型的训练拆成有序的多个阶段，**每阶段换数据集**
+（可各自覆盖 lr / seq_len / batch_size / grad_accum 等）。模型、优化器动量与 LR
+调度只构建一次并全程常驻，阶段之间不重载权重、不重开 warmup，共用一条
+warmup-cosine 曲线。计划格式见 ``config/chain_example.yaml``。
+产物：每阶段 ``checkpoints/{MODEL_NAME}_chain{i:02d}_{name}.pt``，
+链尾 ``checkpoints/{MODEL_NAME}_chain_final.pt``，
+固化配置 ``config/{MODEL_NAME}_chain_resolved.yaml``。
+``--resume`` 时会跳过已完成的阶段、从中断的阶段接着跑。
 
 断点续训（``--resume``）：恢复权重 + 优化器动量 + LR 调度进度 + RNG + 监控/早停
 进度 + 数据指纹，做到续训与不间断训练**逐位一致**（不丢失、不折损）。
@@ -31,6 +42,7 @@ config 与 checkpoint 均可自动发现：
 from __future__ import annotations
 
 import argparse
+import math
 import re
 import sys
 from pathlib import Path
@@ -200,9 +212,26 @@ def _yaml_steps(config_path: Path) -> int:
     return int((yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}).get("steps", 300) or 300)
 
 
+def _fmt_loss(value) -> str:
+    """loss 展示：None/NaN 显示为 ``-``（例如阶段链已全部跑完、本次无新增步数）。"""
+    try:
+        if value is None or math.isnan(float(value)):
+            return "-"
+        return f"{float(value):.4f}"
+    except (TypeError, ValueError):
+        return "-"
+
+
 def _run_training_ui(title: str, rows: list[tuple[str, str]],
                      total_steps: int, run_fn) -> int:
-    """训练类子命令共享的 rich 进度/事件界面：run_fn(event_bus) -> summary。"""
+    """训练类子命令共享的 rich 进度/事件界面：run_fn(event_bus) -> summary。
+
+    ``total_steps`` 只是**预估值**（``--steps`` 或 yaml 的 ``steps``），用于
+    ``train/start`` 事件缺失时兜底。真实进度以 trainer 广播的
+    ``train/start``（``start_step``/``total_steps``）为准，并把绝对
+    ``global_step`` 换算成本次 run 的相对步号 —— 否则断点续训时
+    ``completed`` 会远超 ``total``，进度条卡在 100%、ETA 恒为 ``0:00:00``。
+    """
     import logging
 
     from verse_core import EventBus
@@ -229,13 +258,26 @@ def _run_training_ui(title: str, rows: list[tuple[str, str]],
     )
 
     with progress:
+        # 先按调用方的预估总步数建确定态进度条；trainer 广播 train/start 后
+        # 立即用「本次 run 的步号区间」校正（rich 在 total 变化时会重置采样，
+        # 此刻尚无采样，无副作用）。这样断点续训/阶段链也不会算错 ETA。
         task = progress.add_task("train", total=total_steps, loss="", lr="", speed="")
+        # 本次 run 的起始步号（trainer.global_step），用于把绝对步号换算成相对进度
+        state = {"offset": 0}
+
+        def on_start(event) -> None:
+            p = event.payload
+            start = int(p.get("start_step", 0) or 0)
+            # trainer 未给出总步数时退回调用方的预估值
+            total = int(p.get("total_steps", 0) or 0) or total_steps
+            state["offset"] = start
+            progress.update(task, total=max(total - start, 1), completed=0)
 
         def on_step(event) -> None:
             p = event.payload
             progress.update(
                 task,
-                completed=p["step"],
+                completed=max(p["step"] - state["offset"], 0),
                 loss=f"loss {p['loss']:.4f}",
                 lr=f"lr {p['lr']:.2e}",
                 speed=f"{p['tokens_per_second']:.0f} tok/s",
@@ -257,29 +299,54 @@ def _run_training_ui(title: str, rows: list[tuple[str, str]],
                 f"{event.payload['best_loss']:.4f}"
             )
 
+        def on_stage_start(event) -> None:
+            p = event.payload
+            progress.update(task, description=f"train [{p['index'] + 1}/{p['total']}] {p['name']}")
+
+        def on_stage_end(event) -> None:
+            p = event.payload
+            progress.console.print(
+                f"  :checkered_flag: 阶段 [bold]{p['name']}[/] 完成: "
+                f"[bold green]{p['final_loss']:.4f}[/] -> {p['checkpoint']}"
+            )
+
         event_bus = EventBus()
+        event_bus.subscribe("train/start", on_start)
         event_bus.subscribe("train/step_end", on_step)
         event_bus.subscribe("train/eval_end", on_eval)
         event_bus.subscribe("train/checkpoint", on_ckpt)
         event_bus.subscribe("train/early_stop", on_early_stop)
+        event_bus.subscribe("train/stage_start", on_stage_start)
+        event_bus.subscribe("train/stage_end", on_stage_end)
 
         try:
             summary = run_fn(event_bus)
         except KeyboardInterrupt:
             console.print("[yellow]:warning: 训练被中断，进度已通过周期 checkpoint 保存[/]")
             return 130
+        except (RuntimeError, FileNotFoundError, ValueError) as exc:
+            # 这几类是「用户改配置/换数据就能解决」的问题（续训一致性校验、
+            # 数据缺失、配置非法），直接给结论比甩一段 traceback 有用。
+            console.print(f"[bold red]:x: 训练失败[/] ({type(exc).__name__})")
+            console.print(str(exc))
+            return 2
+
+        # train/step_end 只在 global_step % log_every == 0 时发出；短 run（步数少于
+        # log_every）或末段不足一个间隔时进度条会停在旧值。这里用实际步号收尾，
+        # 让进度条如实反映「跑到哪了」（早停时也照样停在真实位置，不假装 100%）。
+        final_step = int(summary.get("steps") or 0)
+        if final_step > state["offset"]:
+            progress.update(task, completed=final_step - state["offset"])
 
     rows_out = [
         ("model", summary.get("model")),
         ("mode", summary.get("mode", "pretrain")),
         ("params", f"{summary.get('model_params_m', '?')}M"),
-        ("final loss", f"{summary.get('final_loss', float('nan')):.4f}"),
-        ("best eval", f"{summary.get('best_eval_loss'):.4f}"
-         if summary.get("best_eval_loss") is not None else "-"),
+        ("final loss", _fmt_loss(summary.get("final_loss"))),
+        ("best eval", _fmt_loss(summary.get("best_eval_loss"))),
         ("steps", summary.get("steps")),
         ("tokens", f"{summary.get('tokens_seen', 0):,}"),
-        ("best loss", f"{summary.get('best_loss'):.4f}"
-         if summary.get("best_loss") is not None else "-"),
+        ("best loss", _fmt_loss(summary.get("best_loss"))),
         ("early stop", "是" if summary.get("early_stopped") else "否"),
         ("耗时", f"{summary.get('wall_time_s', 0):.1f}s"),
         ("checkpoint", _display_path(Path(summary["checkpoint"]))
@@ -292,8 +359,42 @@ def _run_training_ui(title: str, rows: list[tuple[str, str]],
     if summary.get("resolved_config"):
         rows_out.append(("resolved config",
                          _display_path(Path(summary["resolved_config"]))))
+    if summary.get("plan"):
+        rows_out.append(("plan", _display_path(Path(summary["plan"]))))
     console.print(kv_table(rows_out, title=title))
+
+    stages = summary.get("stages")
+    if stages:
+        console.print(_stages_table(stages, title))
     return 0
+
+
+def _stages_table(stages: list[dict], title: str) -> Table:
+    """阶段链的逐阶段结果表（单段训练没有 stages，不会走到这里）。"""
+    table = Table(title=f"{title} · 阶段", box=box.SIMPLE, pad_edge=False)
+    for column, justify in (("阶段", "left"), ("步号区间", "right"), ("loss", "right"),
+                            ("eval", "right"), ("tokens", "right"),
+                            ("耗时", "right"), ("状态", "left")):
+        table.add_column(column, justify=justify)
+    for stage in stages:
+        if stage.get("skipped"):
+            status = "[dim]跳过（已完成）[/]"
+        elif stage.get("resumed"):
+            status = "[yellow]续跑[/]"
+        else:
+            status = "[green]完成[/]"
+        loss = stage.get("final_loss")
+        eval_loss = stage.get("best_eval_loss")
+        table.add_row(
+            stage["name"],
+            f"{stage['start_step']} → {stage['end_step']}",
+            _fmt_loss(loss),
+            _fmt_loss(eval_loss),
+            f"{stage.get('tokens', 0):,}",
+            f"{stage.get('wall_time_s', 0):.1f}s",
+            status,
+        )
+    return table
 
 
 def _display_path(p: Path) -> Path | str:
@@ -304,11 +405,12 @@ def _display_path(p: Path) -> Path | str:
         return p
 
 
-def _common_train_rows(config_path: Path, args: argparse.Namespace) -> list[tuple[str, str]]:
+def _common_train_rows(config_path: Path, args: argparse.Namespace,
+                       steps: int | None = None) -> list[tuple[str, str]]:
     rows = [
         ("config", _display_path(config_path)),
         ("model", f"{MODEL_NAME} (v{__version__})"),
-        ("steps", args.steps or _yaml_steps(config_path)),
+        ("steps", steps or args.steps or _yaml_steps(config_path)),
         ("device/threads", f"{args.device or 'auto'} / {args.threads or 'config'}"),
     ]
     data = getattr(args, "data", None)
@@ -399,13 +501,47 @@ def _resolve_resume(value: str | None, stage: str) -> Path | None:
     return _resolve_path(value)
 
 
-def cmd_train(args: argparse.Namespace) -> int:
-    from trainer import train as do_train
+def _load_plan(plan_path: Path):
+    """加载训练计划（供 UI 显示阶段数与步数；真实进度由 train/start 事件给出）。"""
+    from verse_trainer.plan import load_chain_plan
 
+    return load_chain_plan(plan_path)
+
+
+def cmd_train(args: argparse.Namespace) -> int:
     config_path = find_config(args.config)
     data_path = _resolve_path(args.data)
     val_path = _resolve_path(args.val)
     resume_path = _resolve_resume(args.resume, "pretrain")
+
+    if args.plan:
+        from trainer import train_plan as do_train_plan
+
+        plan_path = _resolve_path(args.plan)
+        if not plan_path.exists():
+            console.print(f"[red]训练计划不存在:[/] {plan_path}")
+            return 2
+        # 阶段链的续训基准是链尾产物（{MODEL_NAME}_chain_final.pt）
+        plan_resume = _resolve_resume(args.resume, "chain")
+        plan = _load_plan(plan_path)
+        total = args.steps or plan.total_steps()
+        rows = _common_train_rows(config_path, args, steps=total) + [
+            ("plan", _display_path(plan_path)),
+            ("阶段", " → ".join(s.name for s in plan.stages)),
+        ]
+        return _run_training_ui(
+            f"{MODEL_NAME} · {'阶段链续训' if plan_resume else '接续训练（阶段链）'}",
+            rows, total,
+            lambda bus: do_train_plan(
+                str(plan_path), str(config_path), ROOT, event_bus=bus,
+                threads_override=args.threads, device_override=args.device,
+                resume_from=str(plan_resume) if plan_resume else None,
+                allow_data_change=args.allow_data_change,
+                horizon_steps=args.horizon_steps),
+        )
+
+    from trainer import train as do_train
+
     return _run_training_ui(
         f"{MODEL_NAME} · {'断点续训' if resume_path else '预训练'}",
         _common_train_rows(config_path, args),
@@ -496,7 +632,8 @@ def cmd_generate(args: argparse.Namespace) -> int:
     banner(
         f"{MODEL_NAME} · 生成",
         [
-            ("checkpoint", ckpt_path.relative_to(ROOT)),
+            ("checkpoint", _display_path(ckpt_path)),
+            ("device/dtype", f"{args.device or 'auto'} / {args.dtype or 'auto'}"),
             ("sampling", f"temperature={args.temperature} top_k={args.top_k} "
              f"top_p={args.top_p} rep_pen={args.repetition_penalty} "
              f"no_repeat_ngram={args.no_repeat_ngram}"
@@ -517,6 +654,8 @@ def cmd_generate(args: argparse.Namespace) -> int:
             no_repeat_ngram=args.no_repeat_ngram,
             greedy=args.greedy,
             chat=args.chat,
+            device=args.device or "auto",
+            dtype=args.dtype or "auto",
         )
     text_out = output[len(args.prompt):].strip() if output.startswith(args.prompt) else output.strip()
     if args.chat:
@@ -529,6 +668,127 @@ def cmd_generate(args: argparse.Namespace) -> int:
         subtitle=f"prompt: {args.prompt!r}", subtitle_align="right",
     ))
     return 0
+
+
+# ---------------------------------------------------------------- 对话 REPL
+
+_CHAT_HELP = """\
+[bold]命令[/]
+  /help            显示本帮助
+  /reset           清空对话历史（保留 system 提示）
+  /history         打印当前消息历史
+  /exit  /quit     退出
+
+直接输入内容即发起一轮对话；模型会带上之前的上下文。
+Ctrl-C / Ctrl-D 也可退出。"""
+
+
+def _chat_history_table(history: list[dict]) -> Table:
+    """把消息历史渲染成表格。"""
+    table = Table(title="对话历史", box=box.SIMPLE, pad_edge=False, show_lines=False)
+    table.add_column("#", justify="right", style="dim")
+    table.add_column("role", style="cyan")
+    table.add_column("content")
+    for i, msg in enumerate(history):
+        role = msg.get("role", "?")
+        style = "bold green" if role == "assistant" else "white"
+        content = str(msg.get("content", "")).replace("\n", " ⏎ ")
+        table.add_row(str(i), role, Text(content, style=style, overflow="fold"))
+    return table
+
+
+def _handle_chat_command(session, line: str) -> bool:
+    """处理 ``/`` 开头的命令；返回 False 表示应退出 REPL。"""
+    cmd, _, _rest = line.partition(" ")
+    cmd = cmd.lower()
+    if cmd in ("/exit", "/quit", "/q"):
+        return False
+    if cmd == "/reset":
+        session.reset()
+        console.print("[yellow]对话历史已清空[/]")
+    elif cmd == "/history":
+        if session.history:
+            console.print(_chat_history_table(session.history))
+        else:
+            console.print("[dim](暂无历史)[/]")
+    elif cmd == "/help":
+        console.print(Panel(_CHAT_HELP, title="[bold]对话命令[/]",
+                            border_style="cyan", box=box.ROUNDED))
+    else:
+        console.print(f"[red]未知命令 {cmd}[/]（/help 查看可用命令）")
+    return True
+
+
+def _chat_repl(session) -> int:
+    """交互式多轮对话循环：读一行 -> 生成 -> 打印，直到 /exit 或 EOF。"""
+    while True:
+        try:
+            line = console.input("[bold cyan]你[/] [dim]›[/] ")
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[dim]再见[/]")
+            break
+        text = line.strip()
+        if not text:
+            continue
+        if text.startswith("/"):
+            if not _handle_chat_command(session, text):
+                break
+            continue
+        try:
+            with console.status("[magenta]思考中...[/]"):
+                reply = session.ask(text)
+        except (ValueError, RuntimeError) as exc:
+            console.print(f"[red]生成失败[/] ({type(exc).__name__}): {exc}")
+            continue
+        console.print(Panel(
+            reply or "[dim](空回复 — 试试换个问法或调低 temperature)[/]",
+            title=f"[bold green]助手[/] [dim](第 {session.turns} 轮)[/]",
+            border_style="green", box=box.ROUNDED,
+        ))
+    return 0
+
+
+def cmd_chat(args: argparse.Namespace) -> int:
+    """交互式多轮对话（模型只加载一次，常驻显存/内存）。"""
+    from trainer import ChatSession
+
+    ckpt_path = find_checkpoint(args.ckpt)
+    banner(
+        f"{MODEL_NAME} · 对话",
+        [
+            ("checkpoint", _display_path(ckpt_path)),
+            ("device/dtype", f"{args.device or 'auto'} / {args.dtype or 'auto'}"),
+            ("history", f"最多保留 {args.max_history_turns} 轮" if args.max_history_turns
+             else "不限制"),
+            ("sampling", f"temperature={args.temperature} top_k={args.top_k} "
+             f"top_p={args.top_p} rep_pen={args.repetition_penalty} "
+             f"no_repeat_ngram={args.no_repeat_ngram}"
+             + (" greedy" if args.greedy else "")),
+        ],
+    )
+    try:
+        with console.status("[magenta]加载模型中...[/]"):
+            session = ChatSession(
+                str(ckpt_path),
+                device=args.device or "auto",
+                dtype=args.dtype or "auto",
+                system=args.system,
+                max_history_turns=args.max_history_turns,
+                max_new_tokens=args.max_new_tokens,
+                temperature=args.temperature,
+                top_k=args.top_k,
+                top_p=args.top_p,
+                repetition_penalty=args.repetition_penalty,
+                no_repeat_ngram=args.no_repeat_ngram,
+                greedy=args.greedy,
+            )
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        # LoRA 适配器 / 架构不匹配 / checkpoint 缺失都属于「用户能自己解决」
+        console.print(f"[bold red]:x: 加载模型失败[/] ({type(exc).__name__})")
+        console.print(str(exc))
+        return 2
+    console.print("[dim]输入内容开始对话；/help 查看命令，/exit 退出[/]")
+    return _chat_repl(session)
 
 
 # ---------------------------------------------------------------- 入口
@@ -549,10 +809,14 @@ def build_parser() -> argparse.ArgumentParser:
             "  python run.py train --resume              # 断点续训（自动找 pretrain final）\n"
             "  python run.py train --resume ckpt.pt --steps 500   # 续训并新增 500 步\n"
             "  python run.py train --resume --data new.jsonl --allow-data-change  # 换数据续训\n"
+            "  python run.py train --plan config/chain_example.yaml  # 接续训练（多阶段换数据集）\n"
+            "  python run.py train --plan config/chain_example.yaml --resume  # 阶段链断点续训\n"
             "  python run.py finetune --lr 1e-4        # 从 checkpoint 全参微调\n"
             "  python run.py finetune --lora-rank 8 --steps 100   # LoRA 微调\n"
             "  python run.py sft --data data/sft_demo.json --lora-rank 8  # 指令微调\n"
             "  python run.py generate --prompt '机器学习' --chat   # 对话式生成\n"
+            "  python run.py chat                       # 交互式多轮对话（REPL）\n"
+            "  python run.py chat --device npu --dtype bf16   # 指定设备与精度\n"
             "  python run.py configs                   # 查看可用配置与 checkpoint\n"
         ),
     )
@@ -564,8 +828,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_train = sub.add_parser("train", help="预训练 CometSpark 模型")
     p_train.add_argument("--config", default=None,
                          help="yaml 配置路径（默认自动发现版本最高的配置）")
+    p_train.add_argument("--plan", default=None,
+                         help="接续训练计划 yaml：把训练拆成多个阶段，每阶段可换数据集。"
+                              "见 config/chain_example.yaml")
     p_train.add_argument("--steps", type=int, default=None, help="覆盖训练步数")
-    p_train.add_argument("--device", default=None, help="覆盖设备 (cpu/cuda/mps)")
+    p_train.add_argument("--device", default=None, help="覆盖设备 (auto/cpu/cuda/npu；默认 auto 按优先级自动选)")
     p_train.add_argument("--threads", type=int, default=None, help="覆盖 CPU 线程数")
     _add_data_args(p_train)
     _add_resume_args(p_train)
@@ -580,7 +847,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--steps", type=int, default=None, help="覆盖训练步数")
         p.add_argument("--lr", type=float, default=None,
                        help="覆盖学习率（微调建议低于预训练值）")
-        p.add_argument("--device", default=None, help="覆盖设备 (cpu/cuda/mps)")
+        p.add_argument("--device", default=None, help="覆盖设备 (auto/cpu/cuda/npu；默认 auto 按优先级自动选)")
         p.add_argument("--threads", type=int, default=None, help="覆盖 CPU 线程数")
         p.add_argument("--lora-rank", type=int, default=None,
                        help=">0 时启用 LoRA 参数高效微调（默认关闭 = 全参）")
@@ -620,7 +887,32 @@ def build_parser() -> argparse.ArgumentParser:
     p_gen.add_argument("--greedy", action="store_true", help="贪心解码")
     p_gen.add_argument("--chat", action="store_true",
                        help="用 ChatML 模板包裹 prompt（SFT 后的对话模型使用）")
+    p_gen.add_argument("--device", default=None,
+                       help="推理设备 (auto/cpu/cuda/npu；默认 auto 按优先级自动选)")
+    p_gen.add_argument("--dtype", default=None,
+                       help="推理混合精度 (auto/fp32/bf16/fp16；默认 auto 按设备能力选)")
     p_gen.set_defaults(func=cmd_generate)
+
+    p_chat = sub.add_parser("chat", help="交互式多轮对话（REPL，模型常驻）")
+    p_chat.add_argument("--ckpt", default=None,
+                        help="checkpoint 路径（默认 final > 最大 step 自动发现）")
+    p_chat.add_argument("--device", default=None,
+                        help="推理设备 (auto/cpu/cuda/npu；默认 auto 按优先级自动选)")
+    p_chat.add_argument("--dtype", default=None,
+                        help="推理混合精度 (auto/fp32/bf16/fp16；默认 auto 按设备能力选)")
+    p_chat.add_argument("--system", default=None, help="system 提示（可选）")
+    p_chat.add_argument("--max-history-turns", type=int, default=12,
+                        help="最多保留的历史对话轮数（0 = 不限制，默认 12）")
+    p_chat.add_argument("--max-new-tokens", type=int, default=128)
+    p_chat.add_argument("--temperature", type=float, default=0.7)
+    p_chat.add_argument("--top-k", type=int, default=40)
+    p_chat.add_argument("--top-p", type=float, default=0.9, help="核采样阈值（1.0 = 关闭）")
+    p_chat.add_argument("--repetition-penalty", type=float, default=1.1,
+                        help="重复惩罚（1.0 = 关闭，>1 抑制复读）")
+    p_chat.add_argument("--no-repeat-ngram", type=int, default=3,
+                        help="禁止重复 n-gram（0 = 关闭）")
+    p_chat.add_argument("--greedy", action="store_true", help="贪心解码")
+    p_chat.set_defaults(func=cmd_chat)
 
     return parser
 

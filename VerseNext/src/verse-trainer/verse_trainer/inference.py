@@ -132,13 +132,23 @@ class Generator:
         self.model = model
         self.model.eval()
 
-    @staticmethod
-    def _resolve_dtype(dtype: str, backend) -> torch.dtype:
+    #: 显式 dtype 名 -> torch dtype。不能写 ``getattr(torch, "fp16")``——torch 只有
+    #: ``float16``/``bfloat16``，没有 ``fp16``/``bf16`` 别名。
+    _DTYPE_MAP = {
+        "fp32": torch.float32,
+        "float32": torch.float32,
+        "bf16": torch.bfloat16,
+        "bfloat16": torch.bfloat16,
+        "fp16": torch.float16,
+        "float16": torch.float16,
+    }
+
+    @classmethod
+    def _resolve_dtype(cls, dtype: str, backend) -> torch.dtype:
         """解析推理 dtype：显式优先，auto 时用设备后端推荐值。"""
-        if dtype == "fp32":
-            return torch.float32
-        if dtype in ("bf16", "fp16"):
-            return getattr(torch, dtype)
+        explicit = cls._DTYPE_MAP.get(str(dtype).lower())
+        if explicit is not None:
+            return explicit
         recommended = backend.default_autocast_dtype()
         if recommended is not None and backend.supports_dtype(recommended):
             return recommended

@@ -158,9 +158,20 @@ def _parse_impl_names(path: Path) -> set[str]:
 
 
 def _parse_ns_calls(path: Path) -> set[str]:
-    """提取 Python 里 ``ns.<op>(...)`` 形式的算子调用名。"""
+    """提取 Python 里引用的自研算子名。
+
+    两种写法都要认：
+    - ``ns.<op>(...)``：直接调命名空间属性（cuda_ops.py 的写法）；
+    - ``_custom_op("<op>")``：npu_ops.py 的写法——先确认该算子真的挂了
+      PrivateUse1 实现再取，避免只有 schema 的算子被 torch_npu 的
+      VariableFallbackKernel 搬回 CPU。
+    """
     text = path.read_text(encoding="utf-8")
-    return set(re.findall(r"\bns\.([A-Za-z_][A-Za-z0-9_]*)\s*\(", text))
+    names = set(re.findall(r"\bns\.([A-Za-z_][A-Za-z0-9_]*)\s*\(", text))
+    names |= set(
+        re.findall(r"""_custom_op\(\s*["']([A-Za-z_][A-Za-z0-9_]*)["']""", text)
+    )
+    return names
 
 
 def _cuda_schema_names() -> set[str]:

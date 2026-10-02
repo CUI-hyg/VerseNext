@@ -3,6 +3,15 @@
 from verse_trainer.trainer import Trainer, TrainerConfig
 from verse_trainer.optim import build_optimizer, build_lr_scheduler, WarmupCosineScheduler
 from verse_trainer.data import TokenBatchIterator, DataConfig, fingerprint_source
+from verse_trainer.plan import (
+    ChainPlan,
+    StageSpec,
+    TrainStage,
+    chain_fingerprint,
+    check_chain_resume,
+    load_chain_plan,
+    stage_bounds,
+)
 from verse_trainer.sft import SFTDataset, SFTConfig, load_conversations
 from verse_trainer.data_formats import (
     detect_format,
@@ -28,6 +37,13 @@ __all__ = [
     "TokenBatchIterator",
     "DataConfig",
     "fingerprint_source",
+    "ChainPlan",
+    "StageSpec",
+    "TrainStage",
+    "chain_fingerprint",
+    "check_chain_resume",
+    "load_chain_plan",
+    "stage_bounds",
     "SFTDataset",
     "SFTConfig",
     "load_conversations",

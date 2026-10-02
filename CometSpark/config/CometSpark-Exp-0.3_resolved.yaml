@@ -47,8 +47,8 @@ resources:
   cpu_fraction: 0.5
   mem_fraction: 0.5
   gpu_mem_fraction: 0.5
-  npu_mem_fraction: 0.5
-  npu_core_fraction: 0.5
+  npu_mem_fraction: 0.7
+  npu_core_fraction: 0.7
 lora: null
 loss_plot: true
 save_best_only: true

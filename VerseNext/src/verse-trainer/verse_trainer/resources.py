@@ -1,7 +1,7 @@
 """资源智能分配与占用上限。
 
-目标：把 CPU / GPU / NPU / 内存占用统一控制在可配置比例（默认 50%）以内，
-同时在上限内充分利用资源（不空转）。
+目标：把 CPU / GPU / NPU / 内存占用统一控制在可配置比例以内（CPU/CUDA 默认
+50%，NPU 默认 70%），同时在上限内充分利用资源（不空转）。
 
 设备相关的实际加锁动作已下沉到 :mod:`verse_nn.devices`（每个后端一套实现），
 本模块只负责「读配置 → 调后端 → 记录/告警」，避免平台分支散落各处：
@@ -72,9 +72,13 @@ class ResourceConfig(BaseConfig):
     """内存软上限比例（RSS 超过即告警）。"""
     gpu_mem_fraction: float = 0.5
     """CUDA/ROCm 进程显存占比上限（仅 CUDA 系生效）。"""
-    npu_mem_fraction: float = 0.5
-    """CANN NPU 进程显存占比上限（torch.npu.set_per_process_memory_fraction）。"""
-    npu_core_fraction: float = 0.5
+    npu_mem_fraction: float = 0.7
+    """CANN NPU 进程显存占比上限（torch.npu.set_per_process_memory_fraction）。
+
+    昇腾单卡独占场景下显存充足（本机实测 ≈66GB），默认给到 70% 以充分利用
+    Cube/Vector 流水所需的 batch/seq_len，比 CUDA 侧的 50% 更激进。
+    """
+    npu_core_fraction: float = 0.7
     """NPU AI Core 占比目标（单卡内按核切分需平台配额，本层记录并告警）。"""
 
     def validate(self) -> None:

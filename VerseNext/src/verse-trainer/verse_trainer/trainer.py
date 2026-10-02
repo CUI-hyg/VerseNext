@@ -149,8 +149,11 @@ class Trainer:
 
         self.optimizer = build_optimizer(self.model, config.optim)
         self.scheduler = build_lr_scheduler("warmup_cosine", self.optimizer, config.optim)
+        # fp16 需要 loss scaling（bf16 有 fp32 指数范围，不需要）。
+        # 此前只对 cuda 开启，昇腾上显式选 fp16 时会静默丢失缩放导致梯度下溢。
         self.grad_scaler = torch.amp.GradScaler(
-            self.device.type, enabled=(self.device.type == "cuda" and self.dtype == torch.float16)
+            self.device.type,
+            enabled=(self.device.type in ("cuda", "npu", "xpu") and self.dtype == torch.float16),
         )
         self.global_step = 0
         # loss 历史 / 智能保存与早停状态
@@ -165,6 +168,11 @@ class Trainer:
         self._resume_config: dict | None = None
         self._train_iter = None
         self._pending_data_rng = None
+        # 阶段链状态：本次运行的链计划（写入 checkpoint）与从 checkpoint 读回的链计划
+        self._chain_plan: dict | None = None
+        self._restored_chain_plan: dict | None = None
+        # 日志里显示的总步数；阶段链下是链的总地平线，单段训练下等于 cfg.steps
+        self._log_total_steps: int | None = None
         # 复用同一张 matplotlib 图，支持每个 eval 刷新 loss_curve.png
         self._plot_fig = None
         self._plot_ax = None
@@ -231,12 +239,17 @@ class Trainer:
             targets = targets.to(self.device, non_blocking=True)
         return inputs, targets
 
-    def _as_batch_source(self, source):
-        """token 列表/数组 -> TokenBatchIterator；数据集对象原样返回。"""
+    def _as_batch_source(self, source, data_config: DataConfig | None = None):
+        """token 列表/数组 -> TokenBatchIterator；数据集对象原样返回。
+
+        ``data_config`` 用于阶段链：每阶段可有自己的 ``seq_len``/``batch_size``，
+        必须用**新的** ``DataConfig`` 实例构造迭代器 —— ``TokenBatchIterator``
+        直接持有传入对象，复用 ``self.config.data`` 会被后续阶段追溯性地改掉。
+        """
         import numpy as np
 
         if isinstance(source, (list, tuple, torch.Tensor, np.ndarray)):
-            return TokenBatchIterator(source, self.config.data, self.device)
+            return TokenBatchIterator(source, data_config or self.config.data, self.device)
         if not hasattr(source, "next_batch"):
             raise TypeError("数据源需为 token 列表或实现 next_batch() 的对象")
         return source
@@ -283,6 +296,7 @@ class Trainer:
                 "eval_hist": list(self._eval_hist),
             },
             "data_fingerprint": self._data_fingerprint,
+            "chain_plan": self._chain_plan,
             "config": self.config.to_dict(),
         }
 
@@ -296,6 +310,7 @@ class Trainer:
         self._train_hist = [tuple(x) for x in train_state.get("train_hist", [])]
         self._eval_hist = [tuple(x) for x in train_state.get("eval_hist", [])]
         self._data_fingerprint = payload.get("data_fingerprint")
+        self._restored_chain_plan = payload.get("chain_plan")
         self._resume_config = payload.get("config")
 
         scheduler_state = payload.get("scheduler_state") or {}
@@ -331,15 +346,21 @@ class Trainer:
             self.global_step, self._best_loss, self._bad_evals, self._tokens_seen,
         )
 
-    def _bind_train_iter(self, train_iter) -> None:
-        """绑定训练迭代器：记录引用并回填待恢复的数据采样 RNG。"""
+    def _bind_train_iter(self, train_iter, fingerprint: dict | None = None) -> None:
+        """绑定训练迭代器：记录引用并回填待恢复的数据采样 RNG。
+
+        ``fingerprint`` 用于阶段链：链级指纹描述整条链（换数据集本就是链的语义），
+        不能被单个迭代器的指纹覆盖，否则续训一致性校验会误报「数据变化」。
+        """
         self._train_iter = train_iter
         generator = getattr(train_iter, "_generator", None)
         if generator is not None and self._pending_data_rng is not None:
             generator.set_state(self._pending_data_rng)
             logger.info("已恢复数据采样 RNG，续训数据顺序与断点一致")
         self._pending_data_rng = None
-        self._data_fingerprint = fingerprint_source(train_iter)
+        self._data_fingerprint = (
+            fingerprint if fingerprint is not None else fingerprint_source(train_iter)
+        )
 
     # ------------------------------------------------------------------ train
 
@@ -362,11 +383,50 @@ class Trainer:
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
 
-        t0 = time.perf_counter()
-        tokens_seen = self._tokens_seen      # 累计（跨续训）
-        run_tokens = 0                        # 本次 run 新增
+        # 广播本次 run 的权威步号区间：UI 必须用「本次 run 相对进度」而不是绝对
+        # global_step，否则断点续训时 completed 会远超 total，ETA 恒为 0。
+        self.event_bus.emit("train/start", start_step=self.global_step,
+                            total_steps=cfg.steps, stage=cfg.stage)
 
-        for step in range(self.global_step, cfg.steps):
+        self._log_total_steps = cfg.steps
+        run = self._run_steps(train_iter, eval_iter, cfg.steps)
+
+        plot_path = self._plot_loss() if cfg.loss_plot else None
+
+        summary = {
+            "final_loss": run["final_loss"],
+            "best_loss": self._best_loss if math.isfinite(self._best_loss) else None,
+            "best_eval_loss": min((l for _, l in self._eval_hist), default=None)
+            if self._eval_hist else None,
+            "early_stopped": self.early_stopped,
+            "steps": self.global_step,
+            "tokens_seen": self._tokens_seen,
+            "tokens_seen_run": run["run_tokens"],
+            "wall_time_s": run["wall_time_s"],
+        }
+        if plot_path is not None:
+            summary["loss_plot"] = str(plot_path)
+        self.event_bus.emit("train/end", **summary)
+        return summary
+
+    def _run_steps(self, train_iter, eval_iter, end_step: int) -> dict:
+        """从 ``self.global_step`` 跑到 ``end_step``（不含）的核心训练循环。
+
+        被 :meth:`train`（单段）与 :meth:`train_stages`（阶段链）共用。所有调度
+        （grad_accum / eval / ckpt / log 间隔）都读当前 ``self.config``，
+        因此阶段链只要在调用前改好配置即可，无需重建循环。
+
+        Returns:
+            ``{"final_loss", "run_tokens", "wall_time_s"}``；``final_loss`` 在本段
+            未产生任何 step 时为 ``nan``。
+        """
+        cfg = self.config
+        total_for_log = self._log_total_steps or end_step
+        t0 = time.perf_counter()
+        run_tokens = 0
+        loss_accum = float("nan")
+
+        for step in range(self.global_step, end_step):
             if getattr(self, "_stop_requested", False):
                 logger.info("收到停止请求，提前结束训练 (step %d)", self.global_step)
                 break
@@ -385,20 +445,19 @@ class Trainer:
                 (loss / cfg.grad_accum_steps).backward()
                 loss_accum += loss.item() / cfg.grad_accum_steps
                 run_tokens += inputs.numel()
-                tokens_seen += inputs.numel()
+                self._tokens_seen += inputs.numel()
 
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), cfg.optim.grad_clip)
             self.grad_scaler.step(self.optimizer)
             self.grad_scaler.update()
             self.global_step = step + 1
-            self._tokens_seen = tokens_seen
 
             if self.global_step % cfg.log_every == 0:
                 elapsed = time.perf_counter() - t0
                 tps = run_tokens / max(elapsed, 1e-8)
                 logger.info(
                     "step %d/%d | loss %.4f | lr %.2e | %.0f tokens/s",
-                    self.global_step, cfg.steps, loss_accum, lr, tps,
+                    self.global_step, total_for_log, loss_accum, lr, tps,
                 )
                 self._train_hist.append((self.global_step, loss_accum))
                 self.event_bus.emit(
@@ -433,23 +492,170 @@ class Trainer:
                         str(Path(cfg.ckpt_dir) / f"{cfg.model_name}_last.pt")
                     )
 
-        plot_path = self._plot_loss() if cfg.loss_plot else None
-
-        summary = {
+        return {
             "final_loss": loss_accum,
+            "run_tokens": run_tokens,
+            "wall_time_s": time.perf_counter() - t0,
+        }
+
+    # ------------------------------------------------------------ 阶段链
+
+    def train_stages(self, stages, *, plan_base: int = 0,
+                     horizon_steps: int | None = None) -> dict:
+        """接续训练：按顺序跑完一条训练阶段链，返回聚合摘要。
+
+        与「每段起一个新进程」相比，这里**只构建一次**模型/优化器/调度器/AMP
+        缩放器，全程常驻；阶段之间只换数据迭代器，因此没有权重与优化器动量的
+        序列化往返，也没有每段重开 warmup 导致的 LR 回弹。
+
+        Args:
+            stages: :class:`~verse_trainer.plan.TrainStage` 序列（数据源已解析）。
+            plan_base: 链的起始全局步号。续训时传 checkpoint 的 ``global_step``，
+                全新训练传 0。已完整跑过的阶段会被跳过，落在中途的阶段从当前
+                ``global_step`` 接着跑。
+            horizon_steps: cosine 衰减地平线；None 表示 ``plan_base + Σ steps``。
+                必须在第一次 ``scheduler.step`` 前确定（续训时也要在
+                ``load_checkpoint`` 之前设好，否则会触发地平线不一致告警）。
+
+        Returns:
+            聚合摘要，键与 :meth:`train` 兼容（``final_loss``/``best_loss``/
+            ``best_eval_loss``/``tokens_seen``/``steps``/``wall_time_s`` 等），
+            另加 ``stages`` 列出每个阶段的区间与结果。
+        """
+        from verse_trainer.plan import chain_fingerprint, stage_bounds
+
+        cfg = self.config
+        if not stages:
+            raise ValueError("stages 不能为空")
+
+        bounds = stage_bounds(stages, plan_base)
+        chain_total = bounds[-1][1]
+        horizon = horizon_steps if (horizon_steps and horizon_steps > 0) else chain_total
+        # 地平线只设一次：各阶段共用同一条 warmup-cosine 曲线
+        cfg.optim.max_steps = horizon
+        self._log_total_steps = chain_total
+        fingerprint = chain_fingerprint(stages)
+        self._chain_plan = {
+            "base": plan_base,
+            "boundaries": [list(b) for b in bounds],
+            "names": [s.name for s in stages],
+            "steps": [s.steps for s in stages],
+            "fingerprint": fingerprint,
+        }
+        self._data_fingerprint = fingerprint
+
+        if self.device.type == "cuda":
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+
+        self.event_bus.emit("train/start", start_step=self.global_step,
+                            total_steps=chain_total, stage="chain")
+
+        self.model.train()
+        t0 = time.perf_counter()
+        stage_summaries: list[dict] = []
+        final_loss = float("nan")
+
+        for index, (stage, (start, end)) in enumerate(zip(stages, bounds)):
+            # 先应用覆盖再判断跳过：被跳过的阶段不会跑，但它设置的 lr / grad_accum
+            # 等对后续阶段是「继承值」，漏掉会让续训的配置与原run不一致。
+            self._apply_stage(stage)
+
+            if self.global_step >= end:
+                logger.info("阶段 %d/%d [%s] 已完成（step %d >= %d），跳过",
+                            index + 1, len(stages), stage.name, self.global_step, end)
+                stage_summaries.append({
+                    "name": stage.name, "index": index, "start_step": start,
+                    "end_step": end, "final_loss": None, "best_eval_loss": None,
+                    "tokens": 0, "tokens_seen": self._tokens_seen,
+                    "wall_time_s": 0.0, "checkpoint": None,
+                    "resumed": True, "skipped": True,
+                })
+                continue
+
+            resumed = self.global_step > start
+            train_iter = self._as_batch_source(stage.train_source, stage.data_config)
+            self._bind_train_iter(train_iter, fingerprint=fingerprint)
+            eval_iter = (
+                self._as_batch_source(stage.eval_source, stage.data_config)
+                if stage.eval_source is not None else None
+            )
+
+            self.event_bus.emit("train/stage_start", index=index, total=len(stages),
+                                name=stage.name, start_step=start, end_step=end,
+                                resumed=resumed)
+            logger.info("阶段 %d/%d [%s] step %d -> %d%s",
+                        index + 1, len(stages), stage.name, self.global_step, end,
+                        "（续跑）" if resumed else "")
+
+            run = self._run_steps(train_iter, eval_iter, end)
+            final_loss = run["final_loss"]
+
+            ckpt_path = Path(cfg.ckpt_dir) / f"{cfg.model_name}_chain{index:02d}_{stage.name}.pt"
+            self.finalize(f"chain{index:02d}_{stage.name}", path=ckpt_path)
+
+            stage_summary = {
+                "name": stage.name, "index": index, "start_step": start,
+                "end_step": end, "final_loss": run["final_loss"],
+                "best_eval_loss": min((l for _, l in self._eval_hist), default=None)
+                if self._eval_hist else None,
+                # 本阶段消耗的 token（不是累计值，累计值在顶层 tokens_seen）
+                "tokens": run["run_tokens"],
+                "tokens_seen": self._tokens_seen,
+                "wall_time_s": run["wall_time_s"],
+                "checkpoint": str(ckpt_path), "resumed": resumed, "skipped": False,
+            }
+            stage_summaries.append(stage_summary)
+            self.event_bus.emit("train/stage_end", index=index, name=stage.name,
+                                final_loss=run["final_loss"], checkpoint=str(ckpt_path))
+            logger.info("阶段 [%s] 完成：loss %.4f，耗时 %.1fs -> %s",
+                        stage.name, run["final_loss"], run["wall_time_s"], ckpt_path)
+
+            # 早停/停止请求终止整条链（后续阶段不再有意义）
+            if self.early_stopped or getattr(self, "_stop_requested", False):
+                logger.info("阶段 [%s] 触发%s，链提前结束",
+                            stage.name, "早停" if self.early_stopped else "停止请求")
+                break
+
+        wall = time.perf_counter() - t0
+        plot_path = self._plot_loss() if cfg.loss_plot else None
+        summary = {
+            "final_loss": final_loss,
             "best_loss": self._best_loss if math.isfinite(self._best_loss) else None,
             "best_eval_loss": min((l for _, l in self._eval_hist), default=None)
             if self._eval_hist else None,
             "early_stopped": self.early_stopped,
             "steps": self.global_step,
-            "tokens_seen": tokens_seen,
-            "tokens_seen_run": run_tokens,
-            "wall_time_s": time.perf_counter() - t0,
+            "tokens_seen": self._tokens_seen,
+            "tokens_seen_run": sum(s.get("tokens", 0) for s in stage_summaries),
+            "wall_time_s": wall,
+            "stage": "chain",
+            "stages": stage_summaries,
         }
         if plot_path is not None:
             summary["loss_plot"] = str(plot_path)
         self.event_bus.emit("train/end", **summary)
         return summary
+
+    def _apply_stage(self, stage) -> None:
+        """把阶段级的超参覆盖写进当前配置（模型/优化器对象本身不动）。
+
+        - ``lr``：调度器持有**同一个** ``OptimizerConfig`` 对象且每次 ``step()``
+          重读 ``cfg.lr``，改这里下一步即生效；``warmup_steps``/``max_steps``
+          绝不按阶段重置，保证 LR 轨迹连续。
+        - ``seq_len``/``batch_size``：``TokenBatchIterator`` 会持有传入的
+          ``DataConfig`` 对象，改 ``config.data`` 会**追溯性地**改到存活迭代器，
+          所以这里只登记本阶段的 shape，由 ``_as_batch_source`` 用新的
+          ``DataConfig`` 实例构造迭代器。
+        - 其余间隔类参数直接覆盖 ``TrainerConfig`` 字段。
+        """
+        cfg = self.config
+        if stage.lr is not None:
+            cfg.optim.lr = float(stage.lr)
+        for name in ("grad_accum_steps", "eval_every", "ckpt_every", "loss_chunk_size"):
+            value = getattr(stage, name)
+            if value is not None:
+                setattr(cfg, name, value)
 
     # ------------------------------------------------------- monitor / plot
 

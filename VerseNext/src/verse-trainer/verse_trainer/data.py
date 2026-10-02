@@ -33,7 +33,9 @@ def fingerprint_source(source, sample_limit: int = 5_000_000) -> dict | None:
         return None
 
     tokens = getattr(source, "tokens", None)
-    if tokens is None and isinstance(source, (np.ndarray, torch.Tensor)):
+    if tokens is None and isinstance(source, (list, tuple, np.ndarray, torch.Tensor)):
+        # 纯 list/tuple 也是 Trainer.train 支持的输入（token id 列表），
+        # 不纳入这里会让指纹静默变成 None —— 续训时「数据变了却查不出来」。
         tokens = source
     if tokens is not None:
         arr = tokens.detach().cpu().numpy() if hasattr(tokens, "detach") else np.asarray(tokens)
@@ -109,7 +111,9 @@ class TokenBatchIterator:
         self.tokens = self._as_int_tensor(tokens)
         self.config = config
         self.device = torch.device(device)
-        self._pin = self.device.type == "cuda"
+        # CUDA 与昇腾 NPU 都支持锁页内存 + 异步 H2D：``pin_memory()`` 后配
+        # ``non_blocking=True`` 可把拷贝与计算重叠。CPU 上 pin 无意义且更慢。
+        self._pin = self.device.type in ("cuda", "npu")
         self._generator = torch.Generator().manual_seed(config.seed)
 
     @staticmethod

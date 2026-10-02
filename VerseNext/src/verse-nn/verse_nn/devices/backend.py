@@ -387,7 +387,7 @@ class ROCmBackend(CUDABackend):
 class NPUBackend(Backend):
     """华为昇腾 CANN NPU 后端（依赖 ``torch_npu``）。
 
-    资源锁 50% 的两条腿：
+    资源锁的两条腿（比例默认 50%，NPU 可在配置里提到 70%）：
     - **显存**：``torch.npu.set_per_process_memory_fraction``；
     - **AI 核**：CANN 没有进程级核数 API，通过 ``ASCEND_RT_VISIBLE_DEVICES``
       限制可见设备、并用 ``num_ai_cores`` 记录预期上限（多卡切分时按卡数折算）。
@@ -414,20 +414,57 @@ class NPUBackend(Backend):
         import torch_npu  # noqa: F401
         return torch.npu
 
-    def caps(self, index: int = 0) -> DeviceCaps:
-        npu = self._npu_module()
-        props = None
+    @staticmethod
+    def _device_props(index: int = 0):
+        """读取设备属性；旧版 torch_npu 缺该 API 时返回 None。"""
         try:
-            props = npu.get_device_properties(index)
+            return NPUBackend._npu_module().get_device_properties(index)
         except Exception:  # pragma: no cover - 版本差异
-            props = None
+            return None
+
+    @staticmethod
+    def _supports_bf16(soc: str) -> bool:
+        """bf16 能力：优先运行时探测，回退 SOC 串匹配。
+
+        ``torch.npu.is_bf16_supported()`` 是权威答案（本机 910_9362 返回 True），
+        而 SOC 串匹配表必然滞后于新架构，只作兜底。
+        """
+        try:
+            import torch_npu  # noqa: F401
+
+            probe = getattr(torch.npu, "is_bf16_supported", None)
+            if callable(probe):
+                return bool(probe())
+        except Exception:  # pragma: no cover - 版本差异
+            pass
+        return _ascend_supports_bf16(soc)
+
+    @staticmethod
+    def _ai_core_count(props, soc: str) -> int:
+        """AI Core 数量：优先设备属性，回退 SOC 表。
+
+        910B/910C 的 ``get_device_properties`` 暴露 ``cube_core_num``（本机实测
+        20）；部分版本只给 ``vector_core_num`` / ``multi_processor_count``。
+        """
+        if props is not None:
+            for attr in ("cube_core_num", "vector_core_num", "multi_processor_count"):
+                try:
+                    value = int(getattr(props, attr, 0) or 0)
+                except (TypeError, ValueError):  # pragma: no cover
+                    value = 0
+                if value > 0:
+                    return value
+        return _ascend_ai_core_count(soc)
+
+    def caps(self, index: int = 0) -> DeviceCaps:
+        props = self._device_props(index)
         soc = getattr(props, "name", "") or getattr(props, "soc_version", "") or "ascend"
         mem = 0
         try:
             mem = int(getattr(props, "total_memory", 0)) if props is not None else 0
         except Exception:  # pragma: no cover
             mem = 0
-        bf16 = _ascend_supports_bf16(str(soc))
+        bf16 = self._supports_bf16(str(soc))
         return DeviceCaps(
             name=f"npu:{index}",
             device_type="npu",
@@ -467,9 +504,11 @@ class NPUBackend(Backend):
             logger.warning("设置 NPU 显存占比失败: %s", exc)
             info["npu_mem_locked"] = False
         # 单卡 AI 核按比例切分需要平台配额，这里记录预期值供上层/运维参考。
-        # core_fraction 未显式给出时沿用 cpu_fraction（默认都是 50%）。
+        # core_fraction 未显式给出时沿用 cpu_fraction。
         core_frac = core_fraction if core_fraction is not None else cpu_fraction
-        cores = _ascend_ai_core_count(str(self.caps().arch))
+        props = self._device_props(0)
+        soc = getattr(props, "name", "") or getattr(props, "soc_version", "") or "ascend"
+        cores = self._ai_core_count(props, str(soc))
         info["ai_cores_total"] = cores
         info["ai_core_fraction"] = core_frac
         info["ai_cores_target"] = max(1, int(round(cores * core_frac))) if cores else 0
@@ -510,30 +549,38 @@ class NPUBackend(Backend):
 
 
 def _ascend_supports_bf16(soc: str) -> bool:
-    """910B/910C 及更新架构原生支持 bf16；310P 以 fp16 为主。"""
+    """910B/910C/910_93 及更新架构原生支持 bf16；310P 以 fp16 为主。
+
+    仅作 :meth:`NPUBackend._supports_bf16` 的回退：``torch.npu`` 名称形如
+    ``Ascend910_9362``（910B 的 93 系列），既不含 ``910b`` 也不含 ``910c``，
+    旧表会漏判，故补 ``910_93`` / ``910_9`` / ``910d`` 等前缀。
+    """
     soc = soc.lower()
-    return any(tag in soc for tag in ("910b", "910c", "910d", "ascend910b", "ascend910c"))
+    return any(
+        tag in soc
+        for tag in ("910b", "910c", "910d", "910_93", "910_9", "ascend910b", "ascend910c")
+    )
 
 
 def _ascend_ub_bytes(soc: str) -> int:
     """Unified Buffer 大小（分块调优用）。未知返回 0。"""
     soc = soc.lower()
-    if "910b" in soc or "910c" in soc:
-        return 192 * 1024      # 910B UB ≈ 192KB
     if "310p" in soc:
         return 128 * 1024
+    if any(tag in soc for tag in ("910b", "910c", "910_9", "910d")):
+        return 192 * 1024      # 910B/910C UB ≈ 192KB
     return 0
 
 
 def _ascend_ai_core_count(soc: str) -> int:
-    """AI Core 数量（资源占比换算用）。未知返回 0。"""
+    """AI Core 数量（资源占比换算用，SOC 回退表）。未知返回 0。"""
     soc = soc.lower()
-    if "910b" in soc:
-        return 24
-    if "910c" in soc:
-        return 32
     if "310p" in soc:
         return 8
+    if "910c" in soc:
+        return 32
+    if any(tag in soc for tag in ("910b", "910_9", "910d")):
+        return 24
     return 0
 
 

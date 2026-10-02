@@ -44,7 +44,7 @@ optim:
   max_steps: 2000         # 与 steps 对齐（余弦衰减地平线）
   min_lr_ratio: 0.1
 
-steps: 2000
+steps: 5000
 log_every: 10
 eval_every: 100
 eval_batches: 20
@@ -68,4 +68,6 @@ resources:
   cpu_fraction: 0.5          # CPU 线程 <= 50%
   mem_fraction: 0.5          # 内存软上限 <= 50%
   gpu_mem_fraction: 0.5      # CUDA 显存 <= 50%
+  npu_mem_fraction: 0.7      # 昇腾显存 <= 70%（单卡独占，充分利用 Cube/Vector）
+  npu_core_fraction: 0.7     # 昇腾 AI Core 占比目标 70%
 seed: 48

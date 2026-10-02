@@ -1,0 +1,68 @@
+# 接续训练（训练阶段链）示例计划
+#
+# 用法：
+#   python run.py train --plan config/chain_example.yaml
+#   python run.py train --plan config/chain_example.yaml --resume        # 断点续训
+#   python run.py train --plan config/chain_example.yaml --resume --allow-data-change
+#
+# 语义：一个模型顺序经过下面各阶段，**每阶段换数据集**。模型 / 优化器动量 /
+# AMP 缩放器只在开跑时构建一次并常驻，阶段之间不重载权重、不重开 warmup，
+# 全程共用一条 warmup-cosine 曲线（地平线 = 各阶段步数之和，除非显式给出
+# horizon_steps）。
+#
+# 字段说明（除 name / steps 外都可省略，省略即沿用主配置的值）：
+#   name              阶段名，唯一；会进入产物文件名
+#   steps             本阶段训练步数（>= 1）
+#   data / val        训练 / 验证数据路径（相对项目根）；支持 jsonl/json/txt/md/
+#                     csv/tsv/parquet 与预分词 npy/bin/tokens
+#   text_column       ┐
+#   text_columns      │ 文本字段抽取参数，透传给 prepare_tokens
+#   text_template     │
+#   delimiter         ┘
+#   token_dtype       预分词 raw 二进制的元素类型（int32/uint16/...）
+#   mmap_tokens       .npy 预训练文件是否内存映射加载
+#   lr                本阶段学习率（覆盖主配置；不影响 warmup/地平线）
+#   seq_len           本阶段窗口长度
+#   batch_size        本阶段批大小
+#   grad_accum_steps  本阶段梯度累积步数
+#   eval_every        本阶段评估间隔（0 = 不评估）
+#   ckpt_every        本阶段周期 checkpoint 间隔
+#   loss_chunk_size   本阶段分块 CE 长度
+
+# cosine 衰减地平线；省略 = 各阶段步数之和（这里 = 300 + 500 + 200 = 1000）
+horizon_steps: 1000
+
+stages:
+  # 阶段 1：通用语料打底。短窗口 + 较大 batch，快速过一遍
+  - name: general
+    data: data/train.jsonl
+    val: data/val.jsonl
+    steps: 300
+    seq_len: 128
+    batch_size: 4
+    lr: 3.0e-4
+    eval_every: 100
+    ckpt_every: 100
+
+  # 阶段 2：领域语料，拉长上下文、降低学习率
+  - name: domain
+    data: data/1train.jsonl
+    steps: 500
+    seq_len: 256
+    batch_size: 1
+    grad_accum_steps: 16
+    lr: 1.0e-4
+    eval_every: 100
+    ckpt_every: 100
+
+  # 阶段 3：小规模精调，只跑很少的步数
+  - name: polish
+    data: data/sft_demo.json
+    text_columns: [query, response]
+    steps: 200
+    seq_len: 256
+    batch_size: 1
+    grad_accum_steps: 8
+    lr: 3.0e-5
+    eval_every: 50
+    ckpt_every: 100

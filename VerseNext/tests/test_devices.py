@@ -161,6 +161,57 @@ def test_npu_core_fraction_recorded_when_npu_absent():
     assert info["ai_cores_target"] <= info["ai_cores_total"]
 
 
+def test_ascend_soc_helpers_recognize_910_93():
+    """``Ascend910_9362``（910B 的 93 系列）必须被认出来。
+
+    旧匹配表只有 ``910b``/``910c`` 子串，而 ``torch.npu`` 报告的名称里既没有
+    ``910b`` 也没有 ``910c``，导致 bf16/AI 核/UB 三项全部探测失败——历史上
+    直接造成 NPU 上 fp16 训练不带 loss scaling。
+    """
+    from verse_nn.devices.backend import (
+        _ascend_ai_core_count,
+        _ascend_supports_bf16,
+        _ascend_ub_bytes,
+    )
+
+    soc = "Ascend910_9362"
+    assert _ascend_supports_bf16(soc) is True
+    assert _ascend_ub_bytes(soc) == 192 * 1024
+    assert _ascend_ai_core_count(soc) > 0
+    # 310P 以 fp16 为主，不应被误判为支持 bf16
+    assert _ascend_supports_bf16("Ascend310P") is False
+
+
+def test_npu_ai_core_count_prefers_device_properties():
+    """AI Core 数优先读 ``cube_core_num``，缺失才回退 SOC 表。"""
+    from verse_nn.devices import NPUBackend
+
+    class _Props:
+        cube_core_num = 20
+        vector_core_num = 40
+        multi_processor_count = 40
+
+    assert NPUBackend._ai_core_count(_Props(), "ascend910_9362") == 20
+
+    class _PropsNoCube:
+        vector_core_num = 40
+
+    assert NPUBackend._ai_core_count(_PropsNoCube(), "ascend910_9362") == 40
+    # 属性全无时回退 SOC 表
+    assert NPUBackend._ai_core_count(None, "ascend910_9362") > 0
+
+
+def test_npu_bf16_probe_returns_true_for_910_93():
+    """两条路径都要给出 bf16=True。
+
+    有 NPU 时走 ``torch.npu.is_bf16_supported()``；无 NPU 时 import 失败回退
+    SOC 串匹配。因此该断言在 CPU 机与 NPU 机上同样成立。
+    """
+    from verse_nn.devices import NPUBackend
+
+    assert NPUBackend._supports_bf16("ascend910_9362") is True
+
+
 def test_autocast_context_is_noop_when_disabled():
     backend = CPUBackend()
     with backend.autocast(torch.bfloat16, enabled=False):
@@ -195,8 +246,10 @@ def test_resource_config_npu_fields_validate():
 
     cfg = ResourceConfig()
     cfg.validate()
-    assert cfg.npu_mem_fraction == 0.5
-    assert cfg.npu_core_fraction == 0.5
+    # NPU 默认 70%：单卡独占时显存充足，比 CPU/CUDA 的 50% 更激进
+    assert cfg.npu_mem_fraction == 0.7
+    assert cfg.npu_core_fraction == 0.7
+    assert cfg.cpu_fraction == 0.5 and cfg.gpu_mem_fraction == 0.5
     # BaseConfig.__post_init__ 会立即 validate，故非法值在构造时即抛错
     with pytest.raises(ValueError):
         ResourceConfig(npu_core_fraction=0.0)
